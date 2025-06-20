@@ -26,10 +26,6 @@ def decode():
         app.logger.error(f"Error decoding verse: {str(e)}")
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
-@app.route('/health', methods=['GET'])
-def health():
-    return jsonify({'status': 'ok'}), 200
-
 if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 5000))  # 👈 This makes it Render-compatible
-    app.run(host='0.0.0.0', port=port)        # 👈 Binds Flask to Render's expected port
+    port = int(os.environ.get('PORT', 5000))  # ✅ Make it Render-friendly
+    app.run(debug=True, host='0.0.0.0', port=port)
