@@ -1,1 +1,13 @@
+gunicorn
+flask
+flask-cors
+python-dotenv
 Flask==2.2.5
+gunicorn
+Flask-Cors
+fastapi
+uvicorn
+pydantic
+requests
+python-dotenv
+httpx
