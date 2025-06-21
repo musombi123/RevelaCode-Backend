@@ -2,10 +2,11 @@ import json
 import os
 import re
 
-HEAD:backend/bible_decoder.py
+ HEAD:backend / bible_decoder.py
+ 
 
 # Load symbol data once at startup
-b0afe7a (Add backend and upgraded frontend with full styling):backend/backend/bible_decoder.py
+>>>>>>>> b0afe7a (Add backend and upgraded frontend with full styling):backend/backend/bible_decoder.py
 filepath = os.path.join(os.path.dirname(__file__), 'symbols_data.json')
 try:
     with open(filepath, 'r', encoding='utf-8') as f:
