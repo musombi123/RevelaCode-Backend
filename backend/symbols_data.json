@@ -1,121 +1,138 @@
 {
-  "nation against nation": {
-    "symbol": "Nation Against Nation",
-    "meaning": "A global rise in conflict and war among countries. Jesus predicted this as an early sign of the end times.",
-    "reference": "Matthew 24:7",
-    "fulfilled": "Major global conflicts including WWI (1914-1918) and WWII (1939-1945), culminating in 1945. Over 100 million casualties globally.",
-    "status": "fulfilled"
-  },
-  "restoration of israel": {
-    "symbol": "Restoration of Israel",
-    "meaning": "Prophecies in the Bible foretold that Israel would become a nation again after being scattered.",
-    "reference": "Ezekiel 37:21-22, Isaiah 66:8",
-    "fulfilled": "In 1948, Israel declared independence. By the 1960s, it had re-established national and political identity — fulfilling a major end-times prophecy.",
-    "status": "fulfilled"
-  },
-  "calamities": {
-    "symbol": "Calamities",
-    "meaning": "Jesus said there would be famines, earthquakes, and disasters in various places — a warning call, not yet the end.",
-    "reference": "Matthew 24:7, Luke 21:11",
-    "fulfilled": "Increasing frequency of global disasters (tsunamis, pandemics, wildfires, etc.). Ongoing signs from the 20th century to now.",
-    "status": "unfolding"
-  },
-  "false prophets": {
-    "symbol": "False Prophets",
-    "meaning": "People claiming divine authority while spreading lies, misleading many into spiritual error.",
-    "reference": "Matthew 24:11, 1 John 4:1",
-    "fulfilled": "The rise of cults, deceptive preachers, and spiritual influencers misleading millions through false teachings, especially since the 1980s.",
-    "status": "unfolding"
-  },
-  "antichrist": {
-    "symbol": "Antichrist",
-    "meaning": "A world leader who will rise with charm, deception, and blasphemy, demanding worship and persecuting believers.",
-    "reference": "2 Thessalonians 2:3-4, Revelation 13",
-    "fulfilled": "Not yet fully revealed, though systems and ideologies paving the way (AI, globalism, surveillance, etc.) are being set up.",
-    "status": "future"
-  },
   "666": {
     "symbol": "666",
-    "meaning": "Represents the number of man; symbolic of imperfection and rebellion against God.",
+    "meaning": "Represents the number of man; symbolic of imperfection and rebellion against God",
     "reference": "Revelation 13:18",
-    "fulfilled": "Still debated. Interpreted symbolically and sometimes linked to past empires or leaders, but not definitively fulfilled.",
-    "status": "future"
+    "status": "unfolding",
+    "fulfilled": "N/A",
+    "tags": ["End Times", "Warning"]
   },
   "beast": {
-    "symbol": "Beast",
-    "meaning": "Symbol of oppressive political or religious powers opposing God.",
+    "symbol": "beast",
+    "meaning": "Symbol of oppressive political or religious powers opposing God",
     "reference": "Revelation 13",
-    "fulfilled": "Historically applied to empires like Rome or modern authoritarian regimes, but full identity remains future-oriented.",
-    "status": "unfolding"
+    "status": "unfolding",
+    "fulfilled": "N/A",
+    "tags": ["Opposition", "End Times"]
   },
   "false prophet": {
-    "symbol": "False Prophet",
-    "meaning": "Represents deceptive religious systems that lead people away from truth.",
+    "symbol": "false prophet",
+    "meaning": "Represents deceptive religious systems that lead people away from truth",
     "reference": "Revelation 13:11-18",
-    "fulfilled": "Seen in the rise of religious deception, new age movements, and manipulative spiritual leadership.",
-    "status": "unfolding"
+    "status": "unfolding",
+    "fulfilled": "N/A",
+    "tags": ["Deception", "End Times"]
   },
   "dragon": {
-    "symbol": "Dragon",
-    "meaning": "Symbol of Satan, the ancient serpent and deceiver.",
+    "symbol": "dragon",
+    "meaning": "Symbol of Satan, the ancient serpent and deceiver",
     "reference": "Revelation 12:9",
-    "fulfilled": "Ongoing spiritual warfare and deception attributed to Satan's influence since the beginning of time.",
-    "status": "unfolding"
+    "status": "unfolding",
+    "fulfilled": "N/A",
+    "tags": ["Satan", "Opposition"]
   },
   "mark of the beast": {
-    "symbol": "Mark of the Beast",
-    "meaning": "Represents allegiance to worldly powers and rejection of God's truth.",
+    "symbol": "mark of the beast",
+    "meaning": "Represents allegiance to worldly powers and rejection of God's truth",
     "reference": "Revelation 13:16-17",
-    "fulfilled": "Speculated to involve digital IDs, economic systems, or future tech, but not definitively fulfilled.",
-    "status": "future"
+    "status": "unfolding",
+    "fulfilled": "N/A",
+    "tags": ["Allegiance", "Warning"]
   },
   "seven seals": {
-    "symbol": "Seven Seals",
-    "meaning": "Each seal reveals divine judgments or events leading to the end times.",
+    "symbol": "seven seals",
+    "meaning": "Each seal reveals divine judgments or events leading to the end times",
     "reference": "Revelation 6",
-    "fulfilled": "Interpreted symbolically as historical events or future judgments; fulfillment is debated.",
-    "status": "unfolding"
+    "status": "unfolding",
+    "fulfilled": "N/A",
+    "tags": ["Judgment", "End Times"]
   },
   "seven trumpets": {
-    "symbol": "Seven Trumpets",
-    "meaning": "Judgment events that warn and call for repentance.",
+    "symbol": "seven trumpets",
+    "meaning": "Judgment events that warn and call for repentance",
     "reference": "Revelation 8-11",
-    "fulfilled": "Symbolic of increasing judgments or disasters; timeline of fulfillment unclear.",
-    "status": "unfolding"
+    "status": "unfolding",
+    "fulfilled": "N/A",
+    "tags": ["Judgment", "Warning"]
   },
   "Babylon": {
     "symbol": "Babylon",
-    "meaning": "Symbolic of a corrupt, idolatrous system opposed to God.",
+    "meaning": "Symbolic of a corrupt, idolatrous system opposed to God",
     "reference": "Revelation 17-18",
-    "fulfilled": "Applied to past empires, the Roman Church, or modern global systems; seen as spiritual rebellion.",
-    "status": "unfolding"
+    "status": "unfolding",
+    "fulfilled": "N/A",
+    "tags": ["Corruption", "Judgment"]
   },
   "144000": {
     "symbol": "144000",
-    "meaning": "Symbolic or literal representation of God’s sealed servants.",
+    "meaning": "Symbolic or literal representation of God's sealed servants",
     "reference": "Revelation 7:4",
-    "fulfilled": "Some interpret as fulfilled in spiritual Israel or evangelists; others see it as future-specific.",
-    "status": "unfolding"
+    "status": "future",
+    "fulfilled": "N/A",
+    "tags": ["Victory", "Restoration"]
   },
   "new Jerusalem": {
-    "symbol": "New Jerusalem",
-    "meaning": "Represents the eternal dwelling of God with His people.",
+    "symbol": "new Jerusalem",
+    "meaning": "Represents the eternal dwelling of God with His people",
     "reference": "Revelation 21",
-    "fulfilled": "Still future — the final hope for believers in the new heaven and new earth.",
-    "status": "future"
+    "status": "future",
+    "fulfilled": "N/A",
+    "tags": ["Restoration", "Victory"]
   },
   "lake of fire": {
-    "symbol": "Lake of Fire",
-    "meaning": "The final judgment and eternal separation from God.",
+    "symbol": "lake of fire",
+    "meaning": "The final judgment and eternal separation from God",
     "reference": "Revelation 20:14-15",
-    "fulfilled": "Still future — reserved for final judgment of Satan, the beast, and unrepentant humanity.",
-    "status": "future"
+    "status": "future",
+    "fulfilled": "N/A",
+    "tags": ["Judgment", "Final"]
   },
   "white horse": {
-    "symbol": "White Horse",
-    "meaning": "Often represents conquest or Christ's return in judgment.",
+    "symbol": "white horse",
+    "meaning": "Often represents conquest or Christ's return in judgment",
     "reference": "Revelation 6:2, 19:11",
-    "fulfilled": "Symbolic interpretations vary: conquest in early history or Christ’s final return. Awaited.",
-    "status": "future"
+    "status": "future",
+    "fulfilled": "N/A",
+    "tags": ["Victory", "Christ"]
+  },
+  "restoration of israel": {
+    "symbol": "restoration of israel",
+    "meaning": "The re-establishment of Israel as a nation, fulfilling biblical prophecy",
+    "reference": "Ezekiel 37:21-22",
+    "status": "fulfilled",
+    "fulfilled": "1948",
+    "tags": ["Restoration", "Fulfilled"]
+  },
+  "nation vs nation": {
+    "symbol": "nation vs nation",
+    "meaning": "War among nations, especially major global conflicts like World War I and II",
+    "reference": "Matthew 24:7",
+    "status": "fulfilled",
+    "fulfilled": "1945",
+    "tags": ["War", "Fulfilled"]
+  },
+  "rise of false prophets": {
+    "symbol": "rise of false prophets",
+    "meaning": "A surge in deceptive leaders and teachers in religious circles",
+    "reference": "Matthew 24:11",
+    "status": "unfolding",
+    "fulfilled": "Ongoing",
+    "tags": ["Deception", "Unfolding"]
+  },
+  "natural calamities": {
+    "symbol": "natural calamities",
+    "meaning": "Increase in natural disasters such as earthquakes, floods, and famines",
+    "reference": "Luke 21:11",
+    "status": "unfolding",
+    "fulfilled": "Ongoing",
+    "tags": ["Warning", "Unfolding"]
+  },
+  "rise of antichrist": {
+    "symbol": "rise of antichrist",
+    "meaning": "Emergence of a global figure opposing Christ and deceiving many",
+    "reference": "2 Thessalonians 2:3-4",
+    "status": "future",
+    "fulfilled": "N/A",
+    "tags": ["End Times", "Future"]
   }
 }
