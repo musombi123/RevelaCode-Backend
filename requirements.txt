@@ -23,5 +23,4 @@ uvicorn
 pydantic
 requests
 python-dotenv
-b0afe7a (Add backend and upgraded frontend with full styling)
 httpx

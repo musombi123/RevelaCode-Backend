@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from backend.bible_decoder import decode_verse
@@ -30,7 +29,6 @@ def decode():
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))  # ✅ Make it Render-friendly
     app.run(debug=True, host='0.0.0.0', port=port)
-=======
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from backend.bible_decoder import decode_verse
