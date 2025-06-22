@@ -1,29 +1,18 @@
-const cors = require('cors');
 const express = require('express');
+const cors = require('cors');
 const app = express();
-const PORT = process.env.PORT || 3000;
+const port = process.env.PORT || 5000;
 
-// Middleware
 app.use(cors());
-app.use(express.json());
 
-// Sample API route
-app.get('/api/prophecies', (req, res) => {
+app.get('/api/symbols', (req, res) => {
   res.json([
-    {
-      id: "1",
-      verse: "Isaiah 53:5",
-      meaning: "The suffering of Christ brings healing."
-    },
-    {
-      id: "2",
-      verse: "Joel 2:28",
-      meaning: "God will pour out His spirit on all people."
-    }
+    { symbol: '🔥', meaning: 'Holy Fire' },
+    { symbol: '🕊️', meaning: 'Holy Spirit' },
+    // etc.
   ]);
 });
 
-// Start the server
-app.listen(PORT, () => {
-  console.log(`RevelaCode backend running on port ${PORT}`);
+app.listen(port, () => {
+  console.log(`RevelaCode backend running on port ${port}`);
 });
