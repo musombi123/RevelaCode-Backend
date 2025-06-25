@@ -3,6 +3,7 @@ from flask_cors import CORS
 from backend.bible_decoder import decode_verse
 import os
 import logging
+import json  # <-- You were missing this import
 
 app = Flask(__name__)
 CORS(app)
@@ -28,6 +29,18 @@ def decode():
 
     except Exception as e:
         app.logger.error(f"Error decoding verse: {str(e)}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+@app.route('/symbols', methods=['GET'])
+def get_symbols():
+    try:
+        file_path = os.path.join('backend', 'symbols_data.json')
+        with open(file_path, 'r') as f:
+            data = json.load(f)
+        return jsonify(data), 200
+
+    except Exception as e:
+        app.logger.error(f"Error loading symbols data: {str(e)}")
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
 if __name__ == '__main__':
