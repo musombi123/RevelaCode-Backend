@@ -1,3 +1,9 @@
-{
-  "keywords": []
+keywords = {
+  "wars_conflicts": ["war", "conflict", "strike", "bomb", "attack"],
+  "natural_disasters": ["earthquake", "flood", "wildfire", "eruption"],
+  "economic": ["inflation", "recession", "crash", "unemployment"],
+  "crime": ["shooting", "murder", "serial killer", "rape"],
+  "politics": ["coup", "impeachment", "corruption"],
+  "health": ["outbreak", "virus", "pandemic", "epidemic"],
+  "social_morality": ["LGBT", "scandal", "hypocrisy", "child abuse"]
 }
