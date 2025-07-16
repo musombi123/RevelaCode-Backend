@@ -34,7 +34,7 @@ dist/
 *.zip
 *.tar.gz
 
-# === Node / frontend (if you add later) ===
+# === Node / frontend (if added later) ===
 node_modules/
 npm-debug.log*
 yarn-debug.log*
@@ -43,16 +43,22 @@ package-lock.json
 .env.local
 .env.*.local
 
-# === Events data ===
-events/*.json
-events_tagged/*.json
-events_decoded/*.json
+# === Events & pipeline output ===
+events/
+events_tagged/
+events_decoded/
+archived/
+
+# === JSON config/data files (optional) ===
+symbols_data.json
+symbols_keywords.json
+verse_keywords.json
 
 # === Database backups (if any) ===
 *.bak
 *.db
 *.sql
 
-# === Others ===
+# === Editor temp files ===
 *.swp
 *.swo
