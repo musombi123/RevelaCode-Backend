@@ -27,7 +27,9 @@ logging.basicConfig(
 # === TAGGER ===
 def categorize_article(article):
     """Tags an article based on keywords in headline + description"""
-    text = (article.get("headline", "") + " " + article.get("description", "")).lower()
+    headline = article.get("headline") or ""
+    description = article.get("description") or ""
+    text = (headline + " " + description).lower()
     categories = [cat for cat, words in KEYWORDS.items() if any(word in text for word in words)]
     return categories if categories else ["general"]
 

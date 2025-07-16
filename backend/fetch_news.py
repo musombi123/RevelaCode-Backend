@@ -9,7 +9,8 @@ import logging
 API_KEY = "69a21d7398a04d948a0e881e0fea9793"
 ENDPOINT = "https://newsapi.org/v2/top-headlines"
 DEFAULT_COUNTRY = "us"
-DEFAULT_PAGE_SIZE = 20
+PAGE_SIZE = 100   # Max allowed by API
+MAX_PAGES = 5     # 5 × 100 = 500 articles max
 SAVE_DIR = "./events"
 
 # === LOGGING ===
@@ -20,22 +21,30 @@ logging.basicConfig(
 )
 
 # === FETCH ===
-def fetch_headlines(api_key, country, page_size):
-    params = {
-        "apiKey": api_key,
-        "country": country,
-        "pageSize": page_size
-    }
-    logging.info(f"Fetching top {page_size} headlines for country '{country}'...")
-    response = requests.get(ENDPOINT, params=params)
-    if response.status_code == 200:
+def fetch_headlines(api_key, country):
+    all_articles = []
+    for page in range(1, MAX_PAGES + 1):
+        params = {
+            "apiKey": api_key,
+            "country": country,
+            "pageSize": PAGE_SIZE,
+            "page": page
+        }
+        logging.info(f"📄 Fetching page {page} for country '{country}'...")
+        try:
+            response = requests.get(ENDPOINT, params=params, timeout=10)
+            response.raise_for_status()
+        except requests.exceptions.RequestException as e:
+            logging.error(f"❌ Failed to fetch page {page}: {e}")
+            break
+
         data = response.json()
         articles = data.get("articles", [])
-        logging.info(f"Fetched {len(articles)} articles.")
-        return articles
-    else:
-        logging.error(f"Failed to fetch data: {response.status_code} {response.text}")
-        return []
+        if not articles:
+            break
+        all_articles.extend(articles)
+    logging.info(f"✅ Total fetched articles: {len(all_articles)}")
+    return all_articles
 
 # === SAVE ===
 def save_to_json(articles):
@@ -49,29 +58,32 @@ def save_to_json(articles):
         event = {
             "headline": article.get("title", ""),
             "description": article.get("description", ""),
+            "content": article.get("content", ""),
+            "author": article.get("author", ""),
             "url": article.get("url", ""),
+            "urlToImage": article.get("urlToImage", ""),
             "publishedAt": article.get("publishedAt", ""),
-            "source": article.get("source", {}).get("name", "")
+            "source": article.get("source", {}).get("name", ""),
+            "source_id": article.get("source", {}).get("id", "")
         }
         events.append(event)
 
     with open(filename, "w", encoding="utf-8") as f:
         json.dump(events, f, indent=2, ensure_ascii=False)
 
-    logging.info(f"Saved {len(events)} events to {filename}")
+    logging.info(f"💾 Saved {len(events)} events to {filename}")
 
 # === MAIN ===
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Fetch latest news headlines and save to JSON.")
     parser.add_argument("--country", type=str, default=DEFAULT_COUNTRY, help="Country code (e.g., us, ke, gb)")
-    parser.add_argument("--pagesize", type=int, default=DEFAULT_PAGE_SIZE, help="Number of articles to fetch (max 100)")
     args = parser.parse_args()
 
     if not API_KEY or API_KEY == "your_api_key_here":
-        logging.warning("API_KEY is missing or default. Please set a real API key.")
-
-    headlines = fetch_headlines(API_KEY, args.country, args.pagesize)
-    if headlines:
-        save_to_json(headlines)
+        logging.warning("API_KEY is missing or invalid. Please set a real API key.")
     else:
-        logging.warning("No articles fetched; nothing to save.")
+        headlines = fetch_headlines(API_KEY, args.country)
+        if headlines:
+            save_to_json(headlines)
+        else:
+            logging.warning("⚠️ No articles fetched; nothing to save.")

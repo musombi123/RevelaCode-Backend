@@ -1,39 +1,55 @@
 import json
 import os
+import tempfile
+import shutil
+import logging
 
 DATA_DIR = "./backend/user_data"
 
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
+
+def atomic_write(filepath, data):
+    dirpath = os.path.dirname(filepath)
+    with tempfile.NamedTemporaryFile('w', dir=dirpath, delete=False) as tf:
+        json.dump(data, tf, indent=2)
+        tempname = tf.name
+    shutil.move(tempname, filepath)
+    logging.info(f"Data written atomically to {filepath}")
+
 def load_user_data(username):
-    if not os.path.exists(DATA_DIR):
-        os.makedirs(DATA_DIR)
+    os.makedirs(DATA_DIR, exist_ok=True)
 
-    history_file = f"{DATA_DIR}/{username}_history.json"
-    settings_file = f"{DATA_DIR}/{username}_settings.json"
+    history_file = os.path.join(DATA_DIR, f"{username}_history.json")
+    settings_file = os.path.join(DATA_DIR, f"{username}_settings.json")
 
-    if os.path.exists(history_file):
+    try:
         with open(history_file) as f:
             history = json.load(f)
-    else:
+        logging.info(f"Loaded history for user '{username}'")
+    except (FileNotFoundError, json.JSONDecodeError):
+        logging.warning(f"History file missing or corrupt for user '{username}', using default")
         history = []
 
-    if os.path.exists(settings_file):
+    try:
         with open(settings_file) as f:
             settings = json.load(f)
-    else:
+        logging.info(f"Loaded settings for user '{username}'")
+    except (FileNotFoundError, json.JSONDecodeError):
+        logging.warning(f"Settings file missing or corrupt for user '{username}', using default")
         settings = {"theme": "light", "linked_accounts": []}
 
     return {"history": history, "settings": settings}
 
 def save_user_data(username, history=None, settings=None):
-    if not os.path.exists(DATA_DIR):
-        os.makedirs(DATA_DIR)
+    os.makedirs(DATA_DIR, exist_ok=True)
 
     if history is not None:
-        history_file = f"{DATA_DIR}/{username}_history.json"
-        with open(history_file, "w") as f:
-            json.dump(history, f, indent=2)
+        history_file = os.path.join(DATA_DIR, f"{username}_history.json")
+        atomic_write(history_file, history)
+        logging.info(f"Saved history for user '{username}'")
 
     if settings is not None:
-        settings_file = f"{DATA_DIR}/{username}_settings.json"
-        with open(settings_file, "w") as f:
-            json.dump(settings, f, indent=2)
+        settings_file = os.path.join(DATA_DIR, f"{username}_settings.json")
+        atomic_write(settings_file, settings)
+        logging.info(f"Saved settings for user '{username}'")

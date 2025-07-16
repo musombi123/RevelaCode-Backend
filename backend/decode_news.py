@@ -1,7 +1,7 @@
 import json
 import os
 
-SYMBOLS_FILE = "symbols_data.json"
+SYMBOLS_FILE = "symbols_keywords.json"
 TAGGED_DIR = "./events_tagged"
 OUTPUT_DIR = "./events_decoded"
 
@@ -27,13 +27,13 @@ def decode_event(event, symbols):
 def decode_events_file(filename):
     input_path = os.path.join(TAGGED_DIR, filename)
     output_path = os.path.join(OUTPUT_DIR, filename)
-    with open(input_path, "r") as f:
+    with open(input_path, "r", encoding="utf-8") as f:
         events = json.load(f)
     symbols = load_symbols()
     decoded_events = [decode_event(event, symbols) for event in events]
     if not os.path.exists(OUTPUT_DIR):
         os.makedirs(OUTPUT_DIR)
-    with open(output_path, "w") as f:
+    with open(output_path, "w", encoding="utf-8") as f:
         json.dump(decoded_events, f, indent=2)
     print(f"Decoded {len(decoded_events)} events → saved to {output_path}")
 
