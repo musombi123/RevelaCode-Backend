@@ -1,7 +1,6 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from backend.bible_decoder import decode_verse
-from api_events import get_latest_events
 import os
 import logging
 import json  # <-- You were missing this import
