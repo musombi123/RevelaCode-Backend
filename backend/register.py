@@ -1,51 +1,42 @@
-# backend/register.py
 import json
 import os
 import hashlib
-from verify import request_verification, verify_code
+from user_data import save_user_data  # Make sure correct path if inside backend/
+from auth_gate import load_users, save_users  # reuse if you have these
 
-USERS_FILE = './backend/users.json'
-
-def load_users():
-    if os.path.exists(USERS_FILE):
-        with open(USERS_FILE, 'r') as f:
-            return json.load(f)
-    return {}
-
-def save_users(users):
-    with open(USERS_FILE, 'w') as f:
-        json.dump(users, f, indent=2)
+USERS_FILE = "./backend/users.json"
 
 def hash_password(password):
     return hashlib.sha256(password.encode()).hexdigest()
 
-def register_user():
-    print("=== ✨ Create New Account ===")
-    username = input("Choose username: ").strip()
-    password = input("Choose password: ").strip()
-    destination = input("Enter email or phone for verification: ").strip()
+def register():
+    print("=== 📜 RevelaCode Registration ===")
 
-    users = load_users()
-    if username in users:
-        print("⚠ Username already exists.")
+    full_name = input("Full name: ").strip()
+    contact = input("Phone number or email: ").strip()
+    password = input("Choose a password: ").strip()
+    confirm_password = input("Confirm password: ").strip()
+
+    if password != confirm_password:
+        print("❌ Passwords do not match. Try again.")
         return
 
-    # Send code
-    request_verification(destination, method='email' if '@' in destination else 'sms')
-    submitted = input("Enter the verification code you received: ").strip()
+    users = load_users() if os.path.exists(USERS_FILE) else {}
 
-    if not verify_code(destination, submitted):
-        print("❌ Verification failed. Cannot create account.")
+    if contact in users:
+        print("⚠️ Contact already registered. Please login or use another.")
         return
 
-    # Save user
-    users[username] = {
+    users[contact] = {
+        "full_name": full_name,
         "password": hash_password(password),
-        "contact": destination,
         "role": "normal"
     }
+
     save_users(users)
-    print(f"✅ Account created! Welcome, {username}")
+
+    print(f"\n✅ Registration complete! 🎉 Welcome to REVELACODE, {full_name.upper()}")
+    print("✨ Where prophecy meets tech in our generation!\n")
 
 if __name__ == "__main__":
-    register_user()
+    register()
