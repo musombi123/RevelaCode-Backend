@@ -49,10 +49,6 @@ events_tagged/
 events_decoded/
 archived/
 
-# === JSON config/data files (optional) ===
-symbols_data.json
-symbols_keywords.json
-verse_keywords.json
 
 # === Database backups (if any) ===
 *.bak

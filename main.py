@@ -3,7 +3,8 @@ from flask_cors import CORS
 from backend.bible_decoder import decode_verse
 import os
 import logging
-import json  # <-- You were missing this import
+import json
+from datetime import datetime  # <-- Needed for today's date
 
 app = Flask(__name__)
 CORS(app)
@@ -41,6 +42,24 @@ def get_symbols():
 
     except Exception as e:
         app.logger.error(f"Error loading symbols data: {str(e)}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+@app.route('/api/events', methods=['GET'])
+def get_today_events():
+    try:
+        today = datetime.now().strftime('%Y-%m-%d')
+        event_path = os.path.join('events', f'events_{today}.json')
+
+        if not os.path.exists(event_path):
+            return jsonify([])  # No events found
+
+        with open(event_path, 'r', encoding='utf-8') as f:
+            events = json.load(f)
+
+        return jsonify(events), 200
+
+    except Exception as e:
+        app.logger.error(f"Error loading events: {str(e)}")
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
 if __name__ == '__main__':

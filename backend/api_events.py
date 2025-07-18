@@ -3,22 +3,23 @@ import os
 import json
 from datetime import datetime
 
-app = Flask(__name__)
+app = Flask(__name__)  # Make sure this line exists
+# ... CORS setup, logging, and other routes
 
-@app.route("/api/events", methods=["GET"])
-def get_latest_events():
-    today = datetime.now().strftime("%Y-%m-%d")
-    filename = f"./events_decoded/events_{today}.json"
-
-    if not os.path.exists(filename):
-        return jsonify({"error": "No events found"}), 404
-
+@app.route('/api/events', methods=['GET'])
+def get_today_events():
     try:
-        with open(filename, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        return jsonify(data)
-    except Exception as e:
-        return jsonify({"error": f"Failed to load events: {str(e)}"}), 500
+        today = datetime.now().strftime('%Y-%m-%d')
+        event_path = os.path.join('events', f'events_{today}.json')
 
-if __name__ == "__main__":
-    app.run(debug=True, port=5000)
+        if not os.path.exists(event_path):
+            return jsonify([])  # No events today
+
+        with open(event_path, 'r', encoding='utf-8') as f:
+            events = json.load(f)
+
+        return jsonify(events), 200
+
+    except Exception as e:
+        app.logger.error(f"Error loading events: {str(e)}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
