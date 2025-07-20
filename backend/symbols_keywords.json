@@ -49,6 +49,43 @@
       "symbol": "apostasy and false teaching",
       "keywords": ["falling away", "false teacher", "apostasy", "itching ears"],
       "verses": ["2 Thessalonians 2:3", "2 Timothy 4:3-4", "1 Timothy 4:1"]
+    },
+
+    // === Added keyword categories ===
+    {
+      "symbol": "wars and conflicts",
+      "keywords": ["war", "conflict", "strike", "bomb", "attack"],
+      "verses": ["Matthew 24:6", "Revelation 6:4"]
+    },
+    {
+      "symbol": "natural disasters",
+      "keywords": ["earthquake", "flood", "wildfire", "eruption"],
+      "verses": ["Luke 21:11", "Revelation 8:5"]
+    },
+    {
+      "symbol": "economic signs",
+      "keywords": ["inflation", "recession", "crash", "unemployment"],
+      "verses": ["James 5:1-6", "Revelation 6:6"]
+    },
+    {
+      "symbol": "crime and lawlessness",
+      "keywords": ["shooting", "murder", "serial killer", "rape"],
+      "verses": ["Matthew 24:12", "2 Timothy 3:1-4"]
+    },
+    {
+      "symbol": "political upheaval",
+      "keywords": ["coup", "impeachment", "corruption"],
+      "verses": ["Daniel 2:21", "Ecclesiastes 5:8"]
+    },
+    {
+      "symbol": "health crises",
+      "keywords": ["outbreak", "virus", "pandemic", "epidemic"],
+      "verses": ["Luke 21:11", "Revelation 6:8"]
+    },
+    {
+      "symbol": "moral decay",
+      "keywords": ["LGBT", "scandal", "hypocrisy", "child abuse"],
+      "verses": ["2 Timothy 3:1-5", "Romans 1:26-28"]
     }
   ]
 }
