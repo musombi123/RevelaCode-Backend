@@ -1,8 +1,8 @@
 import json
 import os
 import hashlib
-from user_data import save_user_data  # Make sure correct path if inside backend/
-from auth_gate import load_users, save_users  # reuse if you have these
+from user_data import save_user_data  # optional, keep if you use it for defaults
+from auth_gate import load_users, save_users  # reuse common helpers
 
 USERS_FILE = "./backend/users.json"
 
@@ -24,9 +24,10 @@ def register():
     users = load_users() if os.path.exists(USERS_FILE) else {}
 
     if contact in users:
-        print("⚠️ Contact already registered. Please login or use another.")
+        print("⚠️ This phone/email is already registered. Please login or use another.")
         return
 
+    # save new user
     users[contact] = {
         "full_name": full_name,
         "password": hash_password(password),
@@ -34,6 +35,9 @@ def register():
     }
 
     save_users(users)
+
+    # optionally, create default user data (history/settings)
+    save_user_data(contact, history=[], settings={"theme": "light", "linked_accounts": []})
 
     print(f"\n✅ Registration complete! 🎉 Welcome to REVELACODE, {full_name.upper()}")
     print("✨ Where prophecy meets tech in our generation!\n")

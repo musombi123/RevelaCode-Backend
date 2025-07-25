@@ -51,7 +51,6 @@
       "verses": ["2 Thessalonians 2:3", "2 Timothy 4:3-4", "1 Timothy 4:1"]
     },
 
-    // === Added keyword categories ===
     {
       "symbol": "wars and conflicts",
       "keywords": ["war", "conflict", "strike", "bomb", "attack"],

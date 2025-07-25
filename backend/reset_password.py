@@ -21,18 +21,13 @@ def hash_password(password):
 
 def reset_password():
     print("=== 🔒 Reset Password ===")
-    username = input("Enter your username: ").strip()
+    contact = input("Enter your phone number or email: ").strip()
 
     users = load_users()
-    user = users.get(username)
+    user = users.get(contact)
 
     if not user:
-        print("❌ Username not found.")
-        return
-
-    contact = user.get('contact')
-    if not contact:
-        print("⚠ No contact info on file for verification.")
+        print("❌ Contact not found.")
         return
 
     # Send verification code
@@ -45,9 +40,15 @@ def reset_password():
 
     # Set new password
     new_password = input("Enter your new password: ").strip()
-    users[username]['password'] = hash_password(new_password)
+    confirm_password = input("Confirm your new password: ").strip()
+
+    if new_password != confirm_password:
+        print("❌ Passwords do not match.")
+        return
+
+    users[contact]['password'] = hash_password(new_password)
     save_users(users)
-    print(f"✅ Password reset successful for {username}!")
+    print(f"✅ Password reset successful for {user['full_name']}!")
 
 if __name__ == "__main__":
     reset_password()

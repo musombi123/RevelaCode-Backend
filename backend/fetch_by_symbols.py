@@ -2,7 +2,6 @@ import requests
 import json
 from datetime import datetime, timedelta
 import os
-import argparse
 import logging
 
 # === CONFIG ===
@@ -11,6 +10,7 @@ ENDPOINT = "https://newsapi.org/v2/everything"
 PAGE_SIZE = 100
 MAX_PAGES = 5
 SAVE_DIR = "./events"
+SYMBOLS_FILE = "symbols_keywords.json"
 
 # === LOGGING ===
 logging.basicConfig(
@@ -19,8 +19,7 @@ logging.basicConfig(
     datefmt='%Y-%m-%d %H:%M:%S'
 )
 
-# === FETCH ===
-def fetch_articles(api_key, query):
+def fetch_articles(query):
     all_articles = []
     headers = {
         "User-Agent": "Mozilla/5.0",
@@ -28,11 +27,11 @@ def fetch_articles(api_key, query):
     }
 
     to_date = datetime.utcnow()
-    from_date = to_date - timedelta(days=7)  # Extended to 7 days
+    from_date = to_date - timedelta(days=7)  # Expanded to 7 days
 
     for page in range(1, MAX_PAGES + 1):
         params = {
-            "apiKey": api_key,
+            "apiKey": API_KEY,
             "q": query,
             "from": from_date.strftime("%Y-%m-%dT%H:%M:%SZ"),
             "to": to_date.strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -41,29 +40,27 @@ def fetch_articles(api_key, query):
             "pageSize": PAGE_SIZE,
             "page": page
         }
-        logging.info(f"📄 Fetching page {page} for query '{query}'...")
+
         try:
+            logging.info(f"📄 Fetching page {page} for: {query}")
             response = requests.get(ENDPOINT, params=params, headers=headers, timeout=10)
             response.raise_for_status()
+            data = response.json()
+            articles = data.get("articles", [])
+            if not articles:
+                break
+            all_articles.extend(articles)
         except requests.exceptions.RequestException as e:
-            logging.error(f"❌ Failed to fetch page {page}: {e}")
+            logging.error(f"❌ Request failed for '{query}' (page {page}): {e}")
             break
 
-        data = response.json()
-        articles = data.get("articles", [])
-        if not articles:
-            break
-        all_articles.extend(articles)
-    logging.info(f"✅ Total fetched articles: {len(all_articles)}")
     return all_articles
 
-# === SAVE ===
-def save_to_json(articles, query):
+def save_articles(articles, symbol_slug):
     if not os.path.exists(SAVE_DIR):
         os.makedirs(SAVE_DIR)
     today = datetime.now().strftime("%Y-%m-%d")
-    safe_query = query.replace(" ", "_").replace('"', '')
-    filename = f"{SAVE_DIR}/events_{safe_query}_{today}.json"
+    filename = f"{SAVE_DIR}/events_{symbol_slug}_{today}.json"
 
     events = []
     for article in articles:
@@ -83,22 +80,34 @@ def save_to_json(articles, query):
     with open(filename, "w", encoding="utf-8") as f:
         json.dump(events, f, indent=2, ensure_ascii=False)
 
-    logging.info(f"💾 Saved {len(events)} events to {filename}")
+    logging.info(f"💾 Saved {len(events)} articles to {filename}")
 
-# === MAIN ===
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Fetch news using NewsAPI /everything endpoint.")
-    parser.add_argument("-q", "--query", type=str, default="prophecy", help="Search keyword(s)")
-    args = parser.parse_args()
+def run_batch_search():
+    if not os.path.exists(SYMBOLS_FILE):
+        logging.error(f"Missing symbols file: {SYMBOLS_FILE}")
+        return
 
-    if not API_KEY or API_KEY == "your_api_key_here":
-        logging.warning("API_KEY is missing or invalid. Please set a real API key.")
-    else:
-        # Wrap multi-word phrases in quotes
-        query_words = args.query.split()
-        formatted_query = " OR ".join(f'"{word}"' if " " in word else word for word in args.query.split(" OR "))
-        articles = fetch_articles(API_KEY, formatted_query)
+    with open(SYMBOLS_FILE, "r", encoding="utf-8") as f:
+        data = json.load(f)
+        symbols = data.get("symbols", [])
+
+    for entry in symbols:
+        symbol_name = entry.get("symbol", "unknown")
+        keywords = entry.get("keywords", [])
+        if not keywords:
+            continue
+
+        # Wrap multi-word keywords in quotes
+        formatted_keywords = [f'"{kw}"' if " " in kw else kw for kw in keywords]
+        query = " OR ".join(formatted_keywords)
+        slug = symbol_name.lower().replace(" ", "_").replace("/", "_")
+
+        logging.info(f"=== 🔎 Searching for symbol: {symbol_name} ===")
+        articles = fetch_articles(query)
         if articles:
-            save_to_json(articles, formatted_query)
+            save_articles(articles, slug)
         else:
-            logging.warning("⚠️ No articles fetched; nothing to save.")
+            logging.info(f"⚠️ No results for {symbol_name}")
+
+if __name__ == "__main__":
+    run_batch_search()
