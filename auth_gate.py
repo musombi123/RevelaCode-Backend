@@ -1,68 +1,73 @@
-# auth_api.py
-from flask import Flask, request, jsonify
-from flask_cors import CORS
-from auth_gate import load_users, save_users, hash_password, get_user_role
+import json
+import os
+import hashlib
+from user_data import load_user_data, save_user_data
 
-app = Flask(__name__)
-CORS(app)  # Allow CORS requests from frontend
+USERS_FILE = "./backend/users.json"
 
-@app.route('/api/login', methods=['POST'])
-def api_login():
-    data = request.get_json()
-    username = data.get('username')
-    password = data.get('password')
-
-    if not username or not password:
-        return jsonify({"success": False, "message": "Username and password are required"}), 400
-
-    users = load_users()
-    hashed = hash_password(password)
-
-    if username in users and users[username]['password'] == hashed:
-        role = get_user_role(username)
-        return jsonify({"success": True, "username": username, "role": role}), 200
+def load_users():
+    if os.path.exists(USERS_FILE):
+        with open(USERS_FILE, "r") as f:
+            return json.load(f)
     else:
-        return jsonify({"success": False, "message": "Invalid username or password"}), 401
+        return {}
 
-@app.route('/api/register', methods=['POST'])
-def api_register():
-    data = request.get_json()
-    username = data.get('username')
-    password = data.get('password')
+def save_users(users):
+    with open(USERS_FILE, "w") as f:
+        json.dump(users, f, indent=2)
 
-    if not username or not password:
-        return jsonify({"success": False, "message": "Username and password are required"}), 400
+def hash_password(password):
+    return hashlib.sha256(password.encode()).hexdigest()
 
+def register_user(username, password, contact):
     users = load_users()
     if username in users:
-        return jsonify({"success": False, "message": "Username already exists"}), 409
-
+        print("⚠ Username already exists.")
+        return False
     users[username] = {
         "password": hash_password(password),
-        "role": "normal"  # default role
+        "contact": contact,
+        "role": "normal"
     }
     save_users(users)
-    return jsonify({"success": True, "username": username, "message": "Registration successful"}), 201
+    # create default settings & history
+    save_user_data(username, history=[], settings={"theme": "light"})
+    print(f"✅ User '{username}' registered successfully.")
+    return True
 
-@app.route('/api/verify', methods=['POST'])
-def api_verify():
-    data = request.get_json()
-    username = data.get('username')
-
-    if not username:
-        return jsonify({"valid": False, "message": "Username is required"}), 400
-
+def login_user(username, password):
     users = load_users()
-    if username in users:
-        role = get_user_role(username)
-        return jsonify({"valid": True, "username": username, "role": role}), 200
+    hashed = hash_password(password)
+    user = users.get(username)
+    if user and user["password"] == hashed:
+        print(f"✅ Login successful. Welcome {username}!")
+        return True
     else:
-        return jsonify({"valid": False, "message": "User not found"}), 404
+        print("❌ Invalid username or password.")
+        return False
 
-# Optional guest route (optional for your frontend)
-@app.route('/api/guest', methods=['POST'])
-def guest_login():
-    return jsonify({"success": True, "role": "guest", "username": "guest_user"}), 200
+def get_user_role(username):
+    users = load_users()
+    return users.get(username, {}).get("role", "guest")
 
-if __name__ == '__main__':
-    app.run(debug=True, port=5000)
+if __name__ == "__main__":
+    print("=== Auth Gate ===")
+    print("[1] Register")
+    print("[2] Login")
+    choice = input("Choose an option: ").strip()
+
+    if choice == "1":
+        username = input("Username: ").strip()
+        contact = input("Phone or email: ").strip()
+        password = input("Password: ").strip()
+        confirm = input("Confirm password: ").strip()
+        if password != confirm:
+            print("⚠ Passwords do not match.")
+        else:
+            register_user(username, password, contact)
+    elif choice == "2":
+        username = input("Username: ").strip()
+        password = input("Password: ").strip()
+        login_user(username, password)
+    else:
+        print("Unknown option.")
