@@ -3,7 +3,9 @@
   "version": "1.0.0",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "start": "node server.js",
+    "dev": "nodemon server.js",
+    "seed:legal": "node backend/seedLegalDocs.js"
   },
   "repository": {
     "type": "git",
@@ -18,7 +20,9 @@
   "homepage": "https://github.com/musombi123/RevelaCode-Backend#readme",
   "dependencies": {
     "cors": "^2.8.5",
-    "express": "^5.1.0"
+    "dotenv": "^17.2.1",
+    "express": "^5.1.0",
+    "mongoose": "^8.16.5"
   },
   "description": ""
 }
