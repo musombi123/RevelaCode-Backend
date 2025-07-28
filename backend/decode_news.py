@@ -10,6 +10,10 @@ def load_symbols():
         return json.load(f)
 
 def decode_event(event, symbols):
+    # Skip if already decoded
+    if "matched_symbols" in event:
+        return event
+
     matched_verses = []
     matched_symbols = []
 
@@ -21,17 +25,20 @@ def decode_event(event, symbols):
         keywords = symbol.get("keywords", [])
         verses = symbol.get("verses", [])
 
-        for word in keywords:
-            if word.lower() in headline:
-                if symbol_name and symbol_name not in matched_symbols:
-                    matched_symbols.append(symbol_name)
-                for verse in verses:
-                    if verse not in matched_verses:
-                        matched_verses.append(verse)
-                break  # stop after first match for this symbol
+        if any(kw.lower() in headline for kw in keywords):
+            if symbol_name and symbol_name not in matched_symbols:
+                matched_symbols.append(symbol_name)
+            for verse in verses:
+                if verse not in matched_verses:
+                    matched_verses.append(verse)
+
+    if not matched_symbols:
+        matched_symbols = ["general"]
 
     event["matched_symbols"] = matched_symbols
     event["matched_verses"] = matched_verses
+
+    print(f"[MATCH] {headline[:60]} → {matched_symbols}")
     return event
 
 def decode_events_file(filename):
@@ -44,8 +51,7 @@ def decode_events_file(filename):
     symbols = load_symbols()
     decoded_events = [decode_event(event, symbols) for event in events]
 
-    if not os.path.exists(OUTPUT_DIR):
-        os.makedirs(OUTPUT_DIR)
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
 
     with open(output_path, "w", encoding="utf-8") as f:
         json.dump(decoded_events, f, indent=2, ensure_ascii=False)
@@ -56,7 +62,7 @@ if __name__ == "__main__":
     files = os.listdir(TAGGED_DIR)
     files = [f for f in files if f.startswith("events_") and f.endswith(".json")]
     if not files:
-        print("No tagged events JSON files found. Run categorize.py first!")
+        print("🚫 No tagged events JSON files found. Run categorize.py first!")
     else:
         latest_file = sorted(files)[-1]
         decode_events_file(latest_file)
