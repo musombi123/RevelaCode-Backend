@@ -1,23 +1,27 @@
 # backend/docs_routes.py
 from flask import Blueprint, jsonify
-import os, json
+from pymongo import MongoClient
+import os
 
 docs_bp = Blueprint("docs", __name__)
 
-@docs_bp.route("/api/docs/<string:doc_type>", methods=["GET"])
-def get_doc(doc_type):
-    file_map = {
-        "privacy": "privacy_policy.json",
-        "terms": "terms_of_service.json"
-    }
-    filename = file_map.get(doc_type)
-    if not filename:
-        return jsonify({"status": "error", "message": "Invalid document type"}), 400
+# Connect to MongoDB
+MONGO_URI = os.environ.get("MONGO_URI", "mongodb://localhost:27017/revelacode")
+client = MongoClient(MONGO_URI)
+db = client.get_database()
+legal_docs = db.legal_docs  # same collection you seeded
 
-    path = os.path.join("backend", "docs", filename)
-    if not os.path.exists(path):
-        return jsonify({"status": "error", "message": "Document not found"}), 404
-
-    with open(path, "r", encoding="utf-8") as f:
-        data = json.load(f)
-    return jsonify(data), 200
+@docs_bp.route("/api/legal/<doc_type>", methods=["GET"])
+def get_legal_doc(doc_type):
+    try:
+        doc = legal_docs.find_one({"type": doc_type})
+        if not doc:
+            return jsonify({"status": "error", "message": f"{doc_type} not found"}), 404
+        return jsonify({
+            "status": "success",
+            "type": doc["type"],
+            "content": doc["content"],
+            "version": doc.get("version", "1.0")
+        }), 200
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
