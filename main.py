@@ -1,12 +1,22 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-from backend.bible_decoder import decode_verse
 import os, logging, json, hashlib
 from datetime import datetime
+from dotenv import load_dotenv
+load_dotenv()
 
+
+# Import after app is created
+from backend.bible_decoder import decode_verse
+from backend.docs_routes import docs_bp
+
+# ---------- INIT ----------
 app = Flask(__name__)
 CORS(app)
 logging.basicConfig(level=logging.INFO)
+
+# Register Blueprints (for /api/legal/*)
+app.register_blueprint(docs_bp)
 
 USERS_FILE = os.path.join("backend", "users.json")
 
@@ -29,6 +39,7 @@ def hash_password(password):
 def index():
     return jsonify({"message": "RevelaCode Backend is live"}), 200
 
+
 # --- Prophecy decoding ---
 @app.route("/decode", methods=["POST"])
 def decode():
@@ -40,12 +51,19 @@ def decode():
             return jsonify({"status": "error", "message": "Verse is required"}), 400
 
         app.logger.info(f"Decoding verse: {verse}")
-        result = decode_verse(verse)
+
+        try:
+            result = decode_verse(verse)
+        except Exception as e:
+            app.logger.error(f"Decoder failed: {str(e)}")
+            # Always return a safe placeholder so frontend doesn’t break
+            result = [{"symbol": verse, "meaning": "No interpretation found"}]
 
         return jsonify({"status": "success", "decoded": result}), 200
     except Exception as e:
         app.logger.error(f"Error decoding verse: {str(e)}")
         return jsonify({"status": "error", "message": str(e)}), 500
+
 
 # --- Symbols ---
 @app.route("/symbols", methods=["GET"])
@@ -59,6 +77,7 @@ def get_symbols():
         app.logger.error(f"Error loading symbols data: {str(e)}")
         return jsonify({"status": "error", "message": str(e)}), 500
 
+
 # --- Events ---
 @app.route("/api/events", methods=["GET"])
 def get_today_events():
@@ -67,7 +86,13 @@ def get_today_events():
         event_path = os.path.join("events", f"events_{today}.json")
 
         if not os.path.exists(event_path):
-            return jsonify([])
+            # Return default response so frontend always shows something
+            return jsonify([{
+                "title": "No events today",
+                "time": "",
+                "location": "",
+                "details": "Check back tomorrow for updates."
+            }]), 200
 
         with open(event_path, "r", encoding="utf-8") as f:
             events = json.load(f)
@@ -76,6 +101,7 @@ def get_today_events():
     except Exception as e:
         app.logger.error(f"Error loading events: {str(e)}")
         return jsonify({"status": "error", "message": str(e)}), 500
+
 
 # --- User Registration ---
 @app.route("/api/register", methods=["POST"])
@@ -102,7 +128,9 @@ def register():
 
         return jsonify({"message": "✅ Registration successful", "user": full_name}), 201
     except Exception as e:
+        app.logger.error(f"Error in register: {str(e)}")
         return jsonify({"message": str(e)}), 500
+
 
 # --- User Login ---
 @app.route("/api/login", methods=["POST"])
@@ -129,7 +157,9 @@ def login():
             }
         }), 200
     except Exception as e:
+        app.logger.error(f"Error in login: {str(e)}")
         return jsonify({"message": str(e)}), 500
+
 
 # ---------- START ----------
 if __name__ == "__main__":

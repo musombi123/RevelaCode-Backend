@@ -1,0 +1,14 @@
+[
+  {
+    "id": 1,
+    "text": "Welcome to RevelaCode 🎉",
+    "read": false,
+    "timestamp": "2025-08-16T12:00:00"
+  },
+  {
+    "id": 2,
+    "text": "Your account settings were updated",
+    "read": false,
+    "timestamp": "2025-08-16T12:10:00"
+  }
+]
