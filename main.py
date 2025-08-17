@@ -3,22 +3,21 @@ from flask_cors import CORS
 import os, logging, json, hashlib
 from datetime import datetime
 from dotenv import load_dotenv
+
+# Load environment variables
 load_dotenv()
-
-
-# Import after app is created
-from backend.bible_decoder import decode_verse
-from backend.docs_routes import docs_bp
 
 # ---------- INIT ----------
 app = Flask(__name__)
 CORS(app)
 logging.basicConfig(level=logging.INFO)
 
-# Register Blueprints (for /api/legal/*)
+# ---------- BLUEPRINTS ----------
+from backend.docs_routes import docs_bp   # /api/legal/privacy + /api/legal/terms
+from backend.bible_decoder import decode_verse
 app.register_blueprint(docs_bp)
 
-USERS_FILE = os.path.join("backend", "users.json")
+USERS_FILE = os.path.join("backend", "user_data", "users.json")
 
 # ---------- UTILS ----------
 def load_users():
@@ -28,6 +27,7 @@ def load_users():
     return {}
 
 def save_users(users):
+    os.makedirs(os.path.dirname(USERS_FILE), exist_ok=True)
     with open(USERS_FILE, "w") as f:
         json.dump(users, f, indent=2)
 
@@ -39,8 +39,7 @@ def hash_password(password):
 def index():
     return jsonify({"message": "RevelaCode Backend is live"}), 200
 
-
-# --- Prophecy decoding ---
+# --- Prophecy Decoding ---
 @app.route("/decode", methods=["POST"])
 def decode():
     try:
@@ -51,19 +50,16 @@ def decode():
             return jsonify({"status": "error", "message": "Verse is required"}), 400
 
         app.logger.info(f"Decoding verse: {verse}")
-
         try:
             result = decode_verse(verse)
         except Exception as e:
             app.logger.error(f"Decoder failed: {str(e)}")
-            # Always return a safe placeholder so frontend doesn’t break
             result = [{"symbol": verse, "meaning": "No interpretation found"}]
 
         return jsonify({"status": "success", "decoded": result}), 200
     except Exception as e:
         app.logger.error(f"Error decoding verse: {str(e)}")
         return jsonify({"status": "error", "message": str(e)}), 500
-
 
 # --- Symbols ---
 @app.route("/symbols", methods=["GET"])
@@ -77,16 +73,14 @@ def get_symbols():
         app.logger.error(f"Error loading symbols data: {str(e)}")
         return jsonify({"status": "error", "message": str(e)}), 500
 
-
-# --- Events ---
+# --- Events (Today’s File) ---
 @app.route("/api/events", methods=["GET"])
 def get_today_events():
     try:
         today = datetime.now().strftime("%Y-%m-%d")
-        event_path = os.path.join("events", f"events_{today}.json")
+        event_path = os.path.join("backend", "events_decoded", f"events_{today}.json")
 
         if not os.path.exists(event_path):
-            # Return default response so frontend always shows something
             return jsonify([{
                 "title": "No events today",
                 "time": "",
@@ -102,6 +96,26 @@ def get_today_events():
         app.logger.error(f"Error loading events: {str(e)}")
         return jsonify({"status": "error", "message": str(e)}), 500
 
+# --- Latest Prophecies ---
+@app.route("/api/prophecies", methods=["GET"])
+def get_latest_prophecies():
+    try:
+        folder = os.path.join("backend", "events_decoded")
+        prophecy_files = [f for f in os.listdir(folder) if f.startswith("events_prophecy_")]
+
+        if not prophecy_files:
+            return jsonify([]), 200
+
+        latest_file = max(prophecy_files, key=lambda f: f.split("_")[-1].replace(".json", ""))
+        file_path = os.path.join(folder, latest_file)
+
+        with open(file_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+
+        return jsonify(data), 200
+    except Exception as e:
+        app.logger.error(f"Error loading prophecies: {str(e)}")
+        return jsonify({"status": "error", "message": str(e)}), 500
 
 # --- User Registration ---
 @app.route("/api/register", methods=["POST"])
@@ -131,7 +145,6 @@ def register():
         app.logger.error(f"Error in register: {str(e)}")
         return jsonify({"message": str(e)}), 500
 
-
 # --- User Login ---
 @app.route("/api/login", methods=["POST"])
 def login():
@@ -159,7 +172,6 @@ def login():
     except Exception as e:
         app.logger.error(f"Error in login: {str(e)}")
         return jsonify({"message": str(e)}), 500
-
 
 # ---------- START ----------
 if __name__ == "__main__":
