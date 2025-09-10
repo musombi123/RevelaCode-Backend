@@ -1,8 +1,8 @@
-import json
-import os
-import tempfile
-import shutil
-import logging
+from flask import Blueprint, request, jsonify
+import json, os, tempfile, shutil, logging
+
+# Blueprint for user data routes
+user_bp = Blueprint("user", __name__)
 
 DATA_DIR = "./backend/user_data"
 
@@ -18,9 +18,7 @@ def atomic_write(filepath, data):
     logging.info(f"Data written atomically to {filepath}")
 
 def load_user_data(contact):
-    """
-    Load user data (history & settings) by contact (email or phone).
-    """
+    """Load user data (history & settings) by contact (email or phone)."""
     os.makedirs(DATA_DIR, exist_ok=True)
 
     history_file = os.path.join(DATA_DIR, f"{contact}_history.json")
@@ -29,33 +27,39 @@ def load_user_data(contact):
     try:
         with open(history_file) as f:
             history = json.load(f)
-        logging.info(f"Loaded history for user '{contact}'")
     except (FileNotFoundError, json.JSONDecodeError):
-        logging.warning(f"History file missing or corrupt for user '{contact}', using default")
         history = []
 
     try:
         with open(settings_file) as f:
             settings = json.load(f)
-        logging.info(f"Loaded settings for user '{contact}'")
     except (FileNotFoundError, json.JSONDecodeError):
-        logging.warning(f"Settings file missing or corrupt for user '{contact}', using default")
         settings = {"theme": "light", "linked_accounts": []}
 
     return {"history": history, "settings": settings}
 
 def save_user_data(contact, history=None, settings=None):
-    """
-    Save user data (history & settings) by contact (email or phone).
-    """
+    """Save user data (history & settings) by contact (email or phone)."""
     os.makedirs(DATA_DIR, exist_ok=True)
 
     if history is not None:
-        history_file = os.path.join(DATA_DIR, f"{contact}_history.json")
-        atomic_write(history_file, history)
-        logging.info(f"Saved history for user '{contact}'")
-
+        atomic_write(os.path.join(DATA_DIR, f"{contact}_history.json"), history)
     if settings is not None:
-        settings_file = os.path.join(DATA_DIR, f"{contact}_settings.json")
-        atomic_write(settings_file, settings)
-        logging.info(f"Saved settings for user '{contact}'")
+        atomic_write(os.path.join(DATA_DIR, f"{contact}_settings.json"), settings)
+
+# ------------------- API ROUTES -------------------
+
+@user_bp.route("/api/user/<contact>", methods=["GET"])
+def get_user(contact):
+    """Fetch user data (history + settings)."""
+    return jsonify(load_user_data(contact))
+
+@user_bp.route("/api/user/<contact>", methods=["POST"])
+def update_user(contact):
+    """Update user history or settings."""
+    data = request.json or {}
+    history = data.get("history")
+    settings = data.get("settings")
+
+    save_user_data(contact, history=history, settings=settings)
+    return jsonify({"status": "success", "message": f"User data updated for {contact}"})

@@ -3,7 +3,7 @@ import json
 import os
 import hashlib
 from flask import Blueprint, request, jsonify
-from user_data import load_user_data, save_user_data
+from backend.user_data import load_user_data, save_user_data
 
 USERS_FILE = "./backend/users.json"
 
@@ -22,9 +22,9 @@ def save_users(users):
 def hash_password(password):
     return hashlib.sha256(password.encode()).hexdigest()
 
-def get_user_role(username):
+def get_user_role(contact):
     users = load_users()
-    return users.get(username, {}).get("role", "guest")
+    return users.get(contact, {}).get("role", "guest")
 
 # ==============================
 # API ROUTES
@@ -33,23 +33,22 @@ def get_user_role(username):
 @auth_bp.route("/api/register", methods=["POST"])
 def api_register():
     data = request.json or {}
-    username = data.get("username", "").strip()
     full_name = data.get("full_name", "").strip()
     contact = data.get("contact", "").strip()
     password = data.get("password", "").strip()
     confirm_password = data.get("confirm_password", "").strip()
 
-    if not username or not full_name or not contact or not password:
+    if not full_name or not contact or not password:
         return jsonify({"success": False, "message": "All fields are required."}), 400
 
     if password != confirm_password:
         return jsonify({"success": False, "message": "Passwords do not match."}), 400
 
     users = load_users()
-    if username in users:
-        return jsonify({"success": False, "message": "Username already exists."}), 400
+    if contact in users:
+        return jsonify({"success": False, "message": "Account already exists with this contact."}), 400
 
-    users[username] = {
+    users[contact] = {
         "full_name": full_name,
         "contact": contact,
         "password": hash_password(password),
@@ -57,39 +56,39 @@ def api_register():
     }
     save_users(users)
 
-    save_user_data(username, history=[], settings={"theme": "light", "linked_accounts": []})
+    save_user_data(contact, history=[], settings={"theme": "light", "linked_accounts": []})
 
-    return jsonify({"success": True, "username": username, "role": "normal"}), 201
+    return jsonify({"success": True, "contact": contact, "role": "normal"}), 201
 
 
 @auth_bp.route("/api/login", methods=["POST"])
 def api_login():
     data = request.json or {}
-    username = data.get("username", "").strip()
+    contact = data.get("contact", "").strip()
     password = data.get("password", "").strip()
 
-    if not username or not password:
-        return jsonify({"success": False, "message": "Username and password required."}), 400
+    if not contact or not password:
+        return jsonify({"success": False, "message": "Contact and password required."}), 400
 
     users = load_users()
     hashed = hash_password(password)
 
-    if username in users and users[username]["password"] == hashed:
+    if contact in users and users[contact]["password"] == hashed:
         return jsonify({
             "success": True,
-            "username": username,
-            "full_name": users[username]["full_name"],
-            "role": get_user_role(username)
+            "contact": contact,
+            "full_name": users[contact]["full_name"],
+            "role": get_user_role(contact)
         }), 200
 
-    return jsonify({"success": False, "message": "Invalid username or password."}), 401
+    return jsonify({"success": False, "message": "Invalid contact or password."}), 401
 
 
 @auth_bp.route("/api/guest", methods=["GET"])
 def api_guest():
     return jsonify({
         "success": True,
-        "username": "guest",
+        "contact": "guest",
         "role": "guest",
         "message": "Guest mode: Limited access"
     }), 200
