@@ -1,54 +1,50 @@
 # backend/reset_password.py
-import json
-import os
-import hashlib
-from verify import request_verification, verify_code
+import os, json, hashlib
+from flask import Blueprint, request, jsonify
 
-USERS_FILE = './backend/users.json'
+reset_bp = Blueprint("reset_password", __name__)
+
+USERS_FILE = os.path.join("backend", "user_data", "users.json")
 
 def load_users():
     if os.path.exists(USERS_FILE):
-        with open(USERS_FILE, 'r') as f:
+        with open(USERS_FILE, "r") as f:
             return json.load(f)
     return {}
 
 def save_users(users):
-    with open(USERS_FILE, 'w') as f:
+    os.makedirs(os.path.dirname(USERS_FILE), exist_ok=True)
+    with open(USERS_FILE, "w") as f:
         json.dump(users, f, indent=2)
 
 def hash_password(password):
     return hashlib.sha256(password.encode()).hexdigest()
 
+@reset_bp.route("/api/reset-password", methods=["POST"])
 def reset_password():
-    print("=== 🔒 Reset Password ===")
-    contact = input("Enter your phone number or email: ").strip()
+    try:
+        data = request.get_json(force=True)
+        contact = data.get("contact", "").strip()
+        old_password = data.get("old_password", "").strip()
+        new_password = data.get("new_password", "").strip()
+        confirm_password = data.get("confirm_password", "").strip()
 
-    users = load_users()
-    user = users.get(contact)
+        if not contact or not old_password or not new_password:
+            return jsonify({"message": "All fields are required"}), 400
 
-    if not user:
-        print("❌ Contact not found.")
-        return
+        if new_password != confirm_password:
+            return jsonify({"message": "Passwords do not match"}), 400
 
-    # Send verification code
-    request_verification(contact, method='email' if '@' in contact else 'sms')
-    submitted = input("Enter the verification code sent to your contact: ").strip()
+        users = load_users()
+        if contact not in users:
+            return jsonify({"message": "❌ Account not found"}), 404
 
-    if not verify_code(contact, submitted):
-        print("❌ Verification failed. Cannot reset password.")
-        return
+        if users[contact]["password"] != hash_password(old_password):
+            return jsonify({"message": "❌ Old password is incorrect"}), 401
 
-    # Set new password
-    new_password = input("Enter your new password: ").strip()
-    confirm_password = input("Confirm your new password: ").strip()
+        users[contact]["password"] = hash_password(new_password)
+        save_users(users)
 
-    if new_password != confirm_password:
-        print("❌ Passwords do not match.")
-        return
-
-    users[contact]['password'] = hash_password(new_password)
-    save_users(users)
-    print(f"✅ Password reset successful for {user['full_name']}!")
-
-if __name__ == "__main__":
-    reset_password()
+        return jsonify({"message": "✅ Password reset successful"}), 200
+    except Exception as e:
+        return jsonify({"message": str(e)}), 500

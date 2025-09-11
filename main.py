@@ -68,7 +68,7 @@ except Exception as e:
 
 # --- Events & Prophecies ---
 try:
-    from backend.events import events_bp
+    from backend.routes.events_routes import events_bp
     app.register_blueprint(events_bp)
     app.logger.info("events_bp registered")
 except Exception as e:
