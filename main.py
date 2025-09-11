@@ -66,6 +66,13 @@ try:
 except Exception as e:
     app.logger.warning(f"decoder_bp not available: {e}")
 
+try:
+    from backend.guest_routes import guest_bp
+    app.register_blueprint(guest_bp)
+    app.logger.info("guest_bp registered")
+except Exception as e:
+    app.logger.warning(f"guest_bp not available: {e}")
+
 # --- Events & Prophecies ---
 try:
     from backend.routes.events_routes import events_bp
