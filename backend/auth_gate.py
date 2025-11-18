@@ -1,38 +1,90 @@
-# backend/auth_gate.py
 import json
 import os
 import hashlib
+import threading
 from flask import Blueprint, request, jsonify
-from backend.user_data import load_user_data, save_user_data
+from backend.user_data import save_user_data
 
-USERS_FILE = "./backend/users.json"
+# ============================================
+# File paths
+# ============================================
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+USERS_FILE = os.path.join(BASE_DIR, "users.json")
+COMMUNITY_POSTS_FILE = os.path.join(BASE_DIR, "community_posts.json")
 
-auth_bp = Blueprint('auth', __name__)
+# Thread lock for safe file writes
+file_lock = threading.Lock()
+
+# ============================================
+# Blueprint setup
+# ============================================
+auth_bp = Blueprint("auth", __name__)
+
+# ============================================
+# Utility functions
+# ============================================
 
 def load_users():
     if os.path.exists(USERS_FILE):
         with open(USERS_FILE, "r") as f:
-            return json.load(f)
+            try:
+                return json.load(f)
+            except json.JSONDecodeError:
+                return {}
     return {}
 
 def save_users(users):
-    with open(USERS_FILE, "w") as f:
-        json.dump(users, f, indent=2)
+    with file_lock:
+        with open(USERS_FILE, "w") as f:
+            json.dump(users, f, indent=2)
 
-def hash_password(password):
+def hash_password(password: str) -> str:
     return hashlib.sha256(password.encode()).hexdigest()
 
-def get_user_role(contact):
+def get_user_role(contact: str) -> str:
     users = load_users()
     return users.get(contact, {}).get("role", "guest")
 
-# ==============================
+def get_user_from_token(auth_header: str):
+    """
+    Extract user contact from a simple token.
+    Expected header format:
+       Authorization: Bearer <contact>
+    NOTE: This is not secure — replace with JWT later.
+    """
+    if not auth_header:
+        return None
+
+    parts = auth_header.split()
+    if len(parts) == 2 and parts[0].lower() == "bearer":
+        contact = parts[1]
+        users = load_users()
+        if contact in users:
+            return users[contact]
+    return None
+
+def load_posts():
+    if os.path.exists(COMMUNITY_POSTS_FILE):
+        with open(COMMUNITY_POSTS_FILE, "r") as f:
+            try:
+                return json.load(f)
+            except json.JSONDecodeError:
+                return []
+    return []
+
+def save_posts(posts):
+    with file_lock:
+        with open(COMMUNITY_POSTS_FILE, "w") as f:
+            json.dump(posts, f, indent=2)
+
+# ============================================
 # API ROUTES
-# ==============================
+# ============================================
 
 @auth_bp.route("/api/register", methods=["POST"])
 def api_register():
-    data = request.json or {}
+    data = request.get_json(silent=True) or {}
+
     full_name = data.get("full_name", "").strip()
     contact = data.get("contact", "").strip()
     password = data.get("password", "").strip()
@@ -56,6 +108,7 @@ def api_register():
     }
     save_users(users)
 
+    # Initialize user-specific data file (if implemented)
     save_user_data(contact, history=[], settings={"theme": "light", "linked_accounts": []})
 
     return jsonify({"success": True, "contact": contact, "role": "normal"}), 201
@@ -63,7 +116,8 @@ def api_register():
 
 @auth_bp.route("/api/login", methods=["POST"])
 def api_login():
-    data = request.json or {}
+    data = request.get_json(silent=True) or {}
+
     contact = data.get("contact", "").strip()
     password = data.get("password", "").strip()
 

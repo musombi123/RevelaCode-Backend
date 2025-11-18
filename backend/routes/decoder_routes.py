@@ -1,24 +1,17 @@
-# backend/decoder_routes.py
 from flask import Blueprint, request, jsonify
 from backend.bible_decoder import BibleDecoder
 
-# Init blueprint
 decoder_bp = Blueprint("decoder", __name__)
-
-# Init decoder class
 decoder = BibleDecoder()
 
 @decoder_bp.route("/api/decode", methods=["POST"])
-def decode():
-    try:
-        data = request.get_json()
-        verse = data.get("verse", "")
+def decode_text():
+    data = request.get_json()
 
-        if not verse.strip():
-            return jsonify({"status": "error", "message": "Verse is required"}), 400
+    if not data or "verse" not in data:
+        return jsonify({"error": "Missing 'verse' field."}), 400
 
-        result = decoder.decode_verse(verse)
-        return jsonify({"status": "success", "result": result}), 200
+    verse = data["verse"]
+    decoded = decoder.decode_verse(verse)
 
-    except Exception as e:
-        return jsonify({"status": "error", "message": str(e)}), 500
+    return jsonify(decoded), 200

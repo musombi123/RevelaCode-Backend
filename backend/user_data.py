@@ -4,14 +4,17 @@ import json, os, tempfile, shutil, logging
 # Blueprint for user data routes
 user_bp = Blueprint("user", __name__)
 
-DATA_DIR = "./backend/user_data"
+# Absolute path to user data directory
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DATA_DIR = os.path.join(BASE_DIR, "user_data")
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
 
 def atomic_write(filepath, data):
-    dirpath = os.path.dirname(filepath)
-    with tempfile.NamedTemporaryFile('w', dir=dirpath, delete=False) as tf:
+    """Safely write JSON data atomically."""
+    os.makedirs(os.path.dirname(filepath), exist_ok=True)
+    with tempfile.NamedTemporaryFile('w', dir=os.path.dirname(filepath), delete=False) as tf:
         json.dump(data, tf, indent=2)
         tempname = tf.name
     shutil.move(tempname, filepath)
@@ -57,7 +60,7 @@ def get_user(contact):
 @user_bp.route("/api/user/<contact>", methods=["POST"])
 def update_user(contact):
     """Update user history or settings."""
-    data = request.json or {}
+    data = request.get_json(silent=True) or {}
     history = data.get("history")
     settings = data.get("settings")
 
