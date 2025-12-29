@@ -1,96 +1,76 @@
 # backend/main.py
-from flask import Flask, request, jsonify
+from flask import Flask, jsonify
 from flask_cors import CORS
-import os, logging, json, hashlib
-from datetime import datetime
+import os
+import logging
 from dotenv import load_dotenv
 
+# ---------- ENV ----------
 load_dotenv()
 
-# ---------- INIT ----------
+# ---------- LOGGING ----------
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+)
+logger = logging.getLogger("main")
+
+# ---------- APP ----------
 app = Flask(__name__)
 CORS(app)
-logging.basicConfig(level=logging.INFO)
 
-# ---------- BLUEPRINTS ----------
-# --- Auth & Users ---
+# ---------- DB INIT (OPTIONAL / SAFE) ----------
 try:
-    from backend.registry import registry_bp
-    app.register_blueprint(registry_bp)
-    app.logger.info("registry_bp registered")
+    from backend.db import db
+    logger.info("MongoDB initialized successfully")
 except Exception as e:
-    app.logger.warning(f"registry_bp not available: {e}")
+    logger.warning(f"MongoDB not available, running without DB: {e}")
+    db = None
 
-try:
-    from backend.login import login_bp
-    app.register_blueprint(login_bp)
-    app.logger.info("login_bp registered")
-except Exception as e:
-    app.logger.warning(f"login_bp not available: {e}")
+# ---------- BLUEPRINT REGISTRATION HELPER ----------
+def register_bp(import_path: str, bp_name: str):
+    try:
+        module = __import__(import_path, fromlist=[bp_name])
+        bp = getattr(module, bp_name)
+        app.register_blueprint(bp)
+        logger.info(f"{bp_name} registered ({import_path})")
+    except Exception as e:
+        logger.warning(f"{bp_name} not available from {import_path}: {e}")
 
-try:
-    from backend.verify import verify_bp
-    app.register_blueprint(verify_bp)
-    app.logger.info("verify_bp registered")
-except Exception as e:
-    app.logger.warning(f"verify_bp not available: {e}")
+# ---------- AUTH & USERS ----------
+register_bp("backend.login", "login_bp")
+register_bp("backend.verify", "verify_bp")
+register_bp("backend.reset_password", "reset_bp")
 
-try:
-    from backend.reset_password import reset_bp
-    app.register_blueprint(reset_bp)
-    app.logger.info("reset_bp registered")
-except Exception as e:
-    app.logger.warning(f"reset_bp not available: {e}")
+# ---------- ROUTES (backend/routes/) ----------
+register_bp("backend.routes.decoder_routes", "decoder_bp")
+register_bp("backend.routes.events_routes", "events_bp")
+register_bp("backend.routes.docs_routes", "docs_bp")
+register_bp("backend.routes.prophecy_routes", "prophecy_bp")
 
-# --- Notifications ---
-try:
-    from backend.notifications_routes import notifications_bp
-    app.register_blueprint(notifications_bp)
-    app.logger.info("notifications_bp registered")
-except Exception as e:
-    app.logger.warning(f"notifications_bp not available: {e}")
+# ---------- OPTIONAL / FUTURE ----------
+register_bp("backend.guest_routes", "guest_bp")
+register_bp("backend.notifications_routes", "notifications_bp")
+register_bp("backend.registry", "registry_bp")
 
-# --- Docs (Privacy & Terms) ---
-try:
-    from backend.routes.docs_routes import docs_bp
-    app.register_blueprint(docs_bp)
-    app.logger.info("docs_bp registered")
-except Exception as e:
-    app.logger.warning(f"docs_bp not available: {e}")
-
-# --- Decoder ---
-try:
-    from backend.routes.decoder_routes import decoder_bp
-    app.register_blueprint(decoder_bp)
-    app.logger.info("decoder_bp registered")
-except Exception as e:
-    app.logger.warning(f"decoder_bp not available: {e}")
-
-try:
-    from backend.guest_routes import guest_bp
-    app.register_blueprint(guest_bp)
-    app.logger.info("guest_bp registered")
-except Exception as e:
-    app.logger.warning(f"guest_bp not available: {e}")
-
-# --- Events & Prophecies ---
-try:
-    from backend.routes.events_routes import events_bp
-    app.register_blueprint(events_bp)
-    app.logger.info("events_bp registered")
-except Exception as e:
-    app.logger.warning(f"events_bp not available: {e}")
-
-# ---------- ROUTES ----------
+# ---------- HEALTH ----------
 @app.route("/", methods=["GET"])
 def index():
-    return jsonify({"message": "RevelaCode Backend is live"}), 200
+    return jsonify({
+        "message": "RevelaCode Backend is live",
+        "status": "ok"
+    }), 200
 
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"ok": True}), 200
+    return jsonify({
+        "ok": True,
+        "mongo_connected": db is not None,
+        "mongo_uri_set": bool(os.getenv("MONGO_URI"))
+    }), 200
 
 # ---------- START ----------
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
+    logger.info(f"Starting server on port {port}")
     app.run(host="0.0.0.0", port=port, debug=True)
