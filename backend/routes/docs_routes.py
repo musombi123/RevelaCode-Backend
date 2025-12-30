@@ -2,44 +2,68 @@
 from flask import Blueprint, jsonify, current_app
 from pymongo import MongoClient, errors
 import os
+import logging
 
 docs_bp = Blueprint("docs", __name__)
+logger = logging.getLogger(__name__)
 
-# Read Mongo URI from environment only
+# ---------- Mongo Config ----------
 MONGO_URI = os.environ.get("MONGO_URI")
 
 client = None
 db = None
 legal_docs = None
 
-if MONGO_URI:
+def init_mongo():
+    """
+    Initialize MongoDB safely.
+    This MUST NOT crash blueprint import.
+    """
+    global client, db, legal_docs
+
+    if not MONGO_URI:
+        logger.warning("MONGO_URI not set — legal docs API disabled")
+        return
+
     try:
-        # Use TLS if URI is for Atlas, otherwise connect normally
-        if "mongodb+srv://" in MONGO_URI:
-            client = MongoClient(MONGO_URI, tls=True, tlsAllowInvalidCertificates=False)
-        else:
-            client = MongoClient(MONGO_URI)
+        client = MongoClient(
+            MONGO_URI,
+            serverSelectionTimeoutMS=3000
+        )
+        # Force connection test
+        client.server_info()
 
-        db = client["revelacode"]
+        db = client.get_default_database() or client["revelacode"]
         legal_docs = db["legal_docs"]
-    except errors.ConnectionFailure as e:
-        current_app.logger.error(f"MongoDB connection failed: {e}")
+
+        logger.info("Legal docs MongoDB connection established")
+
+    except Exception as e:
+        logger.error(f"Legal docs MongoDB connection failed: {e}")
         client = None
-else:
-    current_app.logger.warning("⚠️ MONGO_URI not set, docs endpoints will be unavailable.")
+        db = None
+        legal_docs = None
 
 
+# Initialize ONCE, safely
+init_mongo()
+
+# ---------- Routes ----------
 @docs_bp.route("/api/legal/<doc_type>", methods=["GET"])
 def get_legal_doc(doc_type):
-    if legal_docs is None:  # ✅ fixed check
+    if legal_docs is None:
         return jsonify({
             "status": "error",
-            "message": "Database not connected. Check MONGO_URI."
-        }), 500
+            "message": "Legal docs database not available"
+        }), 503
 
     try:
-        doc = legal_docs.find_one({"type": doc_type})
-        if doc is None:  # ✅ also safer than `if not doc`
+        doc = legal_docs.find_one(
+            {"type": doc_type},
+            {"_id": 0}
+        )
+
+        if doc is None:
             return jsonify({
                 "status": "error",
                 "message": f"Document type '{doc_type}' not found"
@@ -47,13 +71,14 @@ def get_legal_doc(doc_type):
 
         return jsonify({
             "status": "success",
-            "type": doc["type"],
-            "content": doc["content"],
+            "type": doc.get("type"),
+            "content": doc.get("content"),
             "version": doc.get("version", "1.0")
         }), 200
 
     except Exception as e:
+        current_app.logger.error(f"Error fetching legal doc: {e}")
         return jsonify({
             "status": "error",
-            "message": f"Unexpected error: {str(e)}"
+            "message": "Unexpected server error"
         }), 500

@@ -49,9 +49,9 @@ register_bp("backend.routes.docs_routes", "docs_bp")
 register_bp("backend.routes.prophecy_routes", "prophecy_bp")
 
 # ---------- OPTIONAL / FUTURE ----------
-register_bp("backend.guest_routes", "guest_bp")
-register_bp("backend.notifications_routes", "notifications_bp")
-register_bp("backend.registry", "registry_bp")
+register_bp("backend.routes.guest_routes", "guest_bp")
+register_bp("backend.routes.notifications_routes", "notifications_bp")
+register_bp("backend.routes.registry", "registry_bp")
 
 # ---------- HEALTH ----------
 @app.route("/", methods=["GET"])
