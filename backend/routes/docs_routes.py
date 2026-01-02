@@ -15,10 +15,6 @@ db = None
 legal_docs = None
 
 def init_mongo():
-    """
-    Initialize MongoDB safely.
-    This MUST NOT crash blueprint import.
-    """
     global client, db, legal_docs
 
     if not MONGO_URI:
@@ -30,10 +26,10 @@ def init_mongo():
             MONGO_URI,
             serverSelectionTimeoutMS=3000
         )
-        # Force connection test
         client.server_info()
 
-        db = client.get_default_database() or client["revelacode"]
+        db_name = os.environ.get("MONGO_DB_NAME", "revelacode")
+        db = client[db_name]
         legal_docs = db["legal_docs"]
 
         logger.info("Legal docs MongoDB connection established")
@@ -43,10 +39,6 @@ def init_mongo():
         client = None
         db = None
         legal_docs = None
-
-
-# Initialize ONCE, safely
-init_mongo()
 
 # ---------- Routes ----------
 @docs_bp.route("/api/legal/<doc_type>", methods=["GET"])

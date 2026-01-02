@@ -38,7 +38,6 @@ def register_bp(import_path: str, bp_name: str):
         logger.warning(f"{bp_name} not available from {import_path}: {e}")
 
 # ---------- AUTH & USERS ----------
-register_bp("backend.login", "login_bp")
 register_bp("backend.verify", "verify_bp")
 register_bp("backend.reset_password", "reset_bp")
 
@@ -51,7 +50,6 @@ register_bp("backend.routes.prophecy_routes", "prophecy_bp")
 # ---------- OPTIONAL / FUTURE ----------
 register_bp("backend.routes.guest_routes", "guest_bp")
 register_bp("backend.routes.notifications_routes", "notifications_bp")
-register_bp("backend.routes.registry", "registry_bp")
 
 # ---------- HEALTH ----------
 @app.route("/", methods=["GET"])
