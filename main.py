@@ -4,6 +4,10 @@ from flask_cors import CORS
 import os
 import logging
 from dotenv import load_dotenv
+import threading
+import time
+from datetime import datetime
+
 
 # ---------- ENV ----------
 load_dotenv()
@@ -67,8 +71,27 @@ def health():
         "mongo_uri_set": bool(os.getenv("MONGO_URI"))
     }), 200
 
+# ---------- DAILY RUNNER (BACKGROUND) ----------
+def daily_runner_loop():
+    last_run_date = None
+
+    while True:
+        now = datetime.now().date()
+
+        if last_run_date != now:
+            try:
+                from backend.daily_runner import run_pipeline
+                logger.info("⏰ Running daily_runner pipeline")
+                run_pipeline()
+                last_run_date = now
+            except Exception as e:
+                logger.error(f"Daily runner failed: {e}")
+
+        time.sleep(3600)  # check once per hour
+
 # ---------- START ----------
 if __name__ == "__main__":
+    threading.Thread(target=daily_runner_loop, daemon=True).start()
     port = int(os.environ.get("PORT", 5000))
     logger.info(f"Starting server on port {port}")
     app.run(host="0.0.0.0", port=port, debug=True)

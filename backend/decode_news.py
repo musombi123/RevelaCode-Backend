@@ -1,13 +1,31 @@
 import json
 import os
 
-SYMBOLS_FILE = "symbols_keywords.json"
-TAGGED_DIR = "./events_tagged"
-OUTPUT_DIR = "./events_decoded"
+# ======================================================
+# BASE DIRECTORY (backend/)
+# ======================================================
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# ======================================================
+# PATHS (ALL INSIDE /backend)
+# ======================================================
+
+SYMBOLS_FILE = os.path.join(BASE_DIR, "symbols_keywords.json")
+TAGGED_DIR = os.path.join(BASE_DIR, "events_tagged")
+OUTPUT_DIR = os.path.join(BASE_DIR, "events_decoded")
+
+# ======================================================
+# LOAD SYMBOLS
+# ======================================================
 
 def load_symbols():
     with open(SYMBOLS_FILE, "r", encoding="utf-8") as f:
         return json.load(f)
+
+# ======================================================
+# DECODE LOGIC
+# ======================================================
 
 def decode_event(event, symbols):
     # Skip if already decoded
@@ -21,13 +39,20 @@ def decode_event(event, symbols):
     headline = headline.lower()
 
     for symbol in symbols.get("symbols", []):
-        symbol_name = symbol.get("symbol", "").lower().replace(" ", "_").replace("/", "_")
+        symbol_name = (
+            symbol.get("symbol", "")
+            .lower()
+            .replace(" ", "_")
+            .replace("/", "_")
+        )
+
         keywords = symbol.get("keywords", [])
         verses = symbol.get("verses", [])
 
         if any(kw.lower() in headline for kw in keywords):
             if symbol_name and symbol_name not in matched_symbols:
                 matched_symbols.append(symbol_name)
+
             for verse in verses:
                 if verse not in matched_verses:
                     matched_verses.append(verse)
@@ -40,6 +65,10 @@ def decode_event(event, symbols):
 
     print(f"[MATCH] {headline[:60]} → {matched_symbols}")
     return event
+
+# ======================================================
+# FILE PROCESSING
+# ======================================================
 
 def decode_events_file(filename):
     input_path = os.path.join(TAGGED_DIR, filename)
@@ -58,9 +87,20 @@ def decode_events_file(filename):
 
     print(f"✅ Decoded {len(decoded_events)} events → saved to {output_path}")
 
+# ======================================================
+# CLI ENTRY
+# ======================================================
+
 if __name__ == "__main__":
-    files = os.listdir(TAGGED_DIR)
-    files = [f for f in files if f.startswith("events_") and f.endswith(".json")]
+    if not os.path.exists(TAGGED_DIR):
+        print("🚫 events_tagged directory not found")
+        exit(1)
+
+    files = [
+        f for f in os.listdir(TAGGED_DIR)
+        if f.startswith("events_") and f.endswith(".json")
+    ]
+
     if not files:
         print("🚫 No tagged events JSON files found. Run categorize.py first!")
     else:

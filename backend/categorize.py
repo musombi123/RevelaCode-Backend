@@ -47,8 +47,17 @@ def categorize_events_file(filename):
         logging.error(f"File not found: {input_path}")
         return
 
-    with open(input_path, "r", encoding="utf-8") as f:
-        events = json.load(f)
+    # ✅ FIX: handle empty / invalid JSON safely
+    if os.path.getsize(input_path) == 0:
+        logging.warning(f"⚠️ Skipping empty file: {input_path}")
+        return
+
+    try:
+        with open(input_path, "r", encoding="utf-8") as f:
+            events = json.load(f)
+    except json.JSONDecodeError:
+        logging.warning(f"⚠️ Invalid JSON, skipping file: {input_path}")
+        return
 
     tagged_events = []
     for event in events:
