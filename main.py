@@ -11,6 +11,7 @@ from datetime import datetime
 
 # ---------- ENV ----------
 load_dotenv()
+logger.info(f"MONGO_URI loaded: {bool(os.getenv('MONGO_URI'))}")
 
 # ---------- LOGGING ----------
 logging.basicConfig(
