@@ -24,3 +24,5 @@ pydantic
 requests
 python-dotenv
 httpx
+pymongo[srv]
+dnspython
