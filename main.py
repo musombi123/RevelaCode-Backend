@@ -11,7 +11,6 @@ from datetime import datetime
 
 # ---------- ENV ----------
 load_dotenv()
-logger.info(f"MONGO_URI loaded: {bool(os.getenv('MONGO_URI'))}")
 
 # ---------- LOGGING ----------
 logging.basicConfig(
@@ -19,6 +18,10 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
 )
 logger = logging.getLogger("main")
+
+# ✅ SILENT IN PRODUCTION, SAFE IN DEV
+if os.getenv("FLASK_ENV") != "production":
+    logger.info(f"MONGO_URI loaded: {bool(os.getenv('MONGO_URI'))}")
 
 # ---------- APP ----------
 app = Flask(__name__)
