@@ -24,5 +24,6 @@ pydantic
 requests
 python-dotenv
 httpx
-pymongo[srv]
+pymongo>=4.6
+dnspython>=2.4
 dnspython
