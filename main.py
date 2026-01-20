@@ -32,7 +32,9 @@ CORS(
         "origins": [
             "http://localhost:5173",
             "https://revelacode-frontend.onrender.com"
-        ]
+        ],
+        "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+        "allow_headers": ["Content-Type", "Authorization"]
     }},
     supports_credentials=True
 )
