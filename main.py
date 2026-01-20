@@ -28,15 +28,17 @@ app = Flask(__name__)
 
 CORS(
     app,
-    resources={r"/*": {
-        "origins": [
-            "http://localhost:5173",
-            "https://revelacode-frontend.onrender.com"
-        ],
-        "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-        "allow_headers": ["Content-Type", "Authorization"]
-    }},
-    supports_credentials=True
+    supports_credentials=True,
+    resources={
+        r"/*": {
+            "origins": [
+                "https://revelacode-frontend.onrender.com",
+                "https://www.revelacode-frontend.onrender.com"
+            ],
+            "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+            "allow_headers": ["Content-Type", "Authorization"]
+        }
+    }
 )
 
 # ---------- DB INIT (OPTIONAL / SAFE) ----------
