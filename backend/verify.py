@@ -1,14 +1,14 @@
 # backend/verify.py
 import os
-from dotenv import load_dotenv  # Load .env
 import json
 import random
 import smtplib
 from flask import Blueprint, request, jsonify
 from email.mime.text import MIMEText
+from dotenv import load_dotenv
 
 # ------------------ LOAD ENV ------------------
-load_dotenv()  # Ensures SMTP/Twilio keys are loaded from .env
+load_dotenv()  # <-- ensures .env variables are loaded
 
 # ------------------ BLUEPRINT ------------------
 verify_bp = Blueprint("verify", __name__)
@@ -43,7 +43,6 @@ def save_users(users):
 def send_sms(contact: str, code: str) -> bool:
     """Send OTP via Twilio SMS"""
     if not twilio_available:
-        print("Twilio not installed")
         return False
 
     sid = os.environ.get("TWILIO_SID")
@@ -51,7 +50,6 @@ def send_sms(contact: str, code: str) -> bool:
     number = os.environ.get("TWILIO_NUMBER")
 
     if not sid or not auth or not number:
-        print("Twilio credentials missing")
         return False
 
     try:
@@ -74,7 +72,6 @@ def send_email(contact: str, code: str) -> bool:
     password = os.environ.get("SMTP_PASS")
 
     if not host or not user or not password:
-        print("SMTP credentials missing")
         return False
 
     try:
@@ -93,18 +90,23 @@ def send_email(contact: str, code: str) -> bool:
         return False
 
 def send_code_to_contact(contact: str, code: str) -> bool:
-    """Send code to phone if starts with +, else assume email"""
+    """
+    Try to send via SMS first if it looks like a phone number,
+    fallback to email automatically.
+    """
+    sent = False
     if contact.startswith("+"):
-        return send_sms(contact, code)
-    return send_email(contact, code)
+        sent = send_sms(contact, code)
+        if not sent:
+            print("Falling back to email since SMS failed.")
+            sent = send_email(contact, code)
+    else:
+        sent = send_email(contact, code)
+    return sent
 
 # ------------------ ROUTES ------------------
 @verify_bp.route("/api/send-code", methods=["POST"])
 def send_code():
-    """
-    Generate a new OTP and send it to the user.
-    Works for initial send AND resends.
-    """
     try:
         data = request.get_json(force=True)
         contact = (data.get("contact") or "").strip()
@@ -116,7 +118,7 @@ def send_code():
         if contact not in users:
             return jsonify({"message": "❌ Account not found"}), 404
 
-        # Generate fresh OTP for new or resend
+        # Generate a fresh OTP every time (including resend)
         code = str(random.randint(100000, 999999))
         users[contact]["pending_code"] = code
         users[contact]["verified"] = False
@@ -135,9 +137,6 @@ def send_code():
 
 @verify_bp.route("/api/verify-code", methods=["POST"])
 def verify_code():
-    """
-    Verify the user-supplied OTP.
-    """
     try:
         data = request.get_json(force=True)
         contact = (data.get("contact") or "").strip()
