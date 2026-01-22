@@ -63,12 +63,11 @@ def register_bp(import_path: str, bp_name: str):
 # ---------- AUTH & USERS ----------
 register_bp("backend.auth_gate", "auth_bp")
 register_bp("backend.user_data", "user_bp")
-register_bp("backend.delete_account_api", "delete_bp")  # new API for deleting accounts
+register_bp("backend.delete_account", "delete_bp")  # new API for deleting accounts
 register_bp("backend.verify", "verify_bp")
 register_bp("backend.reset_password", "reset_bp")
 
 # ---------- ROUTES (backend/routes/) ----------
-register_bp("backend.routes.decoder_routes", "decoder_bp")
 register_bp("backend.routes.events_routes", "events_bp")
 register_bp("backend.routes.docs_routes", "docs_bp")
 register_bp("backend.routes.prophecy_routes", "prophecy_bp")

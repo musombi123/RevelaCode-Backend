@@ -13,14 +13,14 @@ const LegalText = ({ type }) => {
       })
       .catch(console.error);
   }, [type]);
-
-  return (
-    <div className="p-4">
-      <h2 className="text-xl font-bold capitalize">{type} Policy</h2>
-      <p className="text-sm text-gray-500">Last updated: {lastUpdated}</p>
-      <div className="prose mt-4 whitespace-pre-wrap">{content}</div>
-    </div>
-  );
-};
+  
+  return jsonify({
+    "status": "success",
+    "type": doc.get("type"),
+    "content": doc.get("content"),
+    "version": doc.get("version", "1.0"),
+    "lastUpdated": doc.get("lastUpdated") or doc.get("updated_at") or datetime.utcnow().isoformat()
+  }), 200
+}
 
 export default LegalText;
