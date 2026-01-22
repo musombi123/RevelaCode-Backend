@@ -1,10 +1,18 @@
-import os, json, random, smtplib
+# backend/verify.py
+import os
+import json
+import random
+import smtplib
 from flask import Blueprint, request, jsonify
 from email.mime.text import MIMEText
 
+# ------------------ BLUEPRINT ------------------
 verify_bp = Blueprint("verify", __name__)
 
-USERS_FILE = os.path.join("user_data", "users.json")
+# ------------------ PATHS ------------------
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+USERS_FILE = os.path.join(BASE_DIR, "user_data", "users.json")
+os.makedirs(os.path.dirname(USERS_FILE), exist_ok=True)
 
 # ------------------ OPTIONAL IMPORTS ------------------
 twilio_available = True
@@ -17,7 +25,10 @@ except ImportError:
 def load_users():
     if os.path.exists(USERS_FILE):
         with open(USERS_FILE, "r") as f:
-            return json.load(f)
+            try:
+                return json.load(f)
+            except json.JSONDecodeError:
+                return {}
     return {}
 
 def save_users(users):
@@ -85,7 +96,7 @@ def send_code_to_contact(contact: str, code: str) -> bool:
 def send_code():
     try:
         data = request.get_json(force=True)
-        contact = data.get("contact", "").strip()
+        contact = (data.get("contact") or "").strip()
 
         if not contact:
             return jsonify({"message": "❌ Contact is required"}), 400
@@ -94,6 +105,7 @@ def send_code():
         if contact not in users:
             return jsonify({"message": "❌ Account not found"}), 404
 
+        # Always generate a fresh OTP for resends
         code = str(random.randint(100000, 999999))
         users[contact]["pending_code"] = code
         users[contact]["verified"] = False
@@ -102,7 +114,7 @@ def send_code():
         sent = send_code_to_contact(contact, code)
 
         return jsonify({
-            "message": "✅ Verification code sent" if sent else "✅ Verification code generated (debug mode)",
+            "message": "🔄 Verification code resent!" if sent else "✅ Verification code generated (debug mode)",
             "sent": sent,
             "debug_code": code if not sent else None
         }), 200
@@ -114,8 +126,8 @@ def send_code():
 def verify_code():
     try:
         data = request.get_json(force=True)
-        contact = data.get("contact", "").strip()
-        code = data.get("code", "").strip()
+        contact = (data.get("contact") or "").strip()
+        code = (data.get("code") or "").strip()
 
         if not contact or not code:
             return jsonify({"message": "❌ Contact and code are required"}), 400
@@ -135,3 +147,8 @@ def verify_code():
 
     except Exception as e:
         return jsonify({"message": f"❌ {e}"}), 500
+
+# ------------------ TEST ROUTE ------------------
+@verify_bp.route("/api/test", methods=["GET"])
+def test_verify():
+    return jsonify({"message": "verify_bp is live!"}), 200
