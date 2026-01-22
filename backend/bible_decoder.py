@@ -1,52 +1,53 @@
+# backend/bible_decoder.py
 import json
 import os
 import re
 import logging
 
-# === Setup logging ===
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 
-# === Load symbols_data.json ===
-filepath = os.path.join(os.path.dirname(__file__), 'symbols_data.json')
+SYMBOLS_FILE = os.path.join(os.path.dirname(__file__), "symbols_data.json")
 try:
-    with open(filepath, 'r', encoding='utf-8') as f:
+    with open(SYMBOLS_FILE, "r", encoding="utf-8") as f:
         SYMBOLS = json.load(f)
-    logger.info("Loaded prophecy symbols successfully.")
-except (FileNotFoundError, json.JSONDecodeError) as e:
-    logger.error(f"Failed to load prophecy symbols: {e}")
+    logger.info("✅ Loaded symbols_data.json")
+except Exception as e:
+    logger.error(f"❌ Could not load symbols: {e}")
     SYMBOLS = {}
 
-
 class BibleDecoder:
-    def __init__(self, symbols: dict = None):
+    def __init__(self, symbols=None):
         self.symbols = symbols or SYMBOLS
 
     def decode_verse(self, verse: str):
         """
-        Decode a verse against symbol definitions.
+        Returns a dict: {decoded: [...]}
+        Each item: {symbol_name: symbol_details} or {message: ...}
         """
-        if not self.symbols:
-            return {"error": "❌ Symbolic data could not be loaded."}
+        verse_lower = (verse or "").lower()
+        decoded = []
 
-        decoded_parts = []
-        verse_lower = verse.lower()
-
-        for symbol, details in self.symbols.items():
-            if not isinstance(details, dict):
+        for key, data in self.symbols.items():
+            # Make sure it’s a dict with keywords
+            if not isinstance(data, dict):
                 continue
 
-            keywords = details.get("keywords", [])
-            search_terms = keywords + [symbol]
+            keywords = data.get("keywords", [])
+            # include the symbol name itself as a keyword
+            search_terms = keywords + [key]
 
-            for keyword in search_terms:
-                pattern = r'\b' + re.escape(keyword.lower()) + r'\b'
+            for term in search_terms:
+                pattern = r'\b' + re.escape(term.lower()) + r'\b'
                 if re.search(pattern, verse_lower):
-                    decoded_parts.append({symbol: details})
-                    break
+                    decoded.append({key: data})
+                    break  # match each symbol only once
 
-        return {
-            "decoded": decoded_parts if decoded_parts else [
-                {"message": "⚠️ No symbolic meaning detected in this prophecy."}
-            ]
-        }
+        if not decoded:
+            decoded.append({"message": "⚠️ No symbolic meaning detected in this prophecy."})
+
+        return {"decoded": decoded}
+
+    def decode_text(self, verse: str):
+        """Alias to match frontend call"""
+        return self.decode_verse(verse)
