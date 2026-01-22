@@ -5,7 +5,7 @@ import random
 import threading
 from datetime import datetime, timedelta
 from flask import Blueprint, request, jsonify
-from .user_data.user_data import save_user_data
+from .user_data import save_user_data
 from .mailer import send_email_code
 
 # ============================================
