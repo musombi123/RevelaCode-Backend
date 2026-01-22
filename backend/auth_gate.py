@@ -6,7 +6,8 @@ import threading
 from datetime import datetime, timedelta
 from flask import Blueprint, request, jsonify
 from .user_data import save_user_data
-from .mailer import send_email_code
+from .verify import send_verification_code, generate_code
+
 
 # ============================================
 # File paths
@@ -82,7 +83,7 @@ def api_register():
     data = request.get_json(silent=True) or {}
 
     full_name = data.get("full_name", "").strip()
-    contact = data.get("contact", "").strip()  # email
+    contact = data.get("contact", "").strip()
     password = data.get("password", "").strip()
     confirm_password = data.get("confirm_password", "").strip()
 
@@ -104,19 +105,18 @@ def api_register():
         "password": hash_password(password),
         "role": "normal",
         "verified": False,
-        "verification_code": code,
-        "code_expires": (datetime.utcnow() + timedelta(minutes=10)).isoformat()
+        "verification_code": code
     }
 
     save_users(users)
+
+    send_verification_code(contact, code)
 
     save_user_data(
         contact,
         history=[],
         settings={"theme": "light", "linked_accounts": []}
     )
-
-    send_email_code(contact, code)
 
     return jsonify({
         "success": True,
