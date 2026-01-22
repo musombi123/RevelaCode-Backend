@@ -1,4 +1,3 @@
-# backend/verify.py
 import os
 import json
 import random
@@ -6,9 +5,10 @@ import smtplib
 from flask import Blueprint, request, jsonify
 from email.mime.text import MIMEText
 from dotenv import load_dotenv
+from datetime import datetime, timedelta
 
 # ------------------ LOAD ENV ------------------
-load_dotenv()  # <-- ensures .env variables are loaded
+load_dotenv()
 
 # ------------------ BLUEPRINT ------------------
 verify_bp = Blueprint("verify", __name__)
@@ -17,13 +17,6 @@ verify_bp = Blueprint("verify", __name__)
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 USERS_FILE = os.path.join(BASE_DIR, "user_data", "users.json")
 os.makedirs(os.path.dirname(USERS_FILE), exist_ok=True)
-
-# ------------------ OPTIONAL IMPORTS ------------------
-twilio_available = True
-try:
-    from twilio.rest import Client
-except ImportError:
-    twilio_available = False
 
 # ------------------ HELPER FUNCTIONS ------------------
 def load_users():
@@ -39,30 +32,6 @@ def save_users(users):
     os.makedirs(os.path.dirname(USERS_FILE), exist_ok=True)
     with open(USERS_FILE, "w") as f:
         json.dump(users, f, indent=2)
-
-def send_sms(contact: str, code: str) -> bool:
-    """Send OTP via Twilio SMS"""
-    if not twilio_available:
-        return False
-
-    sid = os.environ.get("TWILIO_SID")
-    auth = os.environ.get("TWILIO_AUTH")
-    number = os.environ.get("TWILIO_NUMBER")
-
-    if not sid or not auth or not number:
-        return False
-
-    try:
-        client = Client(sid, auth)
-        client.messages.create(
-            body=f"RevelaCode verification code: {code}",
-            from_=number,
-            to=contact
-        )
-        return True
-    except Exception as e:
-        print("Twilio error:", e)
-        return False
 
 def send_email(contact: str, code: str) -> bool:
     """Send OTP via SMTP email"""
@@ -90,19 +59,8 @@ def send_email(contact: str, code: str) -> bool:
         return False
 
 def send_code_to_contact(contact: str, code: str) -> bool:
-    """
-    Try to send via SMS first if it looks like a phone number,
-    fallback to email automatically.
-    """
-    sent = False
-    if contact.startswith("+"):
-        sent = send_sms(contact, code)
-        if not sent:
-            print("Falling back to email since SMS failed.")
-            sent = send_email(contact, code)
-    else:
-        sent = send_email(contact, code)
-    return sent
+    """Send verification code via email only"""
+    return send_email(contact, code)
 
 # ------------------ ROUTES ------------------
 @verify_bp.route("/api/send-code", methods=["POST"])
@@ -118,19 +76,18 @@ def send_code():
         if contact not in users:
             return jsonify({"message": "❌ Account not found"}), 404
 
-        # Generate a fresh OTP every time (including resend)
+        # Generate a fresh OTP every time
         code = str(random.randint(100000, 999999))
         users[contact]["pending_code"] = code
+        users[contact]["code_expires"] = (datetime.utcnow() + timedelta(minutes=10)).isoformat()
         users[contact]["verified"] = False
         save_users(users)
 
         sent = send_code_to_contact(contact, code)
+        if not sent:
+            return jsonify({"message": "❌ Failed to send verification code"}), 500
 
-        return jsonify({
-            "message": "🔄 Verification code sent!" if sent else "✅ Verification code generated (debug mode)",
-            "sent": sent,
-            "debug_code": code if not sent else None
-        }), 200
+        return jsonify({"message": f"📩 Verification code sent to {contact}"}), 200
 
     except Exception as e:
         return jsonify({"message": f"❌ {e}"}), 500
@@ -149,11 +106,17 @@ def verify_code():
         if contact not in users:
             return jsonify({"message": "❌ Account not found"}), 404
 
-        if users[contact].get("pending_code") != code:
+        user = users[contact]
+
+        if datetime.utcnow() > datetime.fromisoformat(user.get("code_expires", "1970-01-01T00:00:00")):
+            return jsonify({"message": "❌ Code expired"}), 400
+
+        if user.get("pending_code") != code:
             return jsonify({"message": "❌ Invalid code"}), 400
 
-        users[contact]["verified"] = True
-        users[contact].pop("pending_code", None)
+        user["verified"] = True
+        user.pop("pending_code", None)
+        user.pop("code_expires", None)
         save_users(users)
 
         return jsonify({"message": "✅ Account verified successfully"}), 200
