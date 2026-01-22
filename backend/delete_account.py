@@ -1,48 +1,36 @@
-# backend/delete_account.py
-import json
-import os
-from verify import request_verification, verify_code
+# backend/delete_account_api.py
+import os, json, random
+from flask import Blueprint, request, jsonify
+from backend.verify import load_users, save_users  # reuse your verify functions
 
-USERS_FILE = './backend/users.json'
+delete_bp = Blueprint("delete", __name__)
 
-def load_users():
-    if os.path.exists(USERS_FILE):
-        with open(USERS_FILE, 'r') as f:
-            return json.load(f)
-    return {}
+@delete_bp.route("/api/delete-account", methods=["POST"])
+def delete_account_api():
+    data = request.get_json(force=True) or {}
+    contact = data.get("contact", "").strip()
+    code = data.get("code", "").strip()  # verification code
 
-def save_users(users):
-    with open(USERS_FILE, 'w') as f:
-        json.dump(users, f, indent=2)
-
-def delete_account():
-    print("=== 🗑️ Delete Account ===")
-    username = input("Enter your username: ").strip()
+    if not contact:
+        return jsonify({"success": False, "message": "Contact required"}), 400
 
     users = load_users()
-    user = users.get(username)
+    if contact not in users:
+        return jsonify({"success": False, "message": "❌ Account not found"}), 404
 
-    if not user:
-        print("❌ Username not found.")
-        return
+    # Step 1: Send code if code not provided
+    if not code:
+        otp = str(random.randint(100000, 999999))
+        users[contact]["pending_code"] = otp
+        save_users(users)
+        # ⚠ For dev only
+        return jsonify({"success": True, "message": "Verification code sent", "debug_code": otp}), 200
 
-    contact = user.get('contact')
-    if not contact:
-        print("⚠ No contact info on file for verification.")
-        return
+    # Step 2: Verify code
+    if users[contact].get("pending_code") != code:
+        return jsonify({"success": False, "message": "❌ Invalid code"}), 400
 
-    # Send verification code
-    request_verification(contact, method='email' if '@' in contact else 'sms')
-    submitted = input("Enter the verification code sent to your contact: ").strip()
-
-    if not verify_code(contact, submitted):
-        print("❌ Verification failed. Cannot delete account.")
-        return
-
-    # Delete user
-    del users[username]
+    # Delete account
+    users.pop(contact)
     save_users(users)
-    print(f"✅ Account '{username}' deleted successfully!")
-
-if __name__ == "__main__":
-    delete_account()
+    return jsonify({"success": True, "message": f"Account '{contact}' deleted successfully"}), 200

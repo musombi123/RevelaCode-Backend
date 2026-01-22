@@ -61,6 +61,9 @@ def register_bp(import_path: str, bp_name: str):
         logger.warning(f"{bp_name} not available from {import_path}: {e}")
 
 # ---------- AUTH & USERS ----------
+register_bp("backend.auth_gate", "auth_bp")
+register_bp("backend.user_data", "user_bp")
+register_bp("backend.delete_account_api", "delete_bp")  # new API for deleting accounts
 register_bp("backend.verify", "verify_bp")
 register_bp("backend.reset_password", "reset_bp")
 
