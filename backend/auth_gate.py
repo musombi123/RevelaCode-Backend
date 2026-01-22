@@ -1,29 +1,29 @@
-# auth_gate.py
+# backend/auth_gate.py
 import json
 import os
 import hashlib
 import random
 import threading
+import smtplib
 from datetime import datetime, timedelta
 from flask import Blueprint, request, jsonify
+from email.mime.text import MIMEText
+from dotenv import load_dotenv
 from .user_data import save_user_data
-from .verify import send_code_to_contact
 
-# ============================================
-# File paths
-# ============================================
+# ------------------ LOAD ENV ------------------
+load_dotenv()
+
+# ------------------ FILE PATHS ------------------
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 USERS_FILE = os.path.join(BASE_DIR, "users.json")
+COMMUNITY_POSTS_FILE = os.path.join(BASE_DIR, "community_posts.json")
 file_lock = threading.Lock()
 
-# ============================================
-# Blueprint setup
-# ============================================
+# ------------------ BLUEPRINT ------------------
 auth_bp = Blueprint("auth", __name__)
 
-# ============================================
-# Utility functions
-# ============================================
+# ------------------ HELPERS ------------------
 def load_users():
     if os.path.exists(USERS_FILE):
         with open(USERS_FILE, "r") as f:
@@ -44,9 +44,36 @@ def hash_password(password: str) -> str:
 def generate_code():
     return str(random.randint(100000, 999999))
 
-# ============================================
-# REGISTER + SEND VERIFICATION CODE
-# ============================================
+def send_email(contact: str, code: str) -> bool:
+    host = os.environ.get("SMTP_HOST")
+    port = int(os.environ.get("SMTP_PORT", 587))
+    user = os.environ.get("SMTP_USER")
+    password = os.environ.get("SMTP_PASS")
+
+    if not host or not user or not password:
+        print("SMTP not configured correctly.")
+        return False
+
+    try:
+        msg = MIMEText(f"Your RevelaCode verification code: {code}")
+        msg["Subject"] = "RevelaCode Verification Code"
+        msg["From"] = user
+        msg["To"] = contact
+
+        with smtplib.SMTP(host, port) as server:
+            server.starttls()
+            server.login(user, password)
+            server.send_message(msg)
+        return True
+    except Exception as e:
+        print("SMTP error:", e)
+        return False
+
+def send_code_to_contact(contact: str, code: str) -> bool:
+    """Currently email-only."""
+    return send_email(contact, code)
+
+# ------------------ ROUTES ------------------
 @auth_bp.route("/api/register", methods=["POST"])
 def api_register():
     data = request.get_json(silent=True) or {}
@@ -57,7 +84,6 @@ def api_register():
 
     if not full_name or not contact or not password:
         return jsonify({"success": False, "message": "All fields are required."}), 400
-
     if password != confirm_password:
         return jsonify({"success": False, "message": "Passwords do not match."}), 400
 
@@ -67,8 +93,6 @@ def api_register():
 
     code = generate_code()
     code_expires = (datetime.utcnow() + timedelta(minutes=10)).isoformat()
-
-    # Save user before sending email
     users[contact] = {
         "full_name": full_name,
         "contact": contact,
@@ -80,15 +104,8 @@ def api_register():
     }
     save_users(users)
 
-    # Send email only, fail registration if it doesn’t send
-    try:
-        send_code_to_contact(contact, code)
-    except Exception as e:
-        users.pop(contact, None)
-        save_users(users)
-        return jsonify({"success": False, "message": f"Failed to send verification email: {e}"}), 500
+    code_sent = send_code_to_contact(contact, code)
 
-    # Initialize user data
     save_user_data(
         contact,
         history=[],
@@ -97,20 +114,18 @@ def api_register():
 
     return jsonify({
         "success": True,
-        "message": "Verification email sent successfully",
-        "contact": contact
+        "message": "Verification code sent" if code_sent else "Verification code generated (debug mode)",
+        "contact": contact,
+        "debug_code": code if not code_sent else None
     }), 201
 
-# ============================================
-# RESEND VERIFICATION CODE
-# ============================================
 @auth_bp.route("/api/resend-code", methods=["POST"])
 def resend_code():
     data = request.get_json(silent=True) or {}
     contact = data.get("contact", "").strip()
-
     users = load_users()
     user = users.get(contact)
+
     if not user:
         return jsonify({"success": False, "message": "User not found"}), 404
     if user.get("verified"):
@@ -121,25 +136,18 @@ def resend_code():
     user["verification_code"] = code
     user["code_expires"] = code_expires
     save_users(users)
+    send_code_to_contact(contact, code)
 
-    try:
-        send_code_to_contact(contact, code)
-    except Exception as e:
-        return jsonify({"success": False, "message": f"Failed to send verification email: {e}"}), 500
+    return jsonify({"success": True, "message": "Code resent"}), 200
 
-    return jsonify({"success": True, "message": "Verification email resent"}), 200
-
-# ============================================
-# VERIFY ACCOUNT
-# ============================================
 @auth_bp.route("/api/verify", methods=["POST"])
 def verify_account():
     data = request.get_json(silent=True) or {}
     contact = data.get("contact", "").strip()
     code = data.get("code", "").strip()
-
     users = load_users()
     user = users.get(contact)
+
     if not user:
         return jsonify({"success": False, "message": "User not found"}), 404
     if user.get("verified"):
@@ -155,3 +163,35 @@ def verify_account():
     save_users(users)
 
     return jsonify({"success": True, "message": "Account verified"}), 200
+
+@auth_bp.route("/api/login", methods=["POST"])
+def api_login():
+    data = request.get_json(silent=True) or {}
+    contact = data.get("contact", "").strip()
+    password = data.get("password", "").strip()
+
+    if not contact or not password:
+        return jsonify({"success": False, "message": "Contact and password required."}), 400
+
+    users = load_users()
+    user = users.get(contact)
+    if not user or user["password"] != hash_password(password):
+        return jsonify({"success": False, "message": "Invalid credentials"}), 401
+    if not user.get("verified"):
+        return jsonify({"success": False, "message": "Account not verified"}), 403
+
+    return jsonify({
+        "success": True,
+        "contact": contact,
+        "full_name": user["full_name"],
+        "role": user["role"]
+    }), 200
+
+@auth_bp.route("/api/guest", methods=["GET"])
+def api_guest():
+    return jsonify({
+        "success": True,
+        "contact": "guest",
+        "role": "guest",
+        "message": "Guest mode: Limited access"
+    }), 200
