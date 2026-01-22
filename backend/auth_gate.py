@@ -6,8 +6,7 @@ import threading
 from datetime import datetime, timedelta
 from flask import Blueprint, request, jsonify
 from .user_data import save_user_data
-from .verify import send_verification_code, generate_code
-
+from .verify import send_code_to_contact
 
 # ============================================
 # File paths
@@ -97,7 +96,9 @@ def api_register():
     if contact in users:
         return jsonify({"success": False, "message": "Account already exists."}), 400
 
+    # Generate code BEFORE saving and sending
     code = generate_code()
+    code_expires = (datetime.utcnow() + timedelta(minutes=10)).isoformat()
 
     users[contact] = {
         "full_name": full_name,
@@ -105,13 +106,16 @@ def api_register():
         "password": hash_password(password),
         "role": "normal",
         "verified": False,
-        "verification_code": code
+        "verification_code": code,
+        "code_expires": code_expires
     }
 
     save_users(users)
 
-    send_verification_code(contact, code)
+    # Send verification code via SMS/email
+    code_sent = send_code_to_contact(contact, code)
 
+    # Initialize user data
     save_user_data(
         contact,
         history=[],
@@ -120,8 +124,9 @@ def api_register():
 
     return jsonify({
         "success": True,
-        "message": "Verification code sent",
-        "contact": contact
+        "message": "Verification code sent" if code_sent else "Verification code generated (debug mode)",
+        "contact": contact,
+        "debug_code": code if not code_sent else None
     }), 201
 
 # ============================================
@@ -143,11 +148,12 @@ def resend_code():
         return jsonify({"success": False, "message": "Already verified"}), 400
 
     code = generate_code()
+    code_expires = (datetime.utcnow() + timedelta(minutes=10)).isoformat()
     user["verification_code"] = code
-    user["code_expires"] = (datetime.utcnow() + timedelta(minutes=10)).isoformat()
+    user["code_expires"] = code_expires
 
     save_users(users)
-    send_email_code(contact, code)
+    send_code_to_contact(contact, code)
 
     return jsonify({"success": True, "message": "Code resent"}), 200
 
@@ -158,7 +164,6 @@ def resend_code():
 @auth_bp.route("/api/verify", methods=["POST"])
 def verify_account():
     data = request.get_json(silent=True) or {}
-
     contact = data.get("contact", "").strip()
     code = data.get("code", "").strip()
 
@@ -192,7 +197,6 @@ def verify_account():
 @auth_bp.route("/api/login", methods=["POST"])
 def api_login():
     data = request.get_json(silent=True) or {}
-
     contact = data.get("contact", "").strip()
     password = data.get("password", "").strip()
 
@@ -201,8 +205,8 @@ def api_login():
 
     users = load_users()
     hashed = hash_password(password)
-
     user = users.get(contact)
+
     if not user or user["password"] != hashed:
         return jsonify({"success": False, "message": "Invalid credentials"}), 401
 
