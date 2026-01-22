@@ -36,10 +36,11 @@ CORS(
                 "https://www.revelacode-frontend.onrender.com"
             ],
             "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-            "allow_headers": ["Content-Type", "Authorization"]
+            "allow_headers": ["Content-Type", "Authorization", "X-ADMIN-KEY"]
         }
     }
 )
+
 
 # ---------- DB INIT (OPTIONAL / SAFE) ----------
 try:

@@ -21,7 +21,7 @@ def save_guest_counts(counts):
         json.dump(counts, f, indent=2)
 
 
-@guest_bp.route("/guest/decode", methods=["POST"])
+@guest_bp.route("/api/guest/decode", methods=["POST"])
 def guest_decode():
     try:
         counts = load_guest_counts()

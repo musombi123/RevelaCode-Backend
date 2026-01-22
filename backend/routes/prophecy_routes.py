@@ -18,7 +18,7 @@ def decode_prophecy():
         return jsonify({"message": "❌ Verse text is required"}), 400
 
     try:
-        decoded = decoder.decode_text(verse_text)
+        decoded = decoder.decode_verse(verse_text)
         return jsonify({
             "original": verse_text,
             "decoded": decoded
