@@ -1,7 +1,7 @@
 # backend/delete_account_api.py
 import os, json, random
 from flask import Blueprint, request, jsonify
-from backend.verify import load_users, save_users  # reuse your verify functions
+from verify import load_users, save_users
 
 delete_bp = Blueprint("delete", __name__)
 

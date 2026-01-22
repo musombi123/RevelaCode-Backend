@@ -4,7 +4,7 @@ import os
 from datetime import datetime
 
 app = Flask(__name__)
-GUEST_FILE = "./backend/user_data/guest_decode.json"
+GUEST_FILE = ".user_data/guest_decode.json"
 
 MAX_GUEST_DECODES_PER_DAY = 5
 

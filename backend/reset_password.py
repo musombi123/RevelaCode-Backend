@@ -4,7 +4,7 @@ from flask import Blueprint, request, jsonify
 
 reset_bp = Blueprint("reset_password", __name__)
 
-USERS_FILE = os.path.join("backend", "user_data", "users.json")
+USERS_FILE = os.path.join("user_data", "users.json")
 
 def load_users():
     if os.path.exists(USERS_FILE):

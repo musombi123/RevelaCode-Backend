@@ -4,7 +4,7 @@ from email.mime.text import MIMEText
 
 verify_bp = Blueprint("verify", __name__)
 
-USERS_FILE = os.path.join("backend", "user_data", "users.json")
+USERS_FILE = os.path.join("user_data", "users.json")
 
 # ------------------ OPTIONAL IMPORTS ------------------
 twilio_available = True
