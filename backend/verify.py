@@ -1,5 +1,6 @@
-import os, json, random
+import os, json, random, smtplib
 from flask import Blueprint, request, jsonify
+from email.mime.text import MIMEText
 
 verify_bp = Blueprint("verify", __name__)
 
@@ -9,10 +10,10 @@ USERS_FILE = os.path.join("backend", "user_data", "users.json")
 twilio_available = True
 try:
     from twilio.rest import Client
-except Exception:
+except ImportError:
     twilio_available = False
 
-
+# ------------------ HELPER FUNCTIONS ------------------
 def load_users():
     if os.path.exists(USERS_FILE):
         with open(USERS_FILE, "r") as f:
@@ -24,12 +25,8 @@ def save_users(users):
     with open(USERS_FILE, "w") as f:
         json.dump(users, f, indent=2)
 
-
-def send_sms(contact: str, code: str):
-    """
-    Send OTP via SMS using Twilio.
-    If Twilio not configured, return False.
-    """
+def send_sms(contact: str, code: str) -> bool:
+    """Send OTP via Twilio SMS"""
     if not twilio_available:
         return False
 
@@ -48,11 +45,42 @@ def send_sms(contact: str, code: str):
             to=contact
         )
         return True
-    except Exception:
+    except Exception as e:
+        print("Twilio error:", e)
         return False
 
+def send_email(contact: str, code: str) -> bool:
+    """Send OTP via SMTP email"""
+    host = os.environ.get("SMTP_HOST")
+    port = int(os.environ.get("SMTP_PORT", 587))
+    user = os.environ.get("SMTP_USER")
+    password = os.environ.get("SMTP_PASS")
 
-# --- Send verification code ---
+    if not host or not user or not password:
+        return False
+
+    try:
+        msg = MIMEText(f"Your RevelaCode verification code: {code}")
+        msg["Subject"] = "RevelaCode Verification Code"
+        msg["From"] = user
+        msg["To"] = contact
+
+        with smtplib.SMTP(host, port) as server:
+            server.starttls()
+            server.login(user, password)
+            server.send_message(msg)
+        return True
+    except Exception as e:
+        print("SMTP error:", e)
+        return False
+
+def send_code_to_contact(contact: str, code: str) -> bool:
+    """Send code to phone if starts with +, else assume email"""
+    if contact.startswith("+"):
+        return send_sms(contact, code)
+    return send_email(contact, code)
+
+# ------------------ ROUTES ------------------
 @verify_bp.route("/api/send-code", methods=["POST"])
 def send_code():
     try:
@@ -60,7 +88,7 @@ def send_code():
         contact = data.get("contact", "").strip()
 
         if not contact:
-            return jsonify({"message": "Contact is required"}), 400
+            return jsonify({"message": "❌ Contact is required"}), 400
 
         users = load_users()
         if contact not in users:
@@ -71,8 +99,7 @@ def send_code():
         users[contact]["verified"] = False
         save_users(users)
 
-        # try send sms/email (sms only for now)
-        sent = send_sms(contact, code)
+        sent = send_code_to_contact(contact, code)
 
         return jsonify({
             "message": "✅ Verification code sent" if sent else "✅ Verification code generated (debug mode)",
@@ -81,16 +108,17 @@ def send_code():
         }), 200
 
     except Exception as e:
-        return jsonify({"message": str(e)}), 500
+        return jsonify({"message": f"❌ {e}"}), 500
 
-
-# --- Verify code ---
 @verify_bp.route("/api/verify-code", methods=["POST"])
 def verify_code():
     try:
         data = request.get_json(force=True)
         contact = data.get("contact", "").strip()
         code = data.get("code", "").strip()
+
+        if not contact or not code:
+            return jsonify({"message": "❌ Contact and code are required"}), 400
 
         users = load_users()
         if contact not in users:
@@ -106,4 +134,4 @@ def verify_code():
         return jsonify({"message": "✅ Account verified successfully"}), 200
 
     except Exception as e:
-        return jsonify({"message": str(e)}), 500
+        return jsonify({"message": f"❌ {e}"}), 500
