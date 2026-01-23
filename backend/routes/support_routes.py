@@ -1,7 +1,7 @@
 from flask import Blueprint, request, jsonify
 from backend.utils.auth_keys import get_role
 from backend.utils.audit_logger import log_admin_action
-from backend.models import get_all_users  # optional if you need user info
+from backend.models.models import get_all_users  # optional if you need user info
 from pymongo import MongoClient
 from datetime import datetime
 from bson.objectid import ObjectId

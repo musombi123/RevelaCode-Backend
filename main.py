@@ -73,7 +73,7 @@ register_bp("backend.routes.docs_routes", "docs_bp")
 register_bp("backend.routes.prophecy_routes", "prophecy_bp")
 
 # ---------- OPTIONAL / FUTURE ----------
-register_bp("backend.guest_mode_limiter", "guest_bp")
+register_bp("backend.guest_decode_limiter", "guest_bp")
 register_bp("backend.routes.notifications_routes", "notifications_bp")
 
 # ---------- ADMIN / SUPPORT / PUBLIC ----------

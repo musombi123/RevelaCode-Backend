@@ -1,5 +1,5 @@
 from flask import Blueprint, jsonify
-from backend.models import get_all_users  # inject models for dynamic data
+from backend.models.models import get_all_users  # inject models for dynamic data
 from pymongo import MongoClient
 
 db = MongoClient("mongodb://localhost:27017/")["revelacode"]
