@@ -4,6 +4,9 @@ import logging
 logger = logging.getLogger(__name__)
 
 def log_admin_action(db, action, resource, actor, metadata=None):
+    """
+    Logs an admin action to the database.
+    """
     try:
         db["admin_actions"].insert_one({
             "actor": actor,
