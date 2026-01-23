@@ -10,9 +10,10 @@ from .user_data import save_user_data
 # ------------------ LOAD ENV ------------------
 load_dotenv()
 
-# ------------------ FILE PATHS ------------------
+# ------------------ PATHS ------------------
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-USERS_FILE = os.path.join(BASE_DIR, "users.json")
+DATA_DIR = os.path.join(BASE_DIR, "user_data")
+USERS_FILE = os.path.join(DATA_DIR, "users.json")
 file_lock = threading.Lock()
 
 # ------------------ BLUEPRINT ------------------
@@ -29,6 +30,7 @@ def load_users():
     return {}
 
 def save_users(users):
+    os.makedirs(os.path.dirname(USERS_FILE), exist_ok=True)
     with file_lock:
         with open(USERS_FILE, "w") as f:
             json.dump(users, f, indent=2)
@@ -53,7 +55,6 @@ def api_register():
     if password != confirm_password:
         return jsonify({"success": False, "message": "Passwords do not match."}), 400
 
-    # simple email validation (since you’re email-only now)
     if "@" not in contact or "." not in contact:
         return jsonify({"success": False, "message": "Invalid email format."}), 400
 
@@ -72,7 +73,7 @@ def api_register():
 
     save_users(users)
 
-    # Initialize user-specific data file
+    # Initialize per-user files
     save_user_data(
         contact,
         history=[],
@@ -81,7 +82,7 @@ def api_register():
 
     return jsonify({
         "success": True,
-        "message": "Account created. Please request verification code.",
+        "message": "Account created. Please verify your email.",
         "contact": contact,
         "next_step": "/api/request-code"
     }), 201
@@ -100,24 +101,21 @@ def api_login():
     users = load_users()
     user = users.get(contact)
 
-    if not user:
-        return jsonify({"success": False, "message": "Invalid credentials"}), 401
-
-    if user.get("password") != hash_password(password):
+    if not user or user.get("password") != hash_password(password):
         return jsonify({"success": False, "message": "Invalid credentials"}), 401
 
     if not user.get("verified"):
         return jsonify({
             "success": False,
-            "message": "Account not verified. Request code first.",
+            "message": "Account not verified.",
             "next_step": "/api/request-code"
         }), 403
 
     return jsonify({
         "success": True,
         "contact": contact,
-        "full_name": user.get("full_name"),
-        "role": user.get("role", "normal")
+        "full_name": user["full_name"],
+        "role": user["role"]
     }), 200
 
 
