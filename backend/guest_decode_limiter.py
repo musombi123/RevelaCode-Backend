@@ -1,41 +1,40 @@
-from flask import Flask, request, jsonify
-import json
-import os
+from flask import Blueprint, request, jsonify, current_app
 from datetime import datetime
 
-app = Flask(__name__)
-GUEST_FILE = ".user_data/guest_decode.json"
+guest_bp = Blueprint("guest", __name__)
 
-MAX_GUEST_DECODES_PER_DAY = 5
+@guest_bp.route("/api/guest/prophecy", methods=["POST"])
+def guest_prophecy():
+    try:
+        data = request.get_json(silent=True) or {}
+        query = (data.get("query") or "").strip()
 
-def load_guest_counts():
-    if os.path.exists(GUEST_FILE):
-        with open(GUEST_FILE, "r") as f:
-            return json.load(f)
-    return {}
+        if not query:
+            return jsonify({
+                "success": False,
+                "message": "❌ Please provide a prophecy query."
+            }), 400
 
-def save_guest_counts(counts):
-    with open(GUEST_FILE, "w") as f:
-        json.dump(counts, f, indent=2)
+        # ----- REAL DECODING LOGIC GOES HERE -----
+        # For now, a placeholder
+        decoded = f"Prophecy decoded result for: {query}"
 
-@app.route('/guest/decode', methods=['POST'])
-def guest_decode():
-    counts = load_guest_counts()
-    today = datetime.now().strftime("%Y-%m-%d")
+        return jsonify({
+            "success": True,
+            "mode": "guest",
+            "message": "✅ Prophecy decoded successfully.",
+            "data": {
+                "query": query,
+                "decoded": decoded,
+                "timestamp": datetime.utcnow().isoformat()
+            },
+            "notice": "ℹ️ You're in Guest Mode. Log in to save prophecy history and access full features."
+        }), 200
 
-    today_count = counts.get(today, 0)
-
-    if today_count >= MAX_GUEST_DECODES_PER_DAY:
-        return jsonify({"message": "⚠️ Guest decode limit reached. Come back tomorrow."}), 429
-
-    # process dummy decode (or real decode)
-    counts[today] = today_count + 1
-    save_guest_counts(counts)
-
-    return jsonify({
-        "message": "✅ Decoded as guest.",
-        "remaining": MAX_GUEST_DECODES_PER_DAY - counts[today]
-    })
-
-if __name__ == "__main__":
-    app.run(debug=True)
+    except Exception as e:
+        current_app.logger.error(f"Guest prophecy error: {e}")
+        return jsonify({
+            "success": False,
+            "message": "❌ Something went wrong while decoding prophecy.",
+            "error": str(e)
+        }), 500
