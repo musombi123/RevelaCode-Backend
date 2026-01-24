@@ -51,18 +51,13 @@ def parse_bool(value: str, default=False):
 
 # ================== EMAIL ==================
 def send_email(contact: str, code: str) -> tuple[bool, str]:
-    """
-    Returns: (sent: bool, error_message: str)
-    """
-
     host = os.environ.get("SMTP_HOST", "").strip()
     port = int(os.environ.get("SMTP_PORT", "587"))
     user = os.environ.get("SMTP_USER", "").strip()
     password = os.environ.get("SMTP_PASS", "").strip()
 
-    # Recommended flags
-    use_tls = parse_bool(os.environ.get("SMTP_USE_TLS"), default=True)   # STARTTLS (587)
-    use_ssl = parse_bool(os.environ.get("SMTP_USE_SSL"), default=False) # SSL (465)
+    use_tls = parse_bool(os.environ.get("SMTP_USE_TLS"), default=True)
+    use_ssl = parse_bool(os.environ.get("SMTP_USE_SSL"), default=False)
 
     if not all([host, user, password]):
         return False, "SMTP config missing (SMTP_HOST / SMTP_USER / SMTP_PASS)"
@@ -86,12 +81,10 @@ If you didn’t request this, ignore this email.
 
     try:
         if use_ssl:
-            # Port usually 465
             with smtplib.SMTP_SSL(host, port, timeout=30) as server:
                 server.login(user, password)
                 server.send_message(msg)
         else:
-            # Port usually 587
             with smtplib.SMTP(host, port, timeout=30) as server:
                 server.ehlo()
                 if use_tls:
@@ -99,17 +92,11 @@ If you didn’t request this, ignore this email.
                     server.ehlo()
                 server.login(user, password)
                 server.send_message(msg)
-
         return True, ""
-    except smtplib.SMTPAuthenticationError:
-        return False, "SMTP authentication failed (wrong SMTP_USER/SMTP_PASS)"
-    except smtplib.SMTPConnectError:
-        return False, "SMTP connection failed (host/port blocked or wrong)"
     except Exception as e:
         return False, f"Email error: {str(e)}"
 
 # ================== ROUTES ==================
-
 @verify_bp.route("/api/request-code", methods=["POST"])
 def request_code():
     data = request.get_json(silent=True) or {}
@@ -117,12 +104,10 @@ def request_code():
 
     if not contact:
         return jsonify({"success": False, "message": "❌ Contact (email) required"}), 400
-
     if not is_valid_email(contact):
         return jsonify({"success": False, "message": "❌ Invalid email format"}), 400
 
     users = load_users()
-
     if contact not in users:
         return jsonify({"success": False, "message": "❌ Account not found. Please register first."}), 404
 
@@ -132,29 +117,25 @@ def request_code():
     users[contact]["verification_code"] = code
     users[contact]["code_expires"] = expires
     users[contact]["verified"] = False
-
     save_users(users)
 
     sent, err = send_email(contact, code)
 
-    # If email fails, keep code stored so user can retry without losing it
-    # (optional: you can regenerate on every request if you want)
+    allow_debug = parse_bool(os.environ.get("ALLOW_DEBUG_CODE"), default=False)
+
     response = {
         "success": True if sent else False,
         "message": "✅ Verification code sent" if sent else "⚠ Code generated but email failed",
         "sent": sent
     }
 
-    # only reveal debug_code if explicitly allowed (for dev)
-    allow_debug = parse_bool(os.environ.get("ALLOW_DEBUG_CODE"), default=False)
-    if not sent and allow_debug:
+    if allow_debug:
         response["debug_code"] = code
 
-    if not sent:
+    if not sent and not allow_debug:
         response["error"] = err
 
-    return jsonify(response), 200 if sent else 500
-
+    return jsonify(response), 200 if sent or allow_debug else 500
 
 @verify_bp.route("/api/verify", methods=["POST"])
 def verify_account():
@@ -164,25 +145,20 @@ def verify_account():
 
     if not contact or not code:
         return jsonify({"success": False, "message": "❌ Contact and code required"}), 400
-
     if not is_valid_email(contact):
         return jsonify({"success": False, "message": "❌ Invalid email format"}), 400
 
     users = load_users()
     user = users.get(contact)
-
     if not user:
         return jsonify({"success": False, "message": "❌ Account not found"}), 404
-
     if user.get("verified"):
         return jsonify({"success": True, "message": "✅ Already verified"}), 200
 
     saved_code = str(user.get("verification_code") or "").strip()
     saved_expires = user.get("code_expires")
-
     if not saved_code or not saved_expires:
         return jsonify({"success": False, "message": "❌ No verification code found. Request a new code."}), 400
-
     if saved_code != code:
         return jsonify({"success": False, "message": "❌ Invalid code"}), 400
 
@@ -195,11 +171,9 @@ def verify_account():
     user["verified"] = True
     user.pop("verification_code", None)
     user.pop("code_expires", None)
-
     save_users(users)
 
     return jsonify({"success": True, "message": "✅ Account verified successfully"}), 200
-
 
 @verify_bp.route("/api/verify-test", methods=["GET"])
 def verify_test():

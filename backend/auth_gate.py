@@ -3,11 +3,9 @@ import json
 import os
 import hashlib
 import threading
-import random
 from flask import Blueprint, request, jsonify
 from dotenv import load_dotenv
 from .user_data import save_user_data
-from datetime import datetime, timedelta
 
 # ------------------ LOAD ENV ------------------
 load_dotenv()
@@ -43,11 +41,7 @@ def hash_password(password: str) -> str:
 def is_valid_email(email: str) -> bool:
     return "@" in email and "." in email and len(email) >= 6
 
-def generate_code() -> str:
-    return f"{random.randint(100000, 999999)}"
-
 # ------------------ ROUTES ------------------
-
 @auth_bp.route("/api/register", methods=["POST"])
 def api_register():
     data = request.get_json(silent=True) or {}
@@ -69,6 +63,7 @@ def api_register():
     if contact in users:
         return jsonify({"success": False, "message": "Account exists."}), 400
 
+    # Only register the user here; verification handled by verify.py
     users[contact] = {
         "full_name": full_name,
         "contact": contact,
@@ -84,72 +79,17 @@ def api_register():
 
     return jsonify({
         "success": True,
-        "message": "Account created. Verify your email.",
+        "message": "Account created. Verify your email using /api/request-code.",
         "contact": contact,
         "next_step": "/api/request-code"
     }), 201
-
-@auth_bp.route("/api/request-code", methods=["POST"])
-def api_request_code():
-    data = request.get_json(silent=True) or {}
-    contact = (data.get("contact") or "").strip()
-    if not contact or not is_valid_email(contact):
-        return jsonify({"success": False, "message": "Invalid contact"}), 400
-
-    users = load_users()
-    user = users.get(contact)
-    if not user:
-        return jsonify({"success": False, "message": "User not found"}), 404
-
-    code = generate_code()
-    user["verification_code"] = code
-    user["code_expires"] = (datetime.utcnow() + timedelta(minutes=10)).isoformat()
-    save_users(users)
-
-    # Dev-friendly code print
-    print(f"[DEV] Verification code for {contact}: {code}")
-
-    return jsonify({
-        "success": True,
-        "message": f"Verification code generated for {contact} (check console in dev)."
-    }), 200
-
-@auth_bp.route("/api/verify", methods=["POST"])
-def api_verify():
-    data = request.get_json(silent=True) or {}
-    contact = (data.get("contact") or "").strip()
-    code = (data.get("code") or "").strip()
-    if not contact or not code:
-        return jsonify({"success": False, "message": "Contact and code required"}), 400
-
-    users = load_users()
-    user = users.get(contact)
-    if not user:
-        return jsonify({"success": False, "message": "User not found"}), 404
-
-    saved_code = user.get("verification_code")
-    expires = user.get("code_expires")
-    if not saved_code or saved_code != code:
-        return jsonify({"success": False, "message": "Invalid code"}), 400
-
-    try:
-        if datetime.utcnow() > datetime.fromisoformat(expires):
-            return jsonify({"success": False, "message": "Code expired"}), 400
-    except Exception:
-        return jsonify({"success": False, "message": "Code expiry corrupted"}), 400
-
-    user["verified"] = True
-    user["verification_code"] = None
-    user.pop("code_expires", None)
-    save_users(users)
-
-    return jsonify({"success": True, "message": "Verified successfully"}), 200
 
 @auth_bp.route("/api/login", methods=["POST"])
 def api_login():
     data = request.get_json(silent=True) or {}
     contact = (data.get("contact") or "").strip()
     password = (data.get("password") or "").strip()
+
     if not contact or not password:
         return jsonify({"success": False, "message": "Contact and password required"}), 400
     if not is_valid_email(contact):
@@ -160,6 +100,7 @@ def api_login():
     if not user or user.get("password") != hash_password(password):
         return jsonify({"success": False, "message": "Invalid credentials"}), 401
     if not user.get("verified"):
+        # Delegate verification code request to verify.py
         return jsonify({"success": False, "message": "Account not verified.", "next_step": "/api/request-code"}), 403
 
     return jsonify({
