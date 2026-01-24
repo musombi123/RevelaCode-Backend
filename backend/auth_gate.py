@@ -346,8 +346,9 @@ def request_code():
     if allow_debug:
         response["debug_code"] = code
 
-    if not sent and not allow_debug:
+    if not sent:
         response["error"] = err
+
 
     return jsonify(response), 200 if sent or allow_debug else 500
 
