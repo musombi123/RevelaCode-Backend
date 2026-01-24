@@ -22,7 +22,7 @@ auth_bp = Blueprint("auth", __name__)
 # ------------------ HELPERS ------------------
 def load_users():
     if os.path.exists(USERS_FILE):
-        with open(USERS_FILE, "r") as f:
+        with open(USERS_FILE, "r", encoding="utf-8") as f:
             try:
                 return json.load(f)
             except json.JSONDecodeError:
@@ -32,11 +32,14 @@ def load_users():
 def save_users(users):
     os.makedirs(os.path.dirname(USERS_FILE), exist_ok=True)
     with file_lock:
-        with open(USERS_FILE, "w") as f:
+        with open(USERS_FILE, "w", encoding="utf-8") as f:
             json.dump(users, f, indent=2)
 
 def hash_password(password: str) -> str:
-    return hashlib.sha256(password.encode()).hexdigest()
+    return hashlib.sha256(password.encode("utf-8")).hexdigest()
+
+def is_valid_email(email: str) -> bool:
+    return "@" in email and "." in email and len(email) >= 6
 
 # ------------------ ROUTES ------------------
 
@@ -52,11 +55,14 @@ def api_register():
     if not full_name or not contact or not password or not confirm_password:
         return jsonify({"success": False, "message": "All fields are required."}), 400
 
+    if not is_valid_email(contact):
+        return jsonify({"success": False, "message": "Invalid email format."}), 400
+
     if password != confirm_password:
         return jsonify({"success": False, "message": "Passwords do not match."}), 400
 
-    if "@" not in contact or "." not in contact:
-        return jsonify({"success": False, "message": "Invalid email format."}), 400
+    if len(password) < 6:
+        return jsonify({"success": False, "message": "Password must be at least 6 characters."}), 400
 
     users = load_users()
 
@@ -98,10 +104,16 @@ def api_login():
     if not contact or not password:
         return jsonify({"success": False, "message": "Contact and password required."}), 400
 
+    if not is_valid_email(contact):
+        return jsonify({"success": False, "message": "Invalid email format."}), 400
+
     users = load_users()
     user = users.get(contact)
 
-    if not user or user.get("password") != hash_password(password):
+    if not user:
+        return jsonify({"success": False, "message": "Invalid credentials"}), 401
+
+    if user.get("password") != hash_password(password):
         return jsonify({"success": False, "message": "Invalid credentials"}), 401
 
     if not user.get("verified"):
@@ -114,8 +126,8 @@ def api_login():
     return jsonify({
         "success": True,
         "contact": contact,
-        "full_name": user["full_name"],
-        "role": user["role"]
+        "full_name": user.get("full_name"),
+        "role": user.get("role", "normal")
     }), 200
 
 
