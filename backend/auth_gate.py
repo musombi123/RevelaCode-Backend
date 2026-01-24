@@ -218,6 +218,37 @@ def verify_account():
 
     return jsonify({"success": True, "message": "Account verified"}), 200
 
+# ================== LOGIN ==================
+@auth_bp.route("/api/login", methods=["POST"])
+def login():
+    data = request.get_json(silent=True) or {}
+    contact = (data.get("contact") or "").strip()
+    password = (data.get("password") or "").strip()
+
+    if not contact or not password:
+        return jsonify({"success": False, "message": "Contact and password required"}), 400
+
+    users = load_users()
+    user = users.get(contact)
+    if not user:
+        return jsonify({"success": False, "message": "Account not found"}), 404
+
+    if not user.get("verified"):
+        return jsonify({"success": False, "message": "Account not verified"}), 403
+
+    hashed_password = hash_password(password)
+    if hashed_password != user.get("password"):
+        return jsonify({"success": False, "message": "Invalid password"}), 401
+
+    # return user data on success
+    return jsonify({
+        "success": True,
+        "message": "Login successful",
+        "contact": user["contact"],
+        "full_name": user["full_name"],
+        "role": user["role"]
+    }), 200
+
 # ================== PASSWORD RESET (DEBUG MODE) ==================
 @auth_bp.route("/api/forgot-password", methods=["POST"])
 def forgot_password():
