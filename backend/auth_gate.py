@@ -7,6 +7,7 @@ import random
 from flask import Blueprint, request, jsonify
 from dotenv import load_dotenv
 from .user_data import save_user_data
+from datetime import datetime, timedelta
 
 # ------------------ LOAD ENV ------------------
 load_dotenv()
@@ -50,27 +51,23 @@ def generate_code() -> str:
 @auth_bp.route("/api/register", methods=["POST"])
 def api_register():
     data = request.get_json(silent=True) or {}
-
     full_name = (data.get("full_name") or "").strip()
     contact = (data.get("contact") or "").strip()
     password = (data.get("password") or "").strip()
     confirm_password = (data.get("confirm_password") or "").strip()
 
     if not full_name or not contact or not password or not confirm_password:
-        return jsonify({"success": False, "message": "All fields are required."}), 400
-
+        return jsonify({"success": False, "message": "All fields required."}), 400
     if not is_valid_email(contact):
-        return jsonify({"success": False, "message": "Invalid email format."}), 400
-
+        return jsonify({"success": False, "message": "Invalid email."}), 400
     if password != confirm_password:
         return jsonify({"success": False, "message": "Passwords do not match."}), 400
-
     if len(password) < 6:
-        return jsonify({"success": False, "message": "Password must be at least 6 characters."}), 400
+        return jsonify({"success": False, "message": "Password too short."}), 400
 
     users = load_users()
     if contact in users:
-        return jsonify({"success": False, "message": "Account already exists."}), 400
+        return jsonify({"success": False, "message": "Account exists."}), 400
 
     users[contact] = {
         "full_name": full_name,
@@ -78,31 +75,24 @@ def api_register():
         "password": hash_password(password),
         "role": "normal",
         "verified": False,
-        "verification_code": None
+        "verification_code": None,
+        "guest_trials": 0
     }
 
     save_users(users)
-
-    # Initialize per-user files
-    save_user_data(
-        contact,
-        history=[],
-        settings={"theme": "light", "linked_accounts": []}
-    )
+    save_user_data(contact, history=[], settings={"theme": "light", "linked_accounts": []})
 
     return jsonify({
         "success": True,
-        "message": "Account created. Please verify your email.",
+        "message": "Account created. Verify your email.",
         "contact": contact,
         "next_step": "/api/request-code"
     }), 201
 
-# ------------------ REQUEST VERIFICATION CODE ------------------
 @auth_bp.route("/api/request-code", methods=["POST"])
 def api_request_code():
     data = request.get_json(silent=True) or {}
     contact = (data.get("contact") or "").strip()
-
     if not contact or not is_valid_email(contact):
         return jsonify({"success": False, "message": "Invalid contact"}), 400
 
@@ -113,23 +103,22 @@ def api_request_code():
 
     code = generate_code()
     user["verification_code"] = code
+    user["code_expires"] = (datetime.utcnow() + timedelta(minutes=10)).isoformat()
     save_users(users)
 
-    # Simulate email sending (or integrate SMTP)
+    # Dev-friendly code print
     print(f"[DEV] Verification code for {contact}: {code}")
 
     return jsonify({
         "success": True,
-        "message": f"Verification code sent to {contact} (check console in dev)."
+        "message": f"Verification code generated for {contact} (check console in dev)."
     }), 200
 
-# ------------------ VERIFY ------------------
 @auth_bp.route("/api/verify", methods=["POST"])
 def api_verify():
     data = request.get_json(silent=True) or {}
     contact = (data.get("contact") or "").strip()
     code = (data.get("code") or "").strip()
-
     if not contact or not code:
         return jsonify({"success": False, "message": "Contact and code required"}), 400
 
@@ -138,39 +127,40 @@ def api_verify():
     if not user:
         return jsonify({"success": False, "message": "User not found"}), 404
 
-    if user.get("verification_code") != code:
-        return jsonify({"success": False, "message": "Invalid verification code"}), 400
+    saved_code = user.get("verification_code")
+    expires = user.get("code_expires")
+    if not saved_code or saved_code != code:
+        return jsonify({"success": False, "message": "Invalid code"}), 400
+
+    try:
+        if datetime.utcnow() > datetime.fromisoformat(expires):
+            return jsonify({"success": False, "message": "Code expired"}), 400
+    except Exception:
+        return jsonify({"success": False, "message": "Code expiry corrupted"}), 400
 
     user["verified"] = True
     user["verification_code"] = None
+    user.pop("code_expires", None)
     save_users(users)
 
     return jsonify({"success": True, "message": "Verified successfully"}), 200
 
-# ------------------ LOGIN ------------------
 @auth_bp.route("/api/login", methods=["POST"])
 def api_login():
     data = request.get_json(silent=True) or {}
     contact = (data.get("contact") or "").strip()
     password = (data.get("password") or "").strip()
-
     if not contact or not password:
-        return jsonify({"success": False, "message": "Contact and password required."}), 400
-
+        return jsonify({"success": False, "message": "Contact and password required"}), 400
     if not is_valid_email(contact):
-        return jsonify({"success": False, "message": "Invalid email format."}), 400
+        return jsonify({"success": False, "message": "Invalid email"}), 400
 
     users = load_users()
     user = users.get(contact)
     if not user or user.get("password") != hash_password(password):
         return jsonify({"success": False, "message": "Invalid credentials"}), 401
-
     if not user.get("verified"):
-        return jsonify({
-            "success": False,
-            "message": "Account not verified.",
-            "next_step": "/api/request-code"
-        }), 403
+        return jsonify({"success": False, "message": "Account not verified.", "next_step": "/api/request-code"}), 403
 
     return jsonify({
         "success": True,
@@ -179,12 +169,26 @@ def api_login():
         "role": user.get("role", "normal")
     }), 200
 
-# ------------------ GUEST ------------------
 @auth_bp.route("/api/guest", methods=["GET"])
 def api_guest():
+    """Guest mode: 3 free trials, then force register/login"""
+    users = load_users()
+    guest = users.get("guest", {"guest_trials": 0})
+    trials = guest.get("guest_trials", 0)
+
+    if trials >= 3:
+        return jsonify({
+            "success": False,
+            "message": "Guest trial limit reached. Please register or login."
+        }), 403
+
+    guest["guest_trials"] = trials + 1
+    users["guest"] = guest
+    save_users(users)
+
     return jsonify({
         "success": True,
         "contact": "guest",
         "role": "guest",
-        "message": "Guest mode: Limited access"
+        "message": f"Guest mode: Limited access ({guest['guest_trials']}/3)"
     }), 200
