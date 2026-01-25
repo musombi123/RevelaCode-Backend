@@ -1,8 +1,31 @@
+# backend/routes/public_routes.py
 from flask import Blueprint, jsonify
-from backend.models.models import get_all_users  # inject models for dynamic data
+from pathlib import Path
+import importlib.util
+import sys
 from pymongo import MongoClient
 
+# ----------------------------
+# Dynamically load models.py
+# ----------------------------
+backend_path = Path(__file__).resolve().parent.parent  # /backend
+models_path = backend_path / "models" / "models.py"
+
+spec = importlib.util.spec_from_file_location("models", str(models_path))
+models = importlib.util.module_from_spec(spec)
+sys.modules["models"] = models
+spec.loader.exec_module(models)
+
+get_all_users = models.get_all_users
+
+# ----------------------------
+# MongoDB setup
+# ----------------------------
 db = MongoClient("mongodb://localhost:27017/")["revelacode"]
+
+# ----------------------------
+# Blueprint
+# ----------------------------
 public_bp = Blueprint("public", __name__)
 
 COLLECTIONS = {
@@ -25,7 +48,6 @@ def info():
 def status():
     return jsonify({"status": "OK"})
 
-# ---- Optional dynamic endpoints using models.py ----
 @public_bp.route("/users", methods=["GET"])
 def list_users():
     """
@@ -37,7 +59,7 @@ def list_users():
     for u in users:
         sanitized_users.append({
             "username": u["username"],
-            "role": u["role"],
-            "created_at": str(u["created_at"])
+            "role": u.get("role", "user"),
+            "created_at": str(u.get("created_at"))
         })
     return jsonify({"users": sanitized_users, "total": len(sanitized_users)})

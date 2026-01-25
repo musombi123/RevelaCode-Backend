@@ -1,17 +1,54 @@
+# backend/routes/support_routes.py
 from flask import Blueprint, request, jsonify
-from backend.utils.auth_keys import get_role
-from backend.utils.audit_logger import log_admin_action
-from backend.models.models import get_all_users  # optional if you need user info
+from pathlib import Path
+import importlib.util
+import sys
 from pymongo import MongoClient
 from datetime import datetime
 from bson.objectid import ObjectId
 
+# ----------------------------
+# Dynamic imports for utils & models
+# ----------------------------
+backend_path = Path(__file__).resolve().parent.parent  # /backend
+
+# auth_keys
+auth_keys_path = backend_path / "utils" / "auth_keys.py"
+spec = importlib.util.spec_from_file_location("auth_keys", str(auth_keys_path))
+auth_keys = importlib.util.module_from_spec(spec)
+sys.modules["auth_keys"] = auth_keys
+spec.loader.exec_module(auth_keys)
+get_role = auth_keys.get_role
+
+# audit_logger
+audit_logger_path = backend_path / "utils" / "audit_logger.py"
+spec = importlib.util.spec_from_file_location("audit_logger", str(audit_logger_path))
+audit_logger = importlib.util.module_from_spec(spec)
+sys.modules["audit_logger"] = audit_logger
+spec.loader.exec_module(audit_logger)
+log_admin_action = audit_logger.log_admin_action
+
+# models
+models_path = backend_path / "models" / "models.py"
+spec = importlib.util.spec_from_file_location("models", str(models_path))
+models = importlib.util.module_from_spec(spec)
+sys.modules["models"] = models
+spec.loader.exec_module(models)
+get_all_users = models.get_all_users
+
+# ----------------------------
+# MongoDB setup
+# ----------------------------
 db = MongoClient("mongodb://localhost:27017/")["revelacode"]
+
+# ----------------------------
+# Blueprint
+# ----------------------------
 support_bp = Blueprint("support", __name__)
 
 COLLECTIONS = {
     "support_tickets": "support_tickets",
-    "admin_actions": "admin_actions"  # support logs can also go here
+    "admin_actions": "admin_actions"
 }
 
 @support_bp.route("/support/dashboard")
