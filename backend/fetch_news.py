@@ -1,19 +1,21 @@
-import requests
-import json
-from datetime import datetime, timedelta, timezone
 import os
-import argparse
+import json
+import shutil
 import logging
+from datetime import datetime, timedelta, timezone
+import requests
 
-# === CONFIG ===
-API_KEY = "69a21d7398a04d948a0e881e0fea9793"
+# === CONFIG / ENVIRONMENT VARIABLES ===
+API_KEY = os.environ.get("NEWS_API_KEY")
+if not API_KEY:
+    raise ValueError("❌ NEWS_API_KEY not set in environment variables!")
+
+QUERY = os.environ.get("NEWS_QUERY", "prophecy")
+EVENTS_DIR = os.environ.get("EVENTS_DIR", "./events")
+ARCHIVED_DIR = os.environ.get("ARCHIVED_DIR", "./archived")
+PAGE_SIZE = int(os.environ.get("NEWS_PAGE_SIZE", 100))
+MAX_PAGES = int(os.environ.get("NEWS_MAX_PAGES", 1))  # NewsAPI free plan only page 1
 ENDPOINT = "https://newsapi.org/v2/everything"
-PAGE_SIZE = 100
-
-# 🔒 NewsAPI free plan supports ONLY page 1
-MAX_PAGES = 1
-
-SAVE_DIR = "./events"
 
 # === LOGGING ===
 logging.basicConfig(
@@ -22,18 +24,52 @@ logging.basicConfig(
     datefmt='%Y-%m-%d %H:%M:%S'
 )
 
-# === FETCH ===
+# === ENSURE DIRECTORIES EXIST ===
+os.makedirs(EVENTS_DIR, exist_ok=True)
+os.makedirs(ARCHIVED_DIR, exist_ok=True)
+
+# === ARCHIVE LOG FILE ===
+LOG_FILE = os.path.join(ARCHIVED_DIR, "archive_log.json")
+
+def log_archive(filename):
+    log_entry = {"filename": filename, "archived_at": datetime.now().isoformat()}
+    if os.path.exists(LOG_FILE):
+        with open(LOG_FILE, "r", encoding="utf-8") as f:
+            log_data = json.load(f)
+    else:
+        log_data = []
+    log_data.append(log_entry)
+    with open(LOG_FILE, "w", encoding="utf-8") as f:
+        json.dump(log_data, f, indent=2, ensure_ascii=False)
+
+# === ARCHIVE OLD EVENTS (>7 DAYS) ===
+def archive_old_events():
+    for filename in os.listdir(EVENTS_DIR):
+        if filename.startswith("events_") and filename.endswith(".json"):
+            date_str = filename.replace("events_", "").replace(".json", "")
+            for fmt in ("%Y-%m-%d", "%Y_%m_%d"):
+                try:
+                    file_date = datetime.strptime(date_str, fmt)
+                    break
+                except ValueError:
+                    continue
+            else:
+                logging.warning(f"⚠️ Skipping invalid date file: {filename}")
+                continue
+
+            if (datetime.now() - file_date).days > 7:
+                src = os.path.join(EVENTS_DIR, filename)
+                dst = os.path.join(ARCHIVED_DIR, filename)
+                shutil.move(src, dst)
+                log_archive(filename)
+                logging.info(f"📦 Archived: {filename}")
+
+# === FETCH ARTICLES FROM NEWSAPI ===
 def fetch_articles(api_key, query):
     all_articles = []
-
-    headers = {
-        "User-Agent": "Mozilla/5.0",
-        "Accept": "application/json"
-    }
-
-    # ✅ Timezone-aware UTC (fixes deprecation warning)
     to_date = datetime.now(timezone.utc)
     from_date = to_date - timedelta(days=7)
+    headers = {"User-Agent": "Mozilla/5.0", "Accept": "application/json"}
 
     for page in range(1, MAX_PAGES + 1):
         params = {
@@ -44,52 +80,38 @@ def fetch_articles(api_key, query):
             "sortBy": "publishedAt",
             "language": "en",
             "pageSize": PAGE_SIZE,
-            "page": page
+            "page": page,
         }
 
         logging.info(f"📄 Fetching page {page} for query '{query}'...")
-
         try:
-            response = requests.get(
-                ENDPOINT,
-                params=params,
-                headers=headers,
-                timeout=10
-            )
+            response = requests.get(ENDPOINT, params=params, headers=headers, timeout=10)
             response.raise_for_status()
-
         except requests.exceptions.HTTPError as e:
             if e.response is not None and e.response.status_code == 426:
-                logging.warning(
-                    "⚠️ NewsAPI free plan pagination limit reached "
-                    "(page > 1 requires paid plan)."
-                )
+                logging.warning("⚠️ NewsAPI free plan pagination limit reached (page > 1 requires paid plan).")
             else:
                 logging.error(f"❌ Failed to fetch page {page}: {e}")
             break
-
         except requests.exceptions.RequestException as e:
             logging.error(f"❌ Request failed on page {page}: {e}")
             break
 
         data = response.json()
         articles = data.get("articles", [])
-
         if not articles:
             break
-
         all_articles.extend(articles)
 
     logging.info(f"✅ Total fetched articles: {len(all_articles)}")
     return all_articles
 
-# === SAVE ===
+# === SAVE ARTICLES TO EVENTS_DIR ===
 def save_to_json(articles, query):
-    os.makedirs(SAVE_DIR, exist_ok=True)
-
+    os.makedirs(EVENTS_DIR, exist_ok=True)
     today = datetime.now().strftime("%Y-%m-%d")
     safe_query = query.replace(" ", "_").replace('"', "")
-    filename = f"{SAVE_DIR}/events_{safe_query}_{today}.json"
+    filename = os.path.join(EVENTS_DIR, f"events_{safe_query}_{today}.json")
 
     events = []
     for article in articles:
@@ -112,24 +134,11 @@ def save_to_json(articles, query):
 
 # === MAIN ===
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(
-        description="Fetch news using NewsAPI /everything endpoint."
-    )
-    parser.add_argument(
-        "-q", "--query",
-        type=str,
-        default="prophecy",
-        help="Search keyword(s)"
-    )
-    args = parser.parse_args()
-
-    if not API_KEY or API_KEY == "your_api_key_here":
-        logging.warning("API_KEY is missing or invalid. Please set a real API key.")
+    archive_old_events()
+    articles = fetch_articles(API_KEY, QUERY)
+    if articles:
+        save_to_json(articles, QUERY)
     else:
-        formatted_query = args.query
-        articles = fetch_articles(API_KEY, formatted_query)
+        logging.warning("⚠️ No articles fetched; nothing to save.")
 
-        if articles:
-            save_to_json(articles, formatted_query)
-        else:
-            logging.warning("⚠️ No articles fetched; nothing to save.")
+    logging.info("✅ Events fetch and archive complete. Ready for Render deployment.")
