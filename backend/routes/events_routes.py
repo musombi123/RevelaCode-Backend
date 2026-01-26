@@ -47,7 +47,7 @@ def get_week_events():
         for i in range(7):
             day = datetime.now() - timedelta(days=i)
             day_str = day.strftime("%Y-%m-%d")
-            event_path = os.path.join(EVENTS_FOLDER, f"events_{day_str}.json")
+            event_path = os.path.join(EVENTS_FOLDER, f"events_prophecy_{day_str}.json")
 
             if os.path.exists(event_path):
                 try:
