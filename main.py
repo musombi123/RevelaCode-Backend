@@ -98,6 +98,9 @@ def health():
 def daily_runner_loop():
     last_run_date = None
 
+    # ✅ Force working directory to backend/
+    backend_dir = os.path.abspath(os.path.join(os.path.dirname(__file__)))
+
     while True:
         now = datetime.now().date()
 
@@ -105,8 +108,18 @@ def daily_runner_loop():
             try:
                 from backend.daily_runner import run_pipeline
                 logger.info("⏰ Running daily_runner pipeline")
-                run_pipeline()
+
+                # ✅ Run pipeline from inside backend folder (fixes root writing)
+                current_dir = os.getcwd()
+                os.chdir(backend_dir)
+
+                try:
+                    run_pipeline()
+                finally:
+                    os.chdir(current_dir)
+
                 last_run_date = now
+
             except Exception as e:
                 logger.error(f"Daily runner failed: {e}")
 
