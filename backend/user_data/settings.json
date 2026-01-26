@@ -1,0 +1,20 @@
+{
+    "theme": "dark",              // Options: dark, light, system
+    "fontSize": "medium",         // Options: small, medium, large
+  
+    "social_links": {
+      "tiktok": "https://www.tiktok.com/@revelacode",
+      "facebook": "https://www.facebook.com/revelacode",
+      "instagram": "https://www.instagram.com/revelacode",
+      "twitter": "https://twitter.com/revelacode",
+      "youtube": "https://www.youtube.com/@revelacode",
+      "whatsapp": "https://wa.me/254XXXXXXXXX",
+      "chatgpt": "https://chat.openai.com"
+    },
+  
+    "support_email": "musombiwilliam769@gmail.com",
+  
+    "privacy_policy": "https://revelacode.com/privacy",
+    "terms_of_service": "https://revelacode.com/terms"
+  }
+  
