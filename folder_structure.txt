@@ -1,0 +1,200 @@
+Folder PATH listing
+Volume serial number is 16C3-6968
+C:.
+|   .env
+|   .gitignore
+|   CODE_OF_CONDUCT.md
+|   CONTRIBUTING.md
+|   folder_structure.txt
+|   index.js
+|   LICENSE
+|   main.py
+|   package-lock.json
+|   package.json
+|   README.md
+|   render.yaml
+|   requirements.txt
+|   test_notifications.py
+|   test_smtp.py
++---archived
++---backend
+|   |   ai_api.py
+|   |   api_events.py
+|   |   archive_old_events.py
+|   |   auth_gate.py
+|   |   bible_decoder.py
+|   |   categorize.py
+|   |   community.py
+|   |   daily_runner.py
+|   |   db.py
+|   |   decode_news.py
+|   |   events.json
+|   |   fetch_by_symbols.py
+|   |   fetch_news.py
+|   |   guest_decode_limiter.py
+|   |   LegalText.js
+|   |   list_users.py
+|   |   menu.py
+|   |   models.py
+|   |   notifications.json
+|   |   post_store.py
+|   |   seedLegalDocs.js
+|   |   seedMultiFaithTexts.js
+|   |   symbols_data.json
+|   |   symbols_keywords.json
+|   |   UpdateLegalDoc.js
+|   |   user_data.py
+|   |   verse_keywords.json
+|   |   __init__.py
+|   |   
+|   +---.zencoder
+|   |   \---workflows
+|   +---.zenflow
+|   |   \---workflows
+|   +---archived
+|   |       archive_log.json
+|   |       events_2025-07-09.json
+|   |       events_2025-07-15.json
+|   |       events_2025-07-16.json
+|   |       events_2025-07-25.json
+|   |       
+|   +---auth
+|   |       jwt_utils.py
+|   |       
+|   +---controllers
+|   |       legal.controller.js
+|   |       
+|   +---domains
+|   |   |   __init__.py
+|   |   |   
+|   |   +---business
+|   |   |       service.py
+|   |   |       
+|   |   +---culture
+|   |   |       service.py
+|   |   |       
+|   |   +---news_intel
+|   |   |       service.py
+|   |   |       
+|   |   +---prophetic
+|   |   |       service.py
+|   |   |       
+|   |   +---scholar
+|   |   |       service.py
+|   |   |       
+|   |   \---__pycache__
+|   |           __init__.cpython-313.pyc
+|   |           
+|   +---events
+|   |       events_digital_currency_2025-07-25.json
+|   |       events_prophecy_2025-07-25.json
+|   |       events_prophecy_2025-08-14.json
+|   |       events_prophecy_2025-08-16.json
+|   |       events_prophecy_2025-08-17.json
+|   |       events_prophecy_2025-09-11.json
+|   |       events_prophecy_2025-10-14.json
+|   |       events_prophecy_2025-12-29.json
+|   |       events_prophecy_2026-01-03.json
+|   |       
+|   +---events_decoded
+|   |       events_2025-07-15.json
+|   |       events_2025-07-16.json
+|   |       events_2025-07-25.json
+|   |       events_prophecy_2025-07-25.json
+|   |       events_prophecy_2025-08-14.json
+|   |       events_prophecy_2025-08-16.json
+|   |       events_prophecy_2025-08-17.json
+|   |       events_prophecy_2025-09-11.json
+|   |       events_prophecy_2025-10-14.json
+|   |       events_prophecy_2025-12-29.json
+|   |       events_prophecy_2026-01-03.json
+|   |       
+|   +---events_tagged
+|   |       events_2025-07-09.json
+|   |       events_2025-07-15.json
+|   |       events_2025-07-16.json
+|   |       events_2025-07-25.json
+|   |       events_prophecy_2025-07-25.json
+|   |       events_prophecy_2025-08-14.json
+|   |       events_prophecy_2025-08-16.json
+|   |       events_prophecy_2025-08-17.json
+|   |       events_prophecy_2025-09-11.json
+|   |       events_prophecy_2025-10-14.json
+|   |       events_prophecy_2025-12-29.json
+|   |       events_prophecy_2026-01-03.json
+|   |       
+|   +---models
+|   |   |   LegalDoc.js
+|   |   |   models.py
+|   |   |   MultiFaithText.js
+|   |   |   ScriptureText.js
+|   |   |   
+|   |   \---__pycache__
+|   |           models.cpython-313.pyc
+|   |           
+|   +---routes
+|   |   |   admin_routes.py
+|   |   |   docs_routes.py
+|   |   |   domain_routes.py
+|   |   |   events_routes.py
+|   |   |   legal.js
+|   |   |   legal.routes.js
+|   |   |   notifications_routes.py
+|   |   |   prophecy_routes.py
+|   |   |   public_routes.py
+|   |   |   support_routes.py
+|   |   |   user_routes.py
+|   |   |   verseRoutes.js
+|   |   |   
+|   |   \---__pycache__
+|   |           admin_routes.cpython-313.pyc
+|   |           decoder_routes.cpython-313.pyc
+|   |           docs_routes.cpython-313.pyc
+|   |           domain_routes.cpython-313.pyc
+|   |           events_routes.cpython-313.pyc
+|   |           guest_routes.cpython-313.pyc
+|   |           notifications_routes.cpython-313.pyc
+|   |           prophecy_routes.cpython-313.pyc
+|   |           public_routes.cpython-313.pyc
+|   |           support_routes.cpython-313.pyc
+|   |           
+|   +---seeds
+|   |       seed_legal_docs.py
+|   |       
+|   +---services
+|   |   |   ai_router.py
+|   |   |   audit_logger.py
+|   |   |   billing_guard.py
+|   |   |   domain_registry.py
+|   |   |   verseService.js
+|   |   |   
+|   |   \---__pycache__
+|   |           audit_logger.cpython-313.pyc
+|   |           domain_registry.cpython-313.pyc
+|   |           
+|   +---tools
+|   |       generate_domain.py
+|   |       
+|   +---user_data
+|   |   |   history.json
+|   |   |   settings.json
+|   |   |   users.json
+|   |   |   user_bp.py
+|   |   |   user_functions.py
+|   |   |   __init__.py
+|   |   |   
+|   |   \---__pycache__
+|   |           user_bp.cpython-313.pyc
+|   |           user_functions.cpython-313.pyc
+|   |           __init__.cpython-313.pyc
+|   |           
+|   +---utils
+|   |   |   audit_logger.py
+|   |   |   auth_keys.py
+|   |   |   roles.py
+|   |   |   
+|   |   \---__pycache__
+|   |           audit_logger.cpython-313.pyc
+|   |           auth_keys.cpython-313.pyc
+|   |           
+| 
