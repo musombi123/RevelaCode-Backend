@@ -17,14 +17,15 @@ LOCK_FILE = os.path.join(
     ".daily_runner.lock"
 )
 
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 commands = [
-    "python backend/fetch_news.py",
-    "python backend/categorize.py",
-    "python backend/decode_news.py",
-    "python backend/archive_old_events.py"
+    "python fetch_news.py",
+    "python categorize.py",
+    "python decode_news.py",
+    "python archive_old_events.py"
 ]
+
 
 # ======================================================
 # LOGGING
