@@ -68,6 +68,7 @@ register_bp("backend.user_data", "user_bp")  # ✅ Corrected
 register_bp("backend.routes.events_routes", "events_bp")
 register_bp("backend.routes.docs_routes", "docs_bp")
 register_bp("backend.routes.prophecy_routes", "prophecy_bp")
+register_bp("backend.routes.domain_routes", "domain_bp")
 
 # ---------- OPTIONAL / FUTURE ----------
 register_bp("backend.guest_decode_limiter", "guest_bp")
@@ -85,6 +86,7 @@ def index():
         "message": "RevelaCode Backend is live",
         "status": "ok"
     }), 200
+
 
 @app.route("/health", methods=["GET"])
 def health():
@@ -130,4 +132,6 @@ if __name__ == "__main__":
     threading.Thread(target=daily_runner_loop, daemon=True).start()
     port = int(os.environ.get("PORT", 5000))
     logger.info(f"Starting server on port {port}")
-    app.run(host="0.0.0.0", port=port, debug=True)
+    # Disable reloader
+    app.run(host="0.0.0.0", port=port, debug=True, use_reloader=False)
+# ---------- END ----------
