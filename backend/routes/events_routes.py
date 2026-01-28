@@ -6,11 +6,11 @@ from backend.bible_decoder import BibleDecoder
 events_bp = Blueprint("events", __name__)
 
 EVENTS_FOLDER = os.path.join("backend", "events_decoded")
-decoder = BibleDecoder()  # Use the same BibleDecoder as prophecy
+decoder = BibleDecoder()  # Use BibleDecoder to extract symbols & verses
 
-def enrich_event_with_symbols(event):
+def enrich_event_with_symbols(event: dict) -> dict:
     """
-    Adds matched_symbols and matched_verses to an event based on its content
+    Adds matched_symbols and matched_verses to an event based on its content.
     """
     matched_symbols = []
     matched_verses = []
@@ -38,28 +38,47 @@ def enrich_event_with_symbols(event):
 @events_bp.route("/api/events", methods=["GET"])
 def get_week_events():
     """
-    Returns events decoded for the past 7 days, latest first, enriched with symbols.
+    Returns events decoded for the past 7 days, latest first,
+    enriched with matched_symbols and matched_verses.
     """
     try:
         os.makedirs(EVENTS_FOLDER, exist_ok=True)
         events_list = []
 
         for i in range(7):
-            day = datetime.now() - timedelta(days=i)
+            day = datetime.utcnow() - timedelta(days=i)
             day_str = day.strftime("%Y-%m-%d")
             event_path = os.path.join(EVENTS_FOLDER, f"events_{day_str}.json")
 
-            if os.path.exists(event_path):
-                try:
-                    with open(event_path, "r", encoding="utf-8") as f:
-                        day_events = json.load(f)
-                        for ev in day_events:
-                            ev["date"] = day_str
-                            enriched = enrich_event_with_symbols(ev)
-                            events_list.append(enriched)
-                except Exception as e:
-                    current_app.logger.warning(f"⚠️ Failed to load {event_path}: {e}")
-                    continue
+            if not os.path.exists(event_path):
+                continue
+
+            try:
+                with open(event_path, "r", encoding="utf-8") as f:
+                    day_events = json.load(f)
+                    for ev in day_events:
+                        ev["date"] = day_str
+                        enriched = enrich_event_with_symbols(ev)
+
+                        # Ensure all expected fields exist
+                        enriched.setdefault("headline", "")
+                        enriched.setdefault("description", "")
+                        enriched.setdefault("content", "")
+                        enriched.setdefault("author", "")
+                        enriched.setdefault("url", "")
+                        enriched.setdefault("urlToImage", "")
+                        enriched.setdefault("publishedAt", "")
+                        enriched.setdefault("source", "")
+                        enriched.setdefault("source_id", None)
+                        enriched.setdefault("categories", enriched.get("matched_symbols", []))
+                        enriched.setdefault("matched_symbols", [])
+                        enriched.setdefault("matched_verses", [])
+                        enriched.setdefault("location", {})  # {country: "X"} if available
+
+                        events_list.append(enriched)
+            except Exception as e:
+                current_app.logger.warning(f"⚠️ Failed to load {event_path}: {e}")
+                continue
 
         if not events_list:
             return jsonify({
@@ -68,7 +87,12 @@ def get_week_events():
                 "events": []
             }), 200
 
-        events_list.sort(key=lambda x: x.get("date", ""), reverse=True)
+        # Sort by publishedAt descending
+        events_list.sort(
+            key=lambda x: x.get("publishedAt") or x.get("date") or "",
+            reverse=True
+        )
+
         return jsonify({
             "status": "ok",
             "message": f"Returning {len(events_list)} events from the past week",
@@ -76,5 +100,9 @@ def get_week_events():
         }), 200
 
     except Exception as e:
-        current_app.logger.error(f"Error loading weekly events: {str(e)}")
-        return jsonify({"status": "error", "message": str(e), "events": []}), 500
+        current_app.logger.error(f"Error loading weekly events: {e}")
+        return jsonify({
+            "status": "error",
+            "message": str(e),
+            "events": []
+        }), 500
