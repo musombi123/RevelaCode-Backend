@@ -1,4 +1,3 @@
-# backend/auth_gate.py
 import os
 import json
 import random
@@ -9,7 +8,8 @@ from datetime import datetime, timedelta
 from flask import Blueprint, request, jsonify
 from dotenv import load_dotenv
 
-from .user_data import save_user_data
+# ✅ Use helpers from user_data instead of direct writes
+from .user_data.user_helpers import save_user_data, load_user_data
 
 # ================== LOAD ENV ==================
 load_dotenv()
@@ -40,7 +40,7 @@ def now_utc():
 def iso_in(minutes: int):
     return (now_utc() + timedelta(minutes=minutes)).isoformat()
 
-def is_expired(iso_time: str) -> bool:
+def is_expired(iso_time: str):
     try:
         return now_utc() > datetime.fromisoformat(iso_time)
     except Exception:
@@ -48,6 +48,7 @@ def is_expired(iso_time: str) -> bool:
 
 # ================== FILE HANDLING ==================
 def load_users() -> dict:
+    """Load all users from JSON safely."""
     if os.path.exists(USERS_FILE):
         with open(USERS_FILE, "r", encoding="utf-8") as f:
             try:
@@ -57,6 +58,7 @@ def load_users() -> dict:
     return {}
 
 def save_users(users: dict):
+    """Save all users to JSON safely with thread lock."""
     os.makedirs(os.path.dirname(USERS_FILE), exist_ok=True)
     with file_lock:
         with open(USERS_FILE, "w", encoding="utf-8") as f:
@@ -78,7 +80,7 @@ def set_user_code(users: dict, contact: str, code_type: str, minutes=10) -> str:
         user.update({"delete_code": code, "delete_expires": expires})
     return code
 
-def validate_user_code(user: dict, code_type: str, code: str) -> tuple[bool, str]:
+def validate_user_code(user: dict, code_type: str, code: str):
     code = (code or "").strip()
     if code_type == "verify":
         saved_code, expires = user.get("verification_code"), user.get("verification_expires")
@@ -105,7 +107,6 @@ def clear_user_code(user: dict, code_type: str):
         user.pop(k, None)
 
 # ================== ROUTES ==================
-
 @auth_bp.route("/api/register", methods=["POST"])
 def api_register():
     data = request.get_json(silent=True) or {}
@@ -139,7 +140,7 @@ def api_register():
     }
     save_users(users)
 
-    # Initialize user_data automatically
+    # ✅ Initialize user_data automatically
     save_user_data(contact, history=[], settings={"theme": "light", "linked_accounts": []})
 
     return jsonify({"success": True, "message": "Account created. Use debug code to verify.", "contact": contact}), 201
@@ -173,6 +174,8 @@ def verify_account():
     user["verified"] = True
     clear_user_code(user, "verify")
     save_users(users)
+    # ✅ Ensure user_data exists even if auto-login hasn't happened
+    save_user_data(contact)
     return jsonify({"success": True, "message": "Account verified"}), 200
 
 @auth_bp.route("/api/login", methods=["POST"])
@@ -191,7 +194,7 @@ def login():
     if hash_password(password) != user.get("password"):
         return jsonify({"success": False, "message": "Invalid password"}), 401
 
-    # Auto-load user_data if missing
+    # ✅ Auto-load user_data if missing
     save_user_data(contact)
 
     return jsonify({
@@ -238,4 +241,6 @@ def reset_password():
     user["password"] = hash_password(new_password)
     clear_user_code(user, "reset")
     save_users(users)
+    # ✅ Ensure user_data exists after reset
+    save_user_data(contact)
     return jsonify({"success": True, "message": "Password reset successful"}), 200

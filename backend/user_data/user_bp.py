@@ -1,73 +1,38 @@
-# backend/user_data/user_bp.py
 from flask import Blueprint, request, jsonify
-import os
-import json
-import tempfile
-import shutil
-import logging
+from .user_helpers import save_user_data, load_user_data
 
-# ------------------ BLUEPRINT ------------------
 user_bp = Blueprint("user", __name__)
 
-# ------------------ PATHS ------------------
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-USERS_FILE = os.path.join(BASE_DIR, "users.json")
+# ------------------- ROUTES -------------------
 
-# ------------------ LOGGING ------------------
-logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
-logger = logging.getLogger("user_bp")
-
-# ------------------ HELPERS ------------------
-def atomic_write(filepath, data):
-    """Safely write JSON data atomically."""
-    os.makedirs(os.path.dirname(filepath), exist_ok=True)
-    with tempfile.NamedTemporaryFile("w", dir=os.path.dirname(filepath), delete=False, encoding="utf-8") as tf:
-        json.dump(data, tf, indent=2)
-        tempname = tf.name
-    shutil.move(tempname, filepath)
-    logger.info(f"Data written to {filepath}")
-
-def load_users():
-    """Load all users from users.json"""
-    if os.path.exists(USERS_FILE):
-        try:
-            with open(USERS_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except json.JSONDecodeError:
-            return {}
-    return {}
-
-def save_users(users):
-    """Save all users to users.json"""
-    atomic_write(USERS_FILE, users)
-
-def load_user_data(contact):
-    """Load a single user's data (history & settings)"""
-    users = load_users()
-    return users.get(contact, {"history": [], "settings": {"theme": "light", "linked_accounts": []}})
-
-def save_user_data(contact, history=None, settings=None):
-    """Save a single user's history/settings"""
-    users = load_users()
-    if contact not in users:
-        users[contact] = {"contact": contact, "history": [], "settings": {"theme": "light", "linked_accounts": []}}
-    if history is not None:
-        users[contact]["history"] = history
-    if settings is not None:
-        users[contact]["settings"] = settings
-    save_users(users)
-
-# ------------------ ROUTES ------------------
 @user_bp.route("/api/user/<contact>", methods=["GET"])
 def get_user(contact):
-    """Fetch user data (history + settings)."""
-    return jsonify(load_user_data(contact)), 200
+    """
+    Fetch user data (history + settings).
+    If user data doesn't exist yet, auto-initialize defaults.
+    """
+    user_data = load_user_data(contact)
+    # Auto-initialize if missing
+    if user_data is None:
+        save_user_data(contact, history=[], settings={"theme": "light", "linked_accounts": []})
+        user_data = load_user_data(contact)
+    return jsonify(user_data), 200
+
 
 @user_bp.route("/api/user/<contact>", methods=["POST"])
 def update_user(contact):
-    """Update user history or settings."""
+    """
+    Update user history or settings.
+    Partial updates allowed — only pass what you want to update.
+    """
     data = request.get_json(silent=True) or {}
     history = data.get("history")
     settings = data.get("settings")
+
+    # Auto-load existing user_data if missing
+    existing = load_user_data(contact)
+    if existing is None:
+        save_user_data(contact, history=[], settings={"theme": "light", "linked_accounts": []})
+
     save_user_data(contact, history=history, settings=settings)
     return jsonify({"status": "success", "message": f"User data updated for {contact}"}), 200
