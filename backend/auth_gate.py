@@ -10,28 +10,21 @@ from flask import Blueprint, request, jsonify
 from dotenv import load_dotenv
 
 from .user_data import save_user_data
-from backend.user_data.store import authenticate
-
 
 # ================== LOAD ENV ==================
 load_dotenv()
 
 # ================== PATHS ==================
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DATA_DIR = os.path.join(BASE_DIR, "user_data")
-USERS_FILE = os.path.join(DATA_DIR, "users.json")
+USERS_FILE = os.path.join(BASE_DIR, "user_data", "users.json")
 
+# Thread lock for safe writes
 file_lock = threading.Lock()
 
 # ================== BLUEPRINT ==================
 auth_bp = Blueprint("auth", __name__)
 
 # ================== HELPERS ==================
-def parse_bool(value: str, default=False):
-    if value is None:
-        return default
-    return str(value).strip().lower() in ("1", "true", "yes", "y", "on")
-
 def is_valid_email(email: str) -> bool:
     return "@" in email and "." in email and len(email) >= 6
 
@@ -40,21 +33,6 @@ def hash_password(password: str) -> str:
 
 def generate_code() -> str:
     return str(random.randint(100000, 999999))
-
-def load_users():
-    if os.path.exists(USERS_FILE):
-        with open(USERS_FILE, "r", encoding="utf-8") as f:
-            try:
-                return json.load(f)
-            except json.JSONDecodeError:
-                return {}
-    return {}
-
-def save_users(users):
-    os.makedirs(os.path.dirname(USERS_FILE), exist_ok=True)
-    with file_lock:
-        with open(USERS_FILE, "w", encoding="utf-8") as f:
-            json.dump(users, f, indent=2)
 
 def now_utc():
     return datetime.utcnow()
@@ -68,68 +46,63 @@ def is_expired(iso_time: str) -> bool:
     except Exception:
         return True
 
-# ================== CORE CODE SYSTEM ==================
+# ================== FILE HANDLING ==================
+def load_users() -> dict:
+    if os.path.exists(USERS_FILE):
+        with open(USERS_FILE, "r", encoding="utf-8") as f:
+            try:
+                return json.load(f)
+            except json.JSONDecodeError:
+                return {}
+    return {}
+
+def save_users(users: dict):
+    os.makedirs(os.path.dirname(USERS_FILE), exist_ok=True)
+    with file_lock:
+        with open(USERS_FILE, "w", encoding="utf-8") as f:
+            json.dump(users, f, indent=2)
+
+# ================== CODES ==================
 def set_user_code(users: dict, contact: str, code_type: str, minutes=10) -> str:
     code = generate_code()
     expires = iso_in(minutes)
-
     if contact not in users:
         return ""
-
+    
+    user = users[contact]
     if code_type == "verify":
-        users[contact]["verification_code"] = code
-        users[contact]["verification_expires"] = expires
-        users[contact]["verified"] = False
-
+        user.update({"verification_code": code, "verification_expires": expires, "verified": False})
     elif code_type == "reset":
-        users[contact]["reset_code"] = code
-        users[contact]["reset_expires"] = expires
-
+        user.update({"reset_code": code, "reset_expires": expires})
     elif code_type == "delete":
-        users[contact]["delete_code"] = code
-        users[contact]["delete_expires"] = expires
-
+        user.update({"delete_code": code, "delete_expires": expires})
     return code
 
 def validate_user_code(user: dict, code_type: str, code: str) -> tuple[bool, str]:
     code = (code or "").strip()
-
     if code_type == "verify":
-        saved_code = str(user.get("verification_code") or "").strip()
-        expires = user.get("verification_expires")
-
+        saved_code, expires = user.get("verification_code"), user.get("verification_expires")
     elif code_type == "reset":
-        saved_code = str(user.get("reset_code") or "").strip()
-        expires = user.get("reset_expires")
-
+        saved_code, expires = user.get("reset_code"), user.get("reset_expires")
     elif code_type == "delete":
-        saved_code = str(user.get("delete_code") or "").strip()
-        expires = user.get("delete_expires")
-
+        saved_code, expires = user.get("delete_code"), user.get("delete_expires")
     else:
         return False, "Invalid code type"
 
     if not saved_code or not expires:
         return False, "No code found. Request a new one."
-
     if saved_code != code:
         return False, "Invalid code"
-
     if is_expired(expires):
         return False, "Code expired"
-
     return True, "OK"
 
 def clear_user_code(user: dict, code_type: str):
-    if code_type == "verify":
-        user.pop("verification_code", None)
-        user.pop("verification_expires", None)
-    elif code_type == "reset":
-        user.pop("reset_code", None)
-        user.pop("reset_expires", None)
-    elif code_type == "delete":
-        user.pop("delete_code", None)
-        user.pop("delete_expires", None)
+    keys = {"verify": ["verification_code", "verification_expires"],
+            "reset": ["reset_code", "reset_expires"],
+            "delete": ["delete_code", "delete_expires"]}
+    for k in keys.get(code_type, []):
+        user.pop(k, None)
 
 # ================== ROUTES ==================
 
@@ -154,6 +127,7 @@ def api_register():
     if contact in users:
         return jsonify({"success": False, "message": "Account already exists."}), 400
 
+    # Create user
     users[contact] = {
         "full_name": full_name,
         "contact": contact,
@@ -165,51 +139,33 @@ def api_register():
     }
     save_users(users)
 
+    # Initialize user_data automatically
     save_user_data(contact, history=[], settings={"theme": "light", "linked_accounts": []})
 
-    return jsonify({
-        "success": True,
-        "message": "Account created. Use debug code to verify.",
-        "contact": contact,
-        "next_step": "/api/request-code"
-    }), 201
+    return jsonify({"success": True, "message": "Account created. Use debug code to verify.", "contact": contact}), 201
 
-# ================== VERIFICATION (DEBUG MODE) ==================
 @auth_bp.route("/api/request-code", methods=["POST"])
 def request_code():
     data = request.get_json(silent=True) or {}
     contact = (data.get("contact") or "").strip()
     if not contact:
         return jsonify({"success": False, "message": "Contact required"}), 400
-    if not is_valid_email(contact):
-        return jsonify({"success": False, "message": "Invalid email"}), 400
-
     users = load_users()
     if contact not in users:
         return jsonify({"success": False, "message": "Account not found"}), 404
 
     code = set_user_code(users, contact, code_type="verify", minutes=10)
     save_users(users)
-
-    return jsonify({
-        "success": True,
-        "message": "Debug code generated",
-        "debug_code": code
-    }), 200
+    return jsonify({"success": True, "message": "Debug code generated", "debug_code": code}), 200
 
 @auth_bp.route("/api/verify", methods=["POST"])
 def verify_account():
     data = request.get_json(silent=True) or {}
-    contact = (data.get("contact") or "").strip()
-    code = (data.get("code") or "").strip()
-
-    if not contact or not code:
-        return jsonify({"success": False, "message": "Contact and code required"}), 400
+    contact, code = (data.get("contact") or "").strip(), (data.get("code") or "").strip()
     users = load_users()
     user = users.get(contact)
     if not user:
         return jsonify({"success": False, "message": "Account not found"}), 404
-
     ok, msg = validate_user_code(user, "verify", code)
     if not ok:
         return jsonify({"success": False, "message": msg}), 400
@@ -217,16 +173,12 @@ def verify_account():
     user["verified"] = True
     clear_user_code(user, "verify")
     save_users(users)
-
     return jsonify({"success": True, "message": "Account verified"}), 200
 
-# ================== LOGIN ==================
 @auth_bp.route("/api/login", methods=["POST"])
 def login():
     data = request.get_json(silent=True) or {}
-    contact = (data.get("contact") or "").strip()
-    password = (data.get("password") or "").strip()
-
+    contact, password = (data.get("contact") or "").strip(), (data.get("password") or "").strip()
     if not contact or not password:
         return jsonify({"success": False, "message": "Contact and password required"}), 400
 
@@ -234,15 +186,14 @@ def login():
     user = users.get(contact)
     if not user:
         return jsonify({"success": False, "message": "Account not found"}), 404
-
     if not user.get("verified"):
         return jsonify({"success": False, "message": "Account not verified"}), 403
-
-    hashed_password = hash_password(password)
-    if hashed_password != user.get("password"):
+    if hash_password(password) != user.get("password"):
         return jsonify({"success": False, "message": "Invalid password"}), 401
 
-    # return user data on success
+    # Auto-load user_data if missing
+    save_user_data(contact)
+
     return jsonify({
         "success": True,
         "message": "Login successful",
@@ -251,25 +202,17 @@ def login():
         "role": user["role"]
     }), 200
 
-# ================== PASSWORD RESET (DEBUG MODE) ==================
 @auth_bp.route("/api/forgot-password", methods=["POST"])
 def forgot_password():
     data = request.get_json(silent=True) or {}
     contact = (data.get("contact") or "").strip()
-    if not contact:
-        return jsonify({"success": False, "message": "Contact required"}), 400
     users = load_users()
     if contact not in users:
         return jsonify({"success": False, "message": "Account not found"}), 404
 
     code = set_user_code(users, contact, code_type="reset", minutes=10)
     save_users(users)
-
-    return jsonify({
-        "success": True,
-        "message": "Debug reset code generated",
-        "debug_code": code
-    }), 200
+    return jsonify({"success": True, "message": "Debug reset code generated", "debug_code": code}), 200
 
 @auth_bp.route("/api/reset-password", methods=["POST"])
 def reset_password():
@@ -278,7 +221,6 @@ def reset_password():
     code = (data.get("code") or "").strip()
     new_password = (data.get("new_password") or "").strip()
     confirm_password = (data.get("confirm_password") or "").strip()
-
     if not contact or not code or not new_password or not confirm_password:
         return jsonify({"success": False, "message": "All fields required"}), 400
     if len(new_password) < 6 or new_password != confirm_password:
@@ -296,5 +238,4 @@ def reset_password():
     user["password"] = hash_password(new_password)
     clear_user_code(user, "reset")
     save_users(users)
-
     return jsonify({"success": True, "message": "Password reset successful"}), 200
