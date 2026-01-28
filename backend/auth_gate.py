@@ -10,6 +10,14 @@ from dotenv import load_dotenv
 
 # ✅ Use helpers from user_data instead of direct writes
 from .user_data.user_helpers import save_user_data, load_user_data
+from backend.user_data.user_functions import (
+    save_user_data,
+    load_users,
+    save_users,
+    set_user_code,
+    clear_user_code
+)
+
 
 # ================== LOAD ENV ==================
 load_dotenv()
