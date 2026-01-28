@@ -10,6 +10,8 @@ from flask import Blueprint, request, jsonify
 from dotenv import load_dotenv
 
 from .user_data import save_user_data
+from backend.user_data.store import authenticate
+
 
 # ================== LOAD ENV ==================
 load_dotenv()
