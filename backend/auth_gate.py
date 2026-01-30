@@ -14,8 +14,6 @@ from backend.user_data.user_functions import (
     save_user_data,
     load_users,
     save_users,
-    set_user_code,
-    clear_user_code
 )
 
 
@@ -185,7 +183,6 @@ def verify_account():
     # ✅ Ensure user_data exists even if auto-login hasn't happened
     save_user_data(contact)
     return jsonify({"success": True, "message": "Account verified"}), 200
-
 @auth_bp.route("/api/login", methods=["POST"])
 def login():
     data = request.get_json(silent=True) or {}

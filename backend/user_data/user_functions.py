@@ -1,7 +1,7 @@
 # backend/user_data/user_functions.py
 
 from .store import create_user, authenticate
-from . import save_user_data, load_users, save_users, set_user_code, clear_user_code
+from .user_helpers import save_user_data, load_users, save_users
 from datetime import datetime
 import hashlib
 

@@ -8,7 +8,6 @@ import threading
 import time
 from datetime import datetime
 
-
 # ---------- ENV ----------
 load_dotenv()
 
@@ -62,7 +61,7 @@ def register_bp(import_path: str, bp_name: str):
 
 # ---------- AUTH & USERS ----------
 register_bp("backend.auth_gate", "auth_bp")
-register_bp("backend.user_data", "user_bp")  # ✅ Corrected
+register_bp("backend.user_data.user_bp", "user_bp")
 
 # ---------- ROUTES (backend/routes/) ----------
 register_bp("backend.routes.events_routes", "events_bp")
