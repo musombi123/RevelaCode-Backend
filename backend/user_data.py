@@ -5,10 +5,9 @@ import json, os, tempfile, shutil, logging
 user_bp = Blueprint("user", __name__)
 
 # Absolute path to backend directory
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # backend/
+USERS_FILE = os.path.join(BASE_DIR, "data", "users.json")
 
-# MAIN users file (SINGLE SOURCE OF TRUTH)
-USERS_FILE = os.path.join(BASE_DIR, "users.json")
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')

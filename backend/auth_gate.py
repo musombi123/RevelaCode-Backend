@@ -10,19 +10,13 @@ from dotenv import load_dotenv
 
 # ✅ Use helpers from user_data instead of direct writes
 from .user_data.user_helpers import save_user_data, load_user_data
-from backend.user_data.user_functions import (
-    save_user_data,
-    load_users,
-    save_users,
-)
-
 
 # ================== LOAD ENV ==================
 load_dotenv()
 
 # ================== PATHS ==================
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-USERS_FILE = os.path.join(BASE_DIR, "user_data", "users.json")
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # backend/
+USERS_FILE = os.path.join(BASE_DIR, "data", "users.json")
 
 # Thread lock for safe writes
 file_lock = threading.Lock()
@@ -75,7 +69,8 @@ def set_user_code(users: dict, contact: str, code_type: str, minutes=10) -> str:
     code = generate_code()
     expires = iso_in(minutes)
     if contact not in users:
-        return ""
+        raise ValueError("Contact not found when setting code")
+
     
     user = users[contact]
     if code_type == "verify":
