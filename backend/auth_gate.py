@@ -129,7 +129,7 @@ def api_register():
     if contact in users:
         return jsonify({"success": False, "message": "Account already exists."}), 400
 
-    # Create user
+# Create user with full structure
     users[contact] = {
         "full_name": full_name,
         "contact": contact,
@@ -137,9 +137,14 @@ def api_register():
         "role": "normal",
         "verified": False,
         "created_at": now_utc().isoformat(),
-        "guest_trials": 0
-    }
+        "guest_trials": 0,
+        "history": [],
+        "settings": {"theme": "light", "linked_accounts": []}
+        }
+
+    # Save atomically using your helper
     save_users(users)
+
 
     # ✅ Initialize user_data automatically
     save_user_data(contact, history=[], settings={"theme": "light", "linked_accounts": []})

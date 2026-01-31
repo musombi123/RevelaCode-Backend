@@ -5,6 +5,7 @@ import importlib.util
 import sys
 from pymongo import MongoClient
 from datetime import datetime
+from backend.utils.decorators import require_role
 
 # ----------------------------
 # Dynamic imports
@@ -105,3 +106,8 @@ def update_scripture():
         return jsonify({"message": "Forbidden"}), 403
 
     data = re
+@admin_bp.route("/admin/dashboard")
+@require_role("admin", notify=True, notify_text="Visited admin dashboard")
+def admin_dashboard():
+    return jsonify({"message": "Welcome, Admin! You have full access."})
+
