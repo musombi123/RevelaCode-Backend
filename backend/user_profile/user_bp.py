@@ -1,5 +1,5 @@
 from flask import Blueprint, request, jsonify
-from .user_helpers import save_user_data, load_user_data
+from backend.user_data import save_user_data, load_user_data
 
 user_bp = Blueprint("user", __name__)
 
