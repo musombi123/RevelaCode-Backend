@@ -2,7 +2,7 @@
 import os
 from flask import Flask, request, jsonify
 from backend.auth_gate import api_register, load_users
-from backend.user_data.user_helpers import save_user_data
+from backend.user_profile.user_helpers import save_user_data
 
 app = Flask(__name__)
 
