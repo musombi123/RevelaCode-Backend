@@ -30,6 +30,7 @@ def load_users():
             with open(USERS_FILE, "r", encoding="utf-8") as f:
                 return json.load(f)
         except json.JSONDecodeError:
+            logging.error("users.json is corrupted — returning empty dict")
             return {}
     return {}
 
@@ -38,31 +39,29 @@ def save_users(users: dict):
     atomic_write(USERS_FILE, users)
 
 def load_user_data(contact):
-    """Load user data (history & settings). Defaults if user doesn't exist yet."""
+    """Load user data (history & settings)."""
     users = load_users()
-    user = users.get(contact, {})
-    history = user.get("history", [])
-    settings = user.get("settings", {"theme": "light", "linked_accounts": []})
-    return {"history": history, "settings": settings}
+    user = users.get(contact)
+
+    if not user:
+        logging.error(f"Tried to load user_data for non-existent user: {contact}")
+        return {"history": [], "settings": {"theme": "light", "linked_accounts": []}}
+
+    return {
+        "history": user.get("history", []),
+        "settings": user.get("settings", {"theme": "light", "linked_accounts": []})
+    }
 
 def save_user_data(contact, history=None, settings=None):
-    """Save user data (history & settings) INTO users.json."""
+    """Save ONLY history & settings for an EXISTING registered user."""
     users = load_users()
 
+    # 🔥 CRITICAL FIX: DO NOT CREATE USERS HERE
     if contact not in users:
-        # Create minimal user shell if not registered yet
-        users[contact] = {
-            "contact": contact,
-            "history": [],
-            "settings": {"theme": "light", "linked_accounts": []},
-            "full_name": "",
-            "password": "",
-            "role": "normal",
-            "verified": False,
-            "created_at": datetime.utcnow().isoformat(),
-            "guest_trials": 0
-        }
+        logging.error(f"Tried to save user_data for non-existent user: {contact}")
+        return  # HARD STOP — auth_gate owns user creation
 
+    # Update only what we are allowed to update
     if history is not None:
         users[contact]["history"] = history
 
@@ -70,6 +69,7 @@ def save_user_data(contact, history=None, settings=None):
         users[contact]["settings"] = settings
 
     save_users(users)
+    logging.info(f"Updated user_data for {contact}")
 
 # ------------------- API ROUTES -------------------
 
@@ -84,5 +84,10 @@ def update_user(contact):
     data = request.get_json(silent=True) or {}
     history = data.get("history")
     settings = data.get("settings")
+
     save_user_data(contact, history=history, settings=settings)
-    return jsonify({"status": "success", "message": f"User data updated for {contact}"}), 200
+
+    return jsonify({
+        "status": "success",
+        "message": f"User data updated for {contact}"
+    }), 200
