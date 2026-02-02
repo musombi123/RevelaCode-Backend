@@ -39,7 +39,9 @@ get_all_users = models.get_all_users
 # ----------------------------
 # MongoDB setup
 # ----------------------------
-db = MongoClient("mongodb://localhost:27017/")["revelacode"]
+MONGO_URI = os.getenv("MONGO_URI")
+client = MongoClient(MONGO_URI)
+db = client["revelacode"]
 
 # ----------------------------
 # Blueprint

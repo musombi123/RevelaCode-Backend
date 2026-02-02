@@ -40,8 +40,9 @@ get_all_users = models.get_all_users
 # ----------------------------
 # MongoDB setup
 # ----------------------------
-db = MongoClient("mongodb://localhost:27017/")["revelacode"]
-
+MONGO_URI = os.getenv("MONGO_URI")
+client = MongoClient(MONGO_URI)
+db = client["revelacode"]
 # ----------------------------
 # Blueprint
 # ----------------------------
@@ -53,31 +54,27 @@ COLLECTIONS = {
     "admin_actions": "admin_actions"
 }
 
+# ✅ ONE (1) dashboard route — no duplicates
 @admin_bp.route("/admin/dashboard")
+@require_role("admin", notify=True, notify_text="Visited admin dashboard")
 def admin_dashboard():
-    role = get_role(request)
-    if role != "admin":
-        return jsonify({"message": "Forbidden"}), 403
     return jsonify({"message": "Welcome, Admin! You have full access."})
 
 @admin_bp.route("/admin/manage-users", methods=["POST"])
+@require_role("admin")
 def manage_users():
-    role = get_role(request)
-    if role != "admin":
-        return jsonify({"message": "Forbidden"}), 403
-
-    data = request.json
+    data = request.json or {}
     username = data.get("username")
     user_role = data.get("role")
 
     if not username or not user_role:
         return jsonify({"message": "Missing fields"}), 400
 
-    # Use models.py function
+    # Create user in Mongo
     user = create_user(db, username, user_role)
 
     # Log action
-    actor = "admin1"  # can replace with dynamic admin username
+    actor = "admin1"  # replace with real admin identity later
     log_admin_action(
         db,
         action="create_user",
@@ -89,25 +86,36 @@ def manage_users():
     return jsonify({"message": f"User {username} created successfully."})
 
 @admin_bp.route("/admin/list-users", methods=["GET"])
+@require_role("admin")
 def list_users():
-    role = get_role(request)
-    if role != "admin":
-        return jsonify({"message": "Forbidden"}), 403
-
     users = get_all_users(db)
     for u in users:
         u["_id"] = str(u["_id"])
     return jsonify(users)
 
 @admin_bp.route("/admin/update-scripture", methods=["POST"])
+@require_role("admin")
 def update_scripture():
-    role = get_role(request)
-    if role != "admin":
-        return jsonify({"message": "Forbidden"}), 403
+    data = request.json or {}
 
-    data = re
-@admin_bp.route("/admin/dashboard")
-@require_role("admin", notify=True, notify_text="Visited admin dashboard")
-def admin_dashboard():
-    return jsonify({"message": "Welcome, Admin! You have full access."})
+    scripture_id = data.get("id")
+    content = data.get("content")
 
+    if not scripture_id or not content:
+        return jsonify({"message": "Missing id or content"}), 400
+
+    # Example update (you can wire this to your real model later)
+    db[COLLECTIONS["scriptures"]].update_one(
+        {"_id": scripture_id},
+        {"$set": {"content": content, "updated_at": datetime.utcnow()}}
+    )
+
+    log_admin_action(
+        db,
+        action="update_scripture",
+        resource=scripture_id,
+        actor="admin1",
+        metadata={"updated": True}
+    )
+
+    return jsonify({"message": "Scripture updated successfully."})
