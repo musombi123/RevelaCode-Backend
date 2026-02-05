@@ -1,24 +1,34 @@
+import os
 import smtplib
 from email.mime.text import MIMEText
+from flask import Flask, jsonify
 
-host = "smtp.gmail.com"
-port = 587
-user = "musombiwilliam769@gmail.com"
-password = "gpuzmjftxkdbtjou"
-to = "musombiwilliam769@gmail.com"  # try sending to yourself first
+app = Flask(__name__)
 
-msg = MIMEText("Test email from RevelaCode")
-msg["Subject"] = "Test SMTP"
-msg["From"] = user
-msg["To"] = to
+user = os.getenv("EMAIL_USER")      # Set this on Render
+password = os.getenv("EMAIL_PASS")  # Set this on Render
+to = user
 
-try:
-    server = smtplib.SMTP(host, port)
-    server.set_debuglevel(1)  # prints SMTP conversation
-    server.starttls()
-    server.login(user, password)
-    server.send_message(msg)
-    print("✅ Email sent!")
-    server.quit()
-except Exception as e:
-    print("❌ SMTP error:", e)
+@app.route("/test-email", methods=["GET"])
+def test_email():
+    try:
+        server = smtplib.SMTP("smtp.gmail.com", 587, timeout=10)
+        server.ehlo()
+        server.starttls()
+        server.ehlo()
+        server.login(user, password)
+
+        msg = MIMEText("Render production email test from RevelaCode 🚀")
+        msg["Subject"] = "Render SMTP Test"
+        msg["From"] = user
+        msg["To"] = to
+
+        server.send_message(msg)
+        server.quit()
+        return jsonify({"status": "success", "message": "Email sent from Render"})
+
+    except Exception as e:
+        return jsonify({"status": "failed", "error": str(e)}), 500
+
+if __name__ == "__main__":
+    app.run()
