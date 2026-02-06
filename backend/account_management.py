@@ -41,7 +41,6 @@ def is_expired(time):
 
 # ---------------- FILE STORAGE HELPERS ----------------
 def sanitize_mongo_doc(doc: dict) -> dict:
-    """Convert Mongo ObjectId to string for JSON serialization."""
     if not doc:
         return doc
     doc_copy = doc.copy()
@@ -67,7 +66,7 @@ def save_users_file(users):
 
 def save_user_to_file(user_data):
     users = load_users_file()
-    users[user_data["contact"]] = sanitize_mongo_doc(user_data)  # <-- _id safe
+    users[user_data["contact"]] = sanitize_mongo_doc(user_data)
     save_users_file(users)
 
 def get_user_from_file(contact):
@@ -80,14 +79,14 @@ def get_user_from_file(contact):
 @accounts_bp.route("/api/request-reset", methods=["POST"])
 def request_reset():
     contact = (request.json or {}).get("contact")
-    user = users_col.find_one({"contact": contact}) if users_col else get_user_from_file(contact)
+    user = users_col.find_one({"contact": contact}) if users_col is not None else get_user_from_file(contact)
     if not user:
         return jsonify(success=False, message="Account not found"), 404
 
     code = generate_code()
     reset_data = {"code": code, "expires": expires_in(10).isoformat()}
 
-    if users_col:
+    if users_col is not None:
         users_col.update_one({"contact": contact}, {"$set": {"password_reset": reset_data}})
     else:
         user["password_reset"] = reset_data
@@ -102,7 +101,7 @@ def verify_reset():
     contact = data.get("contact")
     code = data.get("code")
 
-    user = users_col.find_one({"contact": contact}) if users_col else get_user_from_file(contact)
+    user = users_col.find_one({"contact": contact}) if users_col is not None else get_user_from_file(contact)
     if not user:
         return jsonify(success=False, message="Account not found"), 404
 
@@ -112,7 +111,7 @@ def verify_reset():
     if is_expired(reset.get("expires")):
         return jsonify(success=False, message="Code expired"), 400
 
-    if users_col:
+    if users_col is not None:
         users_col.update_one({"contact": contact}, {"$set": {"_can_reset": True}})
     else:
         user["_can_reset"] = True
@@ -133,13 +132,13 @@ def reset_password():
     if new_password != confirm:
         return jsonify(success=False, message="Passwords do not match"), 400
 
-    user = users_col.find_one({"contact": contact}) if users_col else get_user_from_file(contact)
+    user = users_col.find_one({"contact": contact}) if users_col is not None else get_user_from_file(contact)
     if not user:
         return jsonify(success=False, message="Account not found"), 404
     if not user.get("_can_reset"):
         return jsonify(success=False, message="Reset not authorized"), 403
 
-    if users_col:
+    if users_col is not None:
         users_col.update_one(
             {"contact": contact},
             {"$set": {"password": hash_password(new_password)},
@@ -157,14 +156,14 @@ def reset_password():
 @accounts_bp.route("/api/request-delete", methods=["POST"])
 def request_delete():
     contact = (request.json or {}).get("contact")
-    user = users_col.find_one({"contact": contact}) if users_col else get_user_from_file(contact)
+    user = users_col.find_one({"contact": contact}) if users_col is not None else get_user_from_file(contact)
     if not user:
         return jsonify(success=False, message="Account not found"), 404
 
     code = generate_code()
     delete_data = {"code": code, "expires": expires_in(10).isoformat()}
 
-    if users_col:
+    if users_col is not None:
         users_col.update_one({"contact": contact}, {"$set": {"delete_verification": delete_data}})
     else:
         user["delete_verification"] = delete_data
@@ -179,7 +178,7 @@ def confirm_delete():
     contact = data.get("contact")
     code = data.get("code")
 
-    user = users_col.find_one({"contact": contact}) if users_col else get_user_from_file(contact)
+    user = users_col.find_one({"contact": contact}) if users_col is not None else get_user_from_file(contact)
     if not user:
         return jsonify(success=False, message="Account not found"), 404
 
@@ -189,7 +188,7 @@ def confirm_delete():
     if is_expired(delete_ver.get("expires")):
         return jsonify(success=False, message="Code expired"), 400
 
-    if users_col:
+    if users_col is not None:
         users_col.delete_one({"contact": contact})
     else:
         users = load_users_file()
