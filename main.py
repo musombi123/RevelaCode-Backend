@@ -1,12 +1,12 @@
 # backend/main.py
-from flask import Flask, jsonify
-from flask_cors import CORS
 import os
 import logging
-from dotenv import load_dotenv
 import threading
 import time
 from datetime import datetime
+from flask import Flask, jsonify
+from flask_cors import CORS
+from dotenv import load_dotenv
 
 # ---------- ENV ----------
 load_dotenv()
@@ -18,13 +18,11 @@ logging.basicConfig(
 )
 logger = logging.getLogger("main")
 
-# ✅ SILENT IN PRODUCTION, SAFE IN DEV
 if os.getenv("FLASK_ENV") != "production":
     logger.info(f"MONGO_URI loaded: {bool(os.getenv('MONGO_URI'))}")
 
 # ---------- APP ----------
 app = Flask(__name__)
-
 CORS(
     app,
     supports_credentials=True,
@@ -39,7 +37,6 @@ CORS(
         }
     }
 )
-
 
 # ---------- DB INIT (OPTIONAL / SAFE) ----------
 try:
@@ -59,33 +56,31 @@ def register_bp(import_path: str, bp_name: str):
     except Exception as e:
         logger.warning(f"{bp_name} not available from {import_path}: {e}")
 
-# ---------- AUTH & USERS ----------
+# ---------- AUTH & USER MODULES ----------
 register_bp("backend.auth_gate", "auth_bp")
-register_bp("backend.user_profile.user_bp", "user_bp")
+register_bp("backend.user_data", "user_bp")
+register_bp("backend.account_management", "accounts_bp")
 
-# ---------- ROUTES (backend/routes/) ----------
+# ---------- ROUTES ----------
 register_bp("backend.routes.events_routes", "events_bp")
 register_bp("backend.routes.docs_routes", "docs_bp")
 register_bp("backend.routes.prophecy_routes", "prophecy_bp")
 register_bp("backend.routes.domain_routes", "domain_bp")
-
-# ---------- OPTIONAL / FUTURE ----------
-register_bp("backend.guest_decode_limiter", "guest_bp")
-register_bp("backend.routes.notifications_routes", "notifications_bp")
+register_bp("backend.routes.notifications_routes", "notifications_bp")  # optional
+register_bp("backend.guest_decode_limiter", "guest_bp")  # optional
 
 # ---------- ADMIN / SUPPORT / PUBLIC ----------
 register_bp("backend.routes.admin_routes", "admin_bp")
 register_bp("backend.routes.support_routes", "support_bp")
 register_bp("backend.routes.public_routes", "public_bp")
 
-# ---------- HEALTH ----------
+# ---------- HEALTH ENDPOINTS ----------
 @app.route("/", methods=["GET"])
 def index():
     return jsonify({
         "message": "RevelaCode Backend is live",
         "status": "ok"
     }), 200
-
 
 @app.route("/health", methods=["GET"])
 def health():
@@ -98,39 +93,41 @@ def health():
 # ---------- DAILY RUNNER (BACKGROUND) ----------
 def daily_runner_loop():
     last_run_date = None
-
-    # ✅ Force working directory to backend/
     backend_dir = os.path.abspath(os.path.join(os.path.dirname(__file__)))
 
     while True:
-        now = datetime.now().date()
-
-        if last_run_date != now:
+        today = datetime.now().date()
+        if last_run_date != today:
             try:
                 from backend.daily_runner import run_pipeline
                 logger.info("⏰ Running daily_runner pipeline")
 
-                # ✅ Run pipeline from inside backend folder (fixes root writing)
+                # ensure working dir is backend
                 current_dir = os.getcwd()
                 os.chdir(backend_dir)
-
                 try:
                     run_pipeline()
                 finally:
                     os.chdir(current_dir)
 
-                last_run_date = now
+                last_run_date = today
 
             except Exception as e:
                 logger.error(f"Daily runner failed: {e}")
 
         time.sleep(3600)  # check once per hour
 
-# ---------- START ----------
+# ---------- START SERVER ----------
 if __name__ == "__main__":
+    # Start daily runner in background
     threading.Thread(target=daily_runner_loop, daemon=True).start()
+
     port = int(os.environ.get("PORT", 5000))
     logger.info(f"Starting server on port {port}")
-    # Disable reloader
-    app.run(host="0.0.0.0", port=port, debug=True, use_reloader=False)
-# ---------- END ----------
+
+    app.run(
+        host="0.0.0.0",
+        port=port,
+        debug=os.getenv("FLASK_ENV") != "production",
+        use_reloader=False
+    )

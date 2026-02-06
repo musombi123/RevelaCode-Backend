@@ -1,35 +1,58 @@
+# backend/routes/notifications_routes.py
 from flask import Blueprint, request, jsonify
-import os, json
+import os
+import json
 from datetime import datetime
+from threading import Lock
 
 notifications_bp = Blueprint("notifications", __name__)
 
-NOTIFICATIONS_FILE = os.path.join("backend", "notifications.json")
+# ---------------------------
+# File storage (safe path)
+# ---------------------------
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+NOTIFICATIONS_FILE = os.path.join(BASE_DIR, "notifications.json")
+
+file_lock = Lock()
 
 # ---------------------------
 # Helpers
 # ---------------------------
 def load_notifications():
-    if os.path.exists(NOTIFICATIONS_FILE):
+    if not os.path.exists(NOTIFICATIONS_FILE):
+        return []
+
+    with file_lock:
         with open(NOTIFICATIONS_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    return []
+            try:
+                return json.load(f)
+            except json.JSONDecodeError:
+                return []
 
 def save_notifications(data):
-    with open(NOTIFICATIONS_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2)
+    with file_lock:
+        with open(NOTIFICATIONS_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+
+def _next_id(data):
+    return max((n["id"] for n in data), default=0) + 1
 
 def push_notification(text, extra=None):
-    """Internal helper for system/user events (not just API)."""
+    """Internal helper for system/user events."""
     data = load_notifications()
+
     new_item = {
-        "id": len(data) + 1,
+        "id": _next_id(data),
         "text": text,
         "read": False,
-        "timestamp": datetime.now().isoformat()
+        "timestamp": datetime.utcnow().isoformat()
     }
+
     if extra:
-        new_item.update(extra)  # can add url, type, user_id, etc.
+        for k, v in extra.items():
+            if k not in new_item:
+                new_item[k] = v
+
     data.append(new_item)
     save_notifications(data)
     return new_item
@@ -38,76 +61,65 @@ def push_notification(text, extra=None):
 # Routes
 # ---------------------------
 
-# --- Get all notifications ---
 @notifications_bp.route("/api/notifications", methods=["GET"])
 def get_notifications():
-    try:
-        data = load_notifications()
-        return jsonify(data), 200
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    data = load_notifications()
+    return jsonify({
+        "total": len(data),
+        "notifications": data
+    }), 200
 
-# --- Add notification (API) ---
+
 @notifications_bp.route("/api/notifications", methods=["POST"])
 def add_notification():
-    try:
-        new_note = request.get_json(force=True)
-        if not new_note.get("text"):
-            return jsonify({"error": "Text is required"}), 400
+    data = request.get_json(silent=True)
+    if not data or not data.get("text"):
+        return jsonify({"error": "Text is required"}), 400
 
-        note = push_notification(new_note["text"], extra=new_note)
-        return jsonify(note), 201
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    note = push_notification(data["text"], extra=data)
+    return jsonify(note), 201
 
-# --- Mark all as read ---
+
 @notifications_bp.route("/api/notifications/read-all", methods=["PUT"])
 def mark_all_read():
-    try:
-        data = load_notifications()
-        for n in data:
-            n["read"] = True
-        save_notifications(data)
-        return jsonify({"message": "All notifications marked as read"}), 200
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    data = load_notifications()
+    for n in data:
+        n["read"] = True
+    save_notifications(data)
 
-# --- Mark single notification as read ---
+    return jsonify({"message": "All notifications marked as read"}), 200
+
+
 @notifications_bp.route("/api/notifications/<int:note_id>", methods=["PUT"])
 def mark_single_read(note_id):
-    try:
-        data = load_notifications()
-        found = False
-        for n in data:
-            if n["id"] == note_id:
-                n["read"] = True
-                found = True
-        save_notifications(data)
+    data = load_notifications()
 
-        if not found:
-            return jsonify({"error": f"Notification {note_id} not found"}), 404
-        return jsonify({"message": f"Notification {note_id} marked as read"}), 200
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    for n in data:
+        if n["id"] == note_id:
+            n["read"] = True
+            save_notifications(data)
+            return jsonify({
+                "message": f"Notification {note_id} marked as read"
+            }), 200
 
-# --- Delete single notification ---
+    return jsonify({"error": f"Notification {note_id} not found"}), 404
+
+
 @notifications_bp.route("/api/notifications/<int:note_id>", methods=["DELETE"])
 def delete_notification(note_id):
-    try:
-        data = load_notifications()
-        new_data = [n for n in data if n["id"] != note_id]
-        if len(new_data) == len(data):
-            return jsonify({"error": f"Notification {note_id} not found"}), 404
-        save_notifications(new_data)
-        return jsonify({"message": f"Notification {note_id} deleted"}), 200
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    data = load_notifications()
+    new_data = [n for n in data if n["id"] != note_id]
 
-# --- Clear all notifications ---
+    if len(new_data) == len(data):
+        return jsonify({"error": f"Notification {note_id} not found"}), 404
+
+    save_notifications(new_data)
+    return jsonify({
+        "message": f"Notification {note_id} deleted"
+    }), 200
+
+
 @notifications_bp.route("/api/notifications", methods=["DELETE"])
 def clear_notifications():
-    try:
-        save_notifications([])
-        return jsonify({"message": "All notifications cleared"}), 200
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    save_notifications([])
+    return jsonify({"message": "All notifications cleared"}), 200

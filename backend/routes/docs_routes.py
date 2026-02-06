@@ -1,62 +1,56 @@
 # backend/routes/docs_routes.py
 from flask import Blueprint, jsonify, current_app, request
-from pymongo import MongoClient
 from datetime import datetime
 import os
 import logging
+
+from backend.db import get_db  # ✅ use shared DB
 
 docs_bp = Blueprint("docs", __name__)
 logger = logging.getLogger(__name__)
 
 # ---------- ENV ----------
-MONGO_URI = os.environ.get("MONGO_URI")
-ADMIN_API_KEY = os.environ.get("ADMIN_API_KEY")
-DB_NAME = os.environ.get("MONGO_DB_NAME", "revelacode")
+ADMIN_API_KEY = os.getenv("ADMIN_API_KEY")
 
 # ---------- Mongo Objects ----------
-client = None
 db = None
 legal_docs = None
 
+
 def init_mongo():
     """
-    Initialize MongoDB safely; do not crash on import.
+    Initialize MongoDB safely using shared connection.
+    Compatible with Mongoose defaults.
     """
-    global client, db, legal_docs
-
-    if not MONGO_URI:
-        logger.warning("MONGO_URI not set — legal docs API disabled")
-        return
+    global db, legal_docs
 
     try:
-        client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=3000)
-        client.server_info()  # force connection test
+        db = get_db()
 
-        db = client[DB_NAME]
-        legal_docs = db["legal_docs"]
-        logger.info("Legal docs MongoDB connection established")
+        # ✅ Mongoose pluralized collection name
+        legal_docs = db["legaldocs"]
+
+        logger.info("✅ Legal docs MongoDB ready")
 
     except Exception as e:
-        logger.error(f"Legal docs MongoDB connection failed: {e}")
-        client = None
+        logger.error(f"❌ Legal docs Mongo init failed: {e}")
         db = None
         legal_docs = None
 
-# Initialize Mongo ONCE
+
+# Initialize once
 init_mongo()
+
 
 # ---------- AUTH HELPER ----------
 def require_admin(req):
     key = req.headers.get("X-ADMIN-KEY")
     return bool(key and ADMIN_API_KEY and key == ADMIN_API_KEY)
 
+
 # ---------- PUBLIC ROUTE ----------
 @docs_bp.route("/api/legal/<doc_type>", methods=["GET"])
 def get_legal_doc(doc_type):
-    """
-    Guests and users can fetch docs. 
-    Returns a prompt for login if users want to save history.
-    """
     if legal_docs is None:
         return jsonify({
             "status": "error",
@@ -65,7 +59,8 @@ def get_legal_doc(doc_type):
 
     try:
         doc = legal_docs.find_one({"type": doc_type}, {"_id": 0})
-        if doc is None:
+
+        if not doc:
             return jsonify({
                 "status": "error",
                 "message": f"Document type '{doc_type}' not found"
@@ -73,8 +68,8 @@ def get_legal_doc(doc_type):
 
         return jsonify({
             "status": "success",
-            "type": doc.get("type"),
-            "content": doc.get("content"),
+            "type": doc["type"],
+            "content": doc["content"],
             "version": doc.get("version", "1.0"),
             "note": "👋 You are viewing as a guest. Login to save history."
         }), 200
@@ -86,12 +81,10 @@ def get_legal_doc(doc_type):
             "message": "Unexpected server error"
         }), 500
 
+
 # ---------- ADMIN ROUTE ----------
 @docs_bp.route("/api/admin/legal/<doc_type>", methods=["PUT"])
 def update_legal_doc(doc_type):
-    """
-    Only admins can edit docs.
-    """
     if not require_admin(request):
         return jsonify({
             "status": "error",
@@ -111,16 +104,13 @@ def update_legal_doc(doc_type):
             "message": "Missing 'content'"
         }), 400
 
-    content = data["content"]
-    version = data.get("version", "1.0")
-
     try:
         result = legal_docs.update_one(
             {"type": doc_type},
             {
                 "$set": {
-                    "content": content,
-                    "version": version,
+                    "content": data["content"],
+                    "version": data.get("version", "1.0"),
                     "updated_at": datetime.utcnow(),
                     "updated_by": "admin"
                 }

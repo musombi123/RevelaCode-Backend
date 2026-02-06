@@ -1,47 +1,11 @@
 # backend/routes/support_routes.py
 from flask import Blueprint, request, jsonify
-from pathlib import Path
-import importlib.util
-import sys
-from pymongo import MongoClient
 from datetime import datetime
 from bson.objectid import ObjectId
 
-# ----------------------------
-# Dynamic imports for utils & models
-# ----------------------------
-backend_path = Path(__file__).resolve().parent.parent  # /backend
-
-# auth_keys
-auth_keys_path = backend_path / "utils" / "auth_keys.py"
-spec = importlib.util.spec_from_file_location("auth_keys", str(auth_keys_path))
-auth_keys = importlib.util.module_from_spec(spec)
-sys.modules["auth_keys"] = auth_keys
-spec.loader.exec_module(auth_keys)
-get_role = auth_keys.get_role
-
-# audit_logger
-audit_logger_path = backend_path / "utils" / "audit_logger.py"
-spec = importlib.util.spec_from_file_location("audit_logger", str(audit_logger_path))
-audit_logger = importlib.util.module_from_spec(spec)
-sys.modules["audit_logger"] = audit_logger
-spec.loader.exec_module(audit_logger)
-log_admin_action = audit_logger.log_admin_action
-
-# models
-models_path = backend_path / "models" / "models.py"
-spec = importlib.util.spec_from_file_location("models", str(models_path))
-models = importlib.util.module_from_spec(spec)
-sys.modules["models"] = models
-spec.loader.exec_module(models)
-get_all_users = models.get_all_users
-
-# ----------------------------
-# MongoDB setup
-# ----------------------------
-MONGO_URI = os.getenv("MONGO_URI")
-client = MongoClient(MONGO_URI)
-db = client["revelacode"]
+from backend.db import get_db
+from backend.utils.auth_keys import get_role
+from backend.utils.audit_logger import log_admin_action
 
 # ----------------------------
 # Blueprint
@@ -53,49 +17,84 @@ COLLECTIONS = {
     "admin_actions": "admin_actions"
 }
 
+# ----------------------------
+# Dashboard
+# ----------------------------
 @support_bp.route("/support/dashboard")
 def support_dashboard():
     role = get_role(request)
     if role != "support":
         return jsonify({"message": "Forbidden"}), 403
-    return jsonify({"message": "Welcome, Support Team! You can manage tickets."})
 
+    return jsonify({
+        "message": "Welcome, Support Team! You can manage tickets."
+    }), 200
+
+# ----------------------------
+# View Tickets
+# ----------------------------
 @support_bp.route("/support/tickets", methods=["GET"])
 def view_tickets():
     role = get_role(request)
     if role != "support":
         return jsonify({"message": "Forbidden"}), 403
 
+    db = get_db()
     tickets = list(db[COLLECTIONS["support_tickets"]].find())
-    for t in tickets:
-        t["_id"] = str(t["_id"])
-    return jsonify({"tickets": tickets})
 
+    sanitized = []
+    for t in tickets:
+        sanitized.append({
+            "id": str(t["_id"]),
+            "user": t.get("user"),
+            "subject": t.get("subject"),
+            "status": t.get("status", "open"),
+            "created_at": str(t.get("created_at")),
+            "resolved_at": str(t.get("resolved_at")) if t.get("resolved_at") else None
+        })
+
+    return jsonify({
+        "tickets": sanitized,
+        "total": len(sanitized)
+    }), 200
+
+# ----------------------------
+# Resolve Ticket
+# ----------------------------
 @support_bp.route("/support/resolve-ticket", methods=["POST"])
 def resolve_ticket():
     role = get_role(request)
     if role != "support":
         return jsonify({"message": "Forbidden"}), 403
 
-    data = request.json
+    db = get_db()
+    data = request.get_json(silent=True) or {}
+
     ticket_id = data.get("ticket_id")
     resolution = data.get("resolution")
 
     if not ticket_id or not resolution:
         return jsonify({"message": "Missing fields"}), 400
 
-    db[COLLECTIONS["support_tickets"]].update_one(
+    result = db[COLLECTIONS["support_tickets"]].update_one(
         {"_id": ObjectId(ticket_id)},
-        {"$set": {"status": "resolved", "resolution": resolution, "resolved_at": datetime.utcnow()}}
+        {
+            "$set": {
+                "status": "resolved",
+                "resolution": resolution,
+                "resolved_at": datetime.utcnow()
+            }
+        }
     )
 
-    actor = "support1"
     log_admin_action(
         db,
         action="resolve_ticket",
         resource=ticket_id,
-        actor=actor,
-        metadata={"resolution": resolution}
+        actor="support",
+        metadata={"resolved": result.modified_count > 0}
     )
 
-    return jsonify({"message": f"Ticket {ticket_id} resolved."})
+    return jsonify({
+        "message": f"Ticket {ticket_id} resolved."
+    }), 200

@@ -2,7 +2,7 @@
 import json
 import os
 
-USERS_FILE = './backend/users.json'
+USERS_FILE = '.data/users.json'
 
 def load_users():
     if os.path.exists(USERS_FILE):
