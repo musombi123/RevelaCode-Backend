@@ -46,8 +46,13 @@ def save_users_file(users: dict):
 
 def save_user_to_file(user_data):
     users = load_users_file()
-    users[user_data["contact"]] = user_data
+    user_copy = user_data.copy()
+    # Convert Mongo ObjectId to string for JSON serialization
+    if "_id" in user_copy:
+        user_copy["_id"] = str(user_copy["_id"])
+    users[user_copy["contact"]] = user_copy
     save_users_file(users)
+
 
 def get_user_from_file(contact):
     users = load_users_file()
@@ -56,7 +61,7 @@ def get_user_from_file(contact):
 # ---------------- BLUEPRINT ----------------
 auth_bp = Blueprint("auth_bp", __name__)
 
-# ---------------- HELPERS ----------------
+# ---------------------------- HELPERS ----------------------------
 def hash_password(password: str) -> str:
     return hashlib.sha256(password.encode()).hexdigest()
 
@@ -71,6 +76,21 @@ def expires_in(minutes=10):
 
 def is_expired(time):
     return now() > time
+
+def sanitize_mongo_doc(doc: dict) -> dict:
+    """Convert Mongo ObjectId to string for JSON serialization."""
+    if not doc:
+        return doc
+    doc_copy = doc.copy()
+    if "_id" in doc_copy:
+        doc_copy["_id"] = str(doc_copy["_id"])
+    return doc_copy
+
+# ---------------------------- FILE HELPERS ----------------------------
+def save_user_to_file(user_data):
+    users = load_users_file()
+    users[ user_data["contact"] ] = sanitize_mongo_doc(user_data)  # <--- apply _id fix here
+    save_users_file(users)
 
 # ---------------- ROUTES ----------------
 
@@ -88,10 +108,8 @@ def register():
     if password != confirm:
         return jsonify(success=False, message="Passwords do not match"), 400
 
-    # Check existing MongoDB
     if MONGO_AVAILABLE and users_col.find_one({"contact": contact}):
         return jsonify(success=False, message="Account already exists"), 400
-    # Check file fallback
     if get_user_from_file(contact):
         return jsonify(success=False, message="Account already exists"), 400
 
@@ -108,10 +126,8 @@ def register():
         "domains": []
     }
 
-    # Save to MongoDB if available
     if MONGO_AVAILABLE:
         users_col.insert_one(user_data)
-    # Always save to file
     save_user_to_file(user_data)
 
     return jsonify(success=True, message="Account created"), 201
@@ -119,7 +135,11 @@ def register():
 # --------- Request Debug Code ---------
 @auth_bp.route("/api/request-code", methods=["POST"])
 def request_code():
-    contact = request.json.get("contact")
+    data = request.get_json(silent=True) or {}
+    contact = data.get("contact")
+    if not contact:
+        return jsonify(success=False, message="Contact required"), 400
+
     user = users_col.find_one({"contact": contact}) if MONGO_AVAILABLE else get_user_from_file(contact)
     if not user:
         return jsonify(success=False, message="Account not found"), 404
@@ -127,10 +147,8 @@ def request_code():
     code = generate_code()
     verification_data = {"code": code, "expires": expires_in(10).isoformat()}
 
-    # Update MongoDB
     if MONGO_AVAILABLE:
         users_col.update_one({"contact": contact}, {"$set": {"verification": verification_data}})
-    # Update file
     user["verification"] = verification_data
     save_user_to_file(user)
 
@@ -139,9 +157,12 @@ def request_code():
 # --------- Verify Account ---------
 @auth_bp.route("/api/verify", methods=["POST"])
 def verify():
-    data = request.json
+    data = request.get_json(silent=True) or {}
     contact = data.get("contact")
     code = data.get("code")
+
+    if not all([contact, code]):
+        return jsonify(success=False, message="Contact and code required"), 400
 
     user = users_col.find_one({"contact": contact}) if MONGO_AVAILABLE else get_user_from_file(contact)
     if not user:
@@ -153,7 +174,6 @@ def verify():
     if is_expired(datetime.fromisoformat(verification.get("expires"))):
         return jsonify(success=False, message="Code expired"), 400
 
-    # Update verified status
     if MONGO_AVAILABLE:
         users_col.update_one({"contact": contact}, {"$set": {"verified": True}, "$unset": {"verification": ""}})
     user["verified"] = True
@@ -165,9 +185,12 @@ def verify():
 # --------- Login ---------
 @auth_bp.route("/api/login", methods=["POST"])
 def login():
-    data = request.json
+    data = request.get_json(silent=True) or {}
     contact = data.get("contact")
     password = data.get("password")
+
+    if not all([contact, password]):
+        return jsonify(success=False, message="Contact and password required"), 400
 
     user = users_col.find_one({"contact": contact}) if MONGO_AVAILABLE else get_user_from_file(contact)
     if not user:

@@ -5,6 +5,7 @@ import threading
 from datetime import datetime
 from flask import Blueprint, request, jsonify
 
+# ---------------------------- MONGO SETUP ----------------------------
 try:
     from backend.db import db  # MongoDB instance
     MONGO_AVAILABLE = True
@@ -13,9 +14,7 @@ except Exception:
     MONGO_AVAILABLE = False
     users_col = None
 
-# ----------------------------
-# File-based fallback in data/
-# ----------------------------
+# ---------------------------- FILE FALLBACK SETUP ----------------------------
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA_DIR = os.path.join(BASE_DIR, "data")
 os.makedirs(DATA_DIR, exist_ok=True)
@@ -44,26 +43,32 @@ def save_users_file(users: dict):
     with file_lock:
         atomic_write(USERS_FILE, users)
 
-# ----------------------------
-# Blueprint
-# ----------------------------
+# ---------------------------- HELPER ----------------------------
+def sanitize_mongo_doc(doc: dict) -> dict:
+    """Convert Mongo ObjectId to string for JSON serialization."""
+    if not doc:
+        return doc
+    doc_copy = doc.copy()
+    if "_id" in doc_copy:
+        doc_copy["_id"] = str(doc_copy["_id"])
+    return doc_copy
+
+# ---------------------------- BLUEPRINT ----------------------------
 user_bp = Blueprint("user_bp", __name__)
 
-# ----------------------------
-# Routes
-# ----------------------------
+# ---------------------------- ROUTES ----------------------------
 @user_bp.route("/api/user/<contact>", methods=["GET"])
 def get_user(contact):
     """Fetch user data, auto-create if missing."""
     user = None
     if MONGO_AVAILABLE:
-        user = users_col.find_one({"contact": contact}, {"_id": 0})
-    
+        user = users_col.find_one({"contact": contact})
+        user = sanitize_mongo_doc(user)
+
+    users = load_users_file()
     if not user:
-        # fallback to file
-        users = load_users_file()
         user = users.get(contact)
-    
+
     if not user:
         # auto-create defaults
         user = {
@@ -79,10 +84,10 @@ def get_user(contact):
                 users_col.insert_one(user)
             except Exception:
                 pass
-        # Save to file
-        users = load_users_file()
-        users[contact] = user
-        save_users_file(users)
+
+    # Always save/update file fallback
+    users[contact] = sanitize_mongo_doc(user)
+    save_users_file(users)
 
     return jsonify(user), 200
 
@@ -102,7 +107,7 @@ def update_user(contact):
         result = users_col.update_one({"contact": contact}, {"$set": update})
         if result.matched_count == 0:
             # create if missing
-            new_data = {"contact": contact, **update, "created_at": datetime.utcnow()}
+            new_data = {"contact": contact, **update, "created_at": datetime.utcnow().isoformat()}
             try:
                 users_col.insert_one(new_data)
             except Exception:
@@ -119,6 +124,7 @@ def update_user(contact):
             "created_at": datetime.utcnow().isoformat()
         }
     users[contact].update(update)
+    users[contact] = sanitize_mongo_doc(users[contact])
     save_users_file(users)
 
     return jsonify({"success": True, "message": "User data updated"}), 200

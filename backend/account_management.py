@@ -1,3 +1,4 @@
+# backend/user_profile/accounts.py
 import os
 import json
 import threading
@@ -39,6 +40,15 @@ def is_expired(time):
     return now() > time
 
 # ---------------- FILE STORAGE HELPERS ----------------
+def sanitize_mongo_doc(doc: dict) -> dict:
+    """Convert Mongo ObjectId to string for JSON serialization."""
+    if not doc:
+        return doc
+    doc_copy = doc.copy()
+    if "_id" in doc_copy:
+        doc_copy["_id"] = str(doc_copy["_id"])
+    return doc_copy
+
 def load_users_file():
     if os.path.exists(USERS_FILE):
         try:
@@ -57,7 +67,7 @@ def save_users_file(users):
 
 def save_user_to_file(user_data):
     users = load_users_file()
-    users[user_data["contact"]] = user_data
+    users[user_data["contact"]] = sanitize_mongo_doc(user_data)  # <-- _id safe
     save_users_file(users)
 
 def get_user_from_file(contact):
@@ -77,11 +87,9 @@ def request_reset():
     code = generate_code()
     reset_data = {"code": code, "expires": expires_in(10).isoformat()}
 
-    # Update MongoDB
     if users_col:
         users_col.update_one({"contact": contact}, {"$set": {"password_reset": reset_data}})
-    # Update file fallback
-    if not users_col:
+    else:
         user["password_reset"] = reset_data
         save_user_to_file(user)
 
