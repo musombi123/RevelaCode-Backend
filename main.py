@@ -23,13 +23,14 @@ if os.getenv("FLASK_ENV") != "production":
 
 # ---------- APP ----------
 app = Flask(__name__)
+
 CORS(
     app,
     resources={
         r"/*": {
             "origins": [
                 "https://revelacode-frontend.onrender.com",
-                "https://www.revelacode-frontend.onrender.com"
+                "https://www.revelacode-frontend.onrender.com",
             ]
         }
     },
@@ -37,9 +38,10 @@ CORS(
     allow_headers=[
         "Content-Type",
         "Authorization",
-        "X-ADMIN-KEY"
+        "X-ADMIN-KEY",
+        "x-api-key",
     ],
-    methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"]
+    methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
 )
 
 # ---------- DB INIT (OPTIONAL / SAFE) ----------
