@@ -2,6 +2,7 @@
 import os
 import json
 import threading
+from datetime import datetime
 from flask import Blueprint, request, jsonify
 from flask_cors import cross_origin
 
@@ -46,18 +47,17 @@ def save_user_to_file(user_data):
 history_bp = Blueprint("history_bp", __name__)
 
 # ---------------- ROUTES ----------------
-@history_bp.route("/history", methods=["GET", "POST", "OPTIONS"])
+@history_bp.route("/history", methods=["GET", "POST", "DELETE", "OPTIONS"])
 @cross_origin(
     origins=[
         "https://revelacode-frontend.onrender.com",
         "https://www.revelacode-frontend.onrender.com"
     ],
     supports_credentials=True,
-    methods=["GET", "POST", "OPTIONS"],
-    allow_headers=["Content-Type", "Authorization", "X-ADMIN-KEY"]
+    methods=["GET", "POST", "DELETE", "OPTIONS"],
+    allow_headers=["Content-Type", "Authorization", "X-ADMIN-KEY", "X-Timestamp"]
 )
 def history():
-    # Using Authorization header as contact (or replace with your auth method)
     contact = request.headers.get("Authorization")
     if not contact:
         return jsonify({"success": False, "message": "Unauthorized"}), 401
@@ -70,19 +70,24 @@ def history():
     if request.method == "GET":
         return jsonify({"success": True, "history": user.get("history", [])}), 200
 
-    # ---------- POST: add to history ----------
+    # ---------- POST ----------
     if request.method == "POST":
-        data = request.get_json(silent=True) or {}
-        entry = data.get("entry")
+        entry = request.get_json(silent=True) or {}
         if not entry:
             return jsonify({"success": False, "message": "No history entry provided"}), 400
 
         history_list = user.get("history", [])
         history_list.append({
-            "entry": entry,
-            "timestamp": request.headers.get("X-Timestamp") or str(request.environ.get("werkzeug.request").date)
+            **entry,
+            "timestamp": request.headers.get("X-Timestamp") or datetime.utcnow().isoformat()
         })
         user["history"] = history_list
         save_user_to_file(user)
 
         return jsonify({"success": True, "history": user["history"]}), 201
+
+    # ---------- DELETE ----------
+    if request.method == "DELETE":
+        user["history"] = []
+        save_user_to_file(user)
+        return jsonify({"success": True, "history": []}), 200
