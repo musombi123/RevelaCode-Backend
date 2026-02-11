@@ -115,12 +115,3 @@ def support_login():
         "status": "ok"
     }), 200
 
-# ---------- BLUEPRINT REGISTRATION HELPER ----------
-def register_bp(import_path: str, bp_name: str, url_prefix: str = None):
-    try:
-        module = __import__(import_path, fromlist=[bp_name])
-        bp = getattr(module, bp_name)
-        app.register_blueprint(bp, url_prefix=url_prefix)
-        logger.info(f"{bp_name} registered ({import_path}) with prefix {url_prefix}")
-    except Exception as e:
-        logger.warning(f"{bp_name} not available from {import_path}: {e}")
