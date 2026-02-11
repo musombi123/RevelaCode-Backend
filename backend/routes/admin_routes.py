@@ -8,6 +8,12 @@ from backend.utils.decorators import require_role
 from backend.utils.auth_keys import get_role
 from backend.utils.audit_logger import log_admin_action
 from backend.models.models import create_user, get_all_users
+from dotenv import load_dotenv
+
+# ----------------------------
+# Load environment variables
+# ----------------------------
+load_dotenv()
 
 # ----------------------------
 # Blueprint
@@ -21,19 +27,32 @@ COLLECTIONS = {
 }
 
 # ----------------------------
-# Dashboard
+# Read API key from .env
 # ----------------------------
-@admin_bp.route("/admin/dashboard")
-@require_role("admin", notify=True, notify_text="Visited admin dashboard")
-def admin_dashboard():
-    return jsonify({"message": "Welcome, Admin! You have full access."})
+ADMIN_API_KEY = os.getenv("ADMIN_API_KEY")
+
+def require_admin_key():
+    api_key = request.headers.get("X-ADMIN-API-KEY")
+    return api_key == ADMIN_API_KEY and ADMIN_API_KEY is not None
 
 # ----------------------------
-# User Management
+# Dashboard
+# ----------------------------
+@admin_bp.route("/admin/dashboard", methods=["GET"])
+def admin_dashboard():
+    if not require_admin_key():
+        return jsonify({"message": "Unauthorized: Invalid or missing ADMIN_API_KEY"}), 401
+
+    return jsonify({"message": "Welcome, Admin! You have full access."}), 200
+
+# ----------------------------
+# User Management - CREATE USER
 # ----------------------------
 @admin_bp.route("/admin/manage-users", methods=["POST"])
-@require_role("admin")
 def manage_users():
+    if not require_admin_key():
+        return jsonify({"message": "Unauthorized: Invalid or missing ADMIN_API_KEY"}), 401
+
     db = get_db()
     data = request.get_json(silent=True) or {}
 
@@ -41,9 +60,15 @@ def manage_users():
     user_role = data.get("role")
 
     if not username or not user_role:
-        return jsonify({"message": "Missing fields"}), 400
+        return jsonify({"message": "Missing fields: username and role required"}), 400
 
-    user = create_user(db, username, user_role)
+    new_user = {
+        "username": username,
+        "role": user_role,
+        "created_at": datetime.utcnow()
+    }
+
+    db[COLLECTIONS["users"]].insert_one(new_user)
 
     log_admin_action(
         db,
@@ -54,34 +79,46 @@ def manage_users():
     )
 
     return jsonify({
-        "message": f"User {username} created successfully."
+        "message": f"User {username} created successfully.",
+        "user": {
+            "username": username,
+            "role": user_role
+        }
     }), 201
 
+# ----------------------------
+# User Management - LIST USERS
+# ----------------------------
 @admin_bp.route("/admin/list-users", methods=["GET"])
-@require_role("admin")
 def list_users():
-    db = get_db()
-    users = get_all_users(db)
+    if not require_admin_key():
+        return jsonify({"message": "Unauthorized: Invalid or missing ADMIN_API_KEY"}), 401
 
-    sanitized = []
-    for u in users:
-        sanitized.append({
+    db = get_db()
+
+    users_cursor = db[COLLECTIONS["users"]].find()
+    users = []
+
+    for u in users_cursor:
+        users.append({
             "username": u.get("username"),
             "role": u.get("role", "user"),
             "created_at": str(u.get("created_at"))
         })
 
     return jsonify({
-        "users": sanitized,
-        "total": len(sanitized)
+        "users": users,
+        "total": len(users)
     }), 200
 
 # ----------------------------
 # Scripture Management
 # ----------------------------
 @admin_bp.route("/admin/update-scripture", methods=["POST"])
-@require_role("admin")
 def update_scripture():
+    if not require_admin_key():
+        return jsonify({"message": "Unauthorized: Invalid or missing ADMIN_API_KEY"}), 401
+
     db = get_db()
     data = request.get_json(silent=True) or {}
 
@@ -108,5 +145,6 @@ def update_scripture():
     )
 
     return jsonify({
-        "message": "Scripture updated successfully."
+        "message": "Scripture updated successfully.",
+        "modified": result.modified_count
     }), 200
