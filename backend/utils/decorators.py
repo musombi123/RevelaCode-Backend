@@ -1,14 +1,13 @@
 from functools import wraps
 from flask import request, jsonify
 from backend.routes.notifications_routes import push_notification
+from backend.utils.auth_keys import get_role as auth_get_role  # ✅ corrected
 
 # Simple role-based access + optional notification + logging
 def require_role(role_name, notify=False, notify_text=None):
     def decorator(f):
         @wraps(f)
         def wrapper(*args, **kwargs):
-            # Import auth dynamically if not already
-            from backend.auth_gate import get_role as auth_get_role
             role = auth_get_role(request)
 
             if role != role_name:
