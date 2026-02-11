@@ -20,7 +20,7 @@ COLLECTIONS = {
 # ----------------------------
 # Dashboard
 # ----------------------------
-@support_bp.route("/support/dashboard")
+@support_bp.route("/dashboard")
 def support_dashboard():
     role = get_role(request)
     if role != "support":
@@ -33,7 +33,7 @@ def support_dashboard():
 # ----------------------------
 # View Tickets
 # ----------------------------
-@support_bp.route("/support/tickets", methods=["GET"])
+@support_bp.route("/tickets", methods=["GET"])
 def view_tickets():
     role = get_role(request)
     if role != "support":
@@ -61,7 +61,7 @@ def view_tickets():
 # ----------------------------
 # Resolve Ticket
 # ----------------------------
-@support_bp.route("/support/resolve-ticket", methods=["POST"])
+@support_bp.route("/resolve-ticket", methods=["POST"])
 def resolve_ticket():
     role = get_role(request)
     if role != "support":
@@ -102,7 +102,7 @@ def resolve_ticket():
 # ----------------------------
 # Support Login
 # ----------------------------
-@support_bp.route("/support/login", methods=["POST"])
+@support_bp.route("/login", methods=["POST"])
 def support_login():
     role = get_role(request)
 
