@@ -86,7 +86,11 @@ try:
 except Exception as e:
     logger.warning(f"admin_bp registration failed: {e}")
 
-register_bp("backend.routes.support_routes", "support_bp")
+app.register_blueprint(
+    __import__("backend.routes.support_routes", fromlist=["support_bp"]).support_bp,
+    url_prefix="/api/support"
+)
+
 register_bp("backend.routes.public_routes", "public_bp")
 
 # ---------- HEALTH ENDPOINTS ----------
