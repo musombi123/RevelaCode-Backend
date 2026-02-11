@@ -1,14 +1,12 @@
-# backend/routes/admin_routes.py
 from flask import Blueprint, request, jsonify
 from datetime import datetime
-import os
+from dotenv import load_dotenv
 
 from backend.db import get_db
 from backend.utils.decorators import require_role
 from backend.utils.auth_keys import get_role
 from backend.utils.audit_logger import log_admin_action
 from backend.models.models import create_user, get_all_users
-from dotenv import load_dotenv
 
 # ----------------------------
 # Load environment variables
@@ -20,39 +18,36 @@ load_dotenv()
 # ----------------------------
 admin_bp = Blueprint("admin", __name__)
 
-COLLECTIONS = {
-    "users": "users",
-    "scriptures": "scriptures",
-    "admin_actions": "admin_actions"
-}
-
 # ----------------------------
-# Read API key from .env
+# ADMIN LOGIN
 # ----------------------------
-ADMIN_API_KEY = os.getenv("ADMIN_API_KEY")
+@admin_bp.route("/admin/login", methods=["POST"])
+def admin_login():
+    role = get_role(request)
 
-def require_admin_key():
-    api_key = request.headers.get("X-ADMIN-API-KEY")
-    return api_key == ADMIN_API_KEY and ADMIN_API_KEY is not None
+    if role != "admin":
+        return jsonify({"message": "Unauthorized: Invalid API Key"}), 401
+
+    return jsonify({
+        "message": "Admin authenticated successfully",
+        "role": role,
+        "status": "ok"
+    }), 200
 
 # ----------------------------
 # Dashboard
 # ----------------------------
 @admin_bp.route("/admin/dashboard", methods=["GET"])
+@require_role("admin", notify=True, notify_text="Visited admin dashboard")
 def admin_dashboard():
-    if not require_admin_key():
-        return jsonify({"message": "Unauthorized: Invalid or missing ADMIN_API_KEY"}), 401
-
     return jsonify({"message": "Welcome, Admin! You have full access."}), 200
 
 # ----------------------------
-# User Management - CREATE USER
+# User Management - CREATE USER (ADMIN CAN CREATE SUPPORT)
 # ----------------------------
 @admin_bp.route("/admin/manage-users", methods=["POST"])
+@require_role("admin")
 def manage_users():
-    if not require_admin_key():
-        return jsonify({"message": "Unauthorized: Invalid or missing ADMIN_API_KEY"}), 401
-
     db = get_db()
     data = request.get_json(silent=True) or {}
 
@@ -62,13 +57,12 @@ def manage_users():
     if not username or not user_role:
         return jsonify({"message": "Missing fields: username and role required"}), 400
 
-    new_user = {
-        "username": username,
-        "role": user_role,
-        "created_at": datetime.utcnow()
-    }
+    # Only allow valid roles: admin, support, user
+    if user_role not in ["admin", "support", "user"]:
+        return jsonify({"message": "Invalid role. Must be 'admin', 'support', or 'user'."}), 400
 
-    db[COLLECTIONS["users"]].insert_one(new_user)
+    # Create user in DB
+    user = create_user(db, username, user_role)
 
     log_admin_action(
         db,
@@ -79,10 +73,10 @@ def manage_users():
     )
 
     return jsonify({
-        "message": f"User {username} created successfully.",
+        "message": f"User {username} with role {user_role} created successfully.",
         "user": {
-            "username": username,
-            "role": user_role
+            "username": user["username"],
+            "role": user["role"]
         }
     }), 201
 
@@ -90,16 +84,13 @@ def manage_users():
 # User Management - LIST USERS
 # ----------------------------
 @admin_bp.route("/admin/list-users", methods=["GET"])
+@require_role("admin")
 def list_users():
-    if not require_admin_key():
-        return jsonify({"message": "Unauthorized: Invalid or missing ADMIN_API_KEY"}), 401
-
     db = get_db()
+    users_from_db = get_all_users(db)
 
-    users_cursor = db[COLLECTIONS["users"]].find()
     users = []
-
-    for u in users_cursor:
+    for u in users_from_db:
         users.append({
             "username": u.get("username"),
             "role": u.get("role", "user"),
@@ -115,10 +106,8 @@ def list_users():
 # Scripture Management
 # ----------------------------
 @admin_bp.route("/admin/update-scripture", methods=["POST"])
+@require_role("admin")
 def update_scripture():
-    if not require_admin_key():
-        return jsonify({"message": "Unauthorized: Invalid or missing ADMIN_API_KEY"}), 401
-
     db = get_db()
     data = request.get_json(silent=True) or {}
 
@@ -128,7 +117,7 @@ def update_scripture():
     if not scripture_id or not content:
         return jsonify({"message": "Missing id or content"}), 400
 
-    result = db[COLLECTIONS["scriptures"]].update_one(
+    result = db["scriptures"].update_one(
         {"_id": scripture_id},
         {"$set": {
             "content": content,

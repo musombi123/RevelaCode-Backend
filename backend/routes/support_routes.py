@@ -98,3 +98,20 @@ def resolve_ticket():
     return jsonify({
         "message": f"Ticket {ticket_id} resolved."
     }), 200
+
+# ----------------------------
+# Support Login
+# ----------------------------
+@support_bp.route("/support/login", methods=["POST"])
+def support_login():
+    role = get_role(request)
+
+    if role != "support":
+        return jsonify({"message": "Unauthorized: Invalid API Key"}), 401
+
+    return jsonify({
+        "message": "Support authenticated successfully",
+        "role": role,
+        "status": "ok"
+    }), 200
+
