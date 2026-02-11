@@ -40,6 +40,7 @@ CORS(
         "Authorization",
         "X-ADMIN-KEY",
         "x-api-key",
+        "X-ADMIN-API-KEY",
     ],
     methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
 )
@@ -78,7 +79,13 @@ register_bp("backend.routes.notifications_routes", "notifications_bp")  # option
 register_bp("backend.guest_decode_limiter", "guest_bp")  # optional
 
 # ---------- ADMIN / SUPPORT / PUBLIC ----------
-register_bp("backend.routes.admin_routes", "admin_bp")
+try:
+    from backend.routes.admin_routes import admin_bp
+    app.register_blueprint(admin_bp, url_prefix="/api")
+    logger.info("admin_bp registered with /api prefix")
+except Exception as e:
+    logger.warning(f"admin_bp registration failed: {e}")
+
 register_bp("backend.routes.support_routes", "support_bp")
 register_bp("backend.routes.public_routes", "public_bp")
 
