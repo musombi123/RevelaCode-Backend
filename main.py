@@ -108,6 +108,24 @@ def health():
         "mongo_uri_set": bool(os.getenv("MONGO_URI"))
     }), 200
 
+# -------- SELF-PING / KEEP-ALIVE --------
+SELF_URL = "https://revelacode-backend.onrender.com/health"
+PING_INTERVAL = 5 * 60  # every 5 minutes
+
+async def keep_alive():
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        while True:
+            try:
+                response = await client.get(SELF_URL)
+                if response.status_code == 200:
+                    print("[KEEP-ALIVE] Ping successful")
+                else:
+                    print(f"[KEEP-ALIVE] Ping failed: {response.status_code}")
+            except Exception as e:
+                print(f"[KEEP-ALIVE] Ping error: {e}")
+            await asyncio.sleep(PING_INTERVAL)
+
+
 # ---------- DAILY RUNNER (BACKGROUND) ----------
 def daily_runner_loop():
     last_run_date = None
