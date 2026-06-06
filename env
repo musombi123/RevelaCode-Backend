@@ -1,0 +1,15 @@
+ADMIN_API_KEY="bbit070j2003@RC#2026!"
+ALLOW_DEBUG_CODE=true
+MONGO_URI="mongodb+srv://musombiwilliam769:iCU14CU%2Emusombi@cluster0.pvvmu3i.mongodb.net/revelacode?retryWrites=true&w=majority"
+NEWS_API_KEY=69a21d7398a04d948a0e881e0fea9793
+PORT=5000
+REVELA_AI_URL=https://revelaai.onrender.com
+SMTP_FROM=musombiwilliam769@gmail.com
+SMTP_HOST=smtp.gmail.com
+SMTP_PASS=gpuzmjftxkdbtjou
+SMTP_PORT=587
+SMTP_USER=musombiwilliam769@gmail.com
+SMTP_USE_SSL=false
+SMTP_USE_TLS=true
+SUPPORT_API_KEY=RevelaCodeSupport
+key=FLASK_ENV

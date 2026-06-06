@@ -1,19 +1,4 @@
 from datetime import datetime
-
-# Example in-memory users for demo
-USERS = [
-    {"username": "admin1", "role": "admin"},
-    {"username": "support1", "role": "support"},
-    {"username": "support2", "role": "support"}
-]
-
-def get_user(username):
-    """Return user dict if username exists, else None."""
-    for user in USERS:
-        if user["username"] == username:
-            return user
-    return None
-
 # MongoDB collection names (for reference)
 COLLECTIONS = {
     "users": "users",
@@ -23,13 +8,15 @@ COLLECTIONS = {
 }
 
 # Example function for creating a user (replace with DB logic)
-def create_user(db, username, role):
-    """Insert a new user into the database."""
+def create_user(db, full_name, contact, role, verified=False):
     user = {
-        "username": username,
+        "full_name": full_name,
+        "contact": contact,
         "role": role,
-        "created_at": datetime.utcnow()
+        "verified": verified,
+        "created_at": datetime.utcnow().isoformat()
     }
+
     db[COLLECTIONS["users"]].insert_one(user)
     return user
 

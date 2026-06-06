@@ -3,9 +3,10 @@ import os
 import json
 import threading
 import random
-import hashlib
 from datetime import datetime, timedelta
 from flask import Blueprint, request, jsonify
+from werkzeug.security import generate_password_hash
+from werkzeug.security import check_password_hash
 
 # ---------------- MONGO SETUP ----------------
 try:
@@ -44,15 +45,6 @@ def save_users_file(users: dict):
     with file_lock:
         atomic_write(USERS_FILE, users)
 
-def save_user_to_file(user_data):
-    users = load_users_file()
-    user_copy = user_data.copy()
-    # Convert Mongo ObjectId to string for JSON serialization
-    if "_id" in user_copy:
-        user_copy["_id"] = str(user_copy["_id"])
-    users[user_copy["contact"]] = user_copy
-    save_users_file(users)
-
 
 def get_user_from_file(contact):
     users = load_users_file()
@@ -62,9 +54,6 @@ def get_user_from_file(contact):
 auth_bp = Blueprint("auth_bp", __name__)
 
 # ---------------------------- HELPERS ----------------------------
-def hash_password(password: str) -> str:
-    return hashlib.sha256(password.encode()).hexdigest()
-
 def generate_code():
     return str(random.randint(100000, 999999))
 
@@ -116,8 +105,8 @@ def register():
     user_data = {
         "full_name": full_name,
         "contact": contact,
-        "password": hash_password(password),
-        "role": "normal",
+        "password": generate_password_hash(password),
+        "role": "user",
         "verified": False,
         "created_at": now().isoformat(),
         "verification": {},
@@ -197,12 +186,22 @@ def login():
         return jsonify(success=False, message="Account not found"), 404
     if not user.get("verified"):
         return jsonify(success=False, message="Account not verified"), 403
-    if hash_password(password) != user["password"]:
+    if not check_password_hash(user["password"], password):
         return jsonify(success=False, message="Invalid password"), 401
 
+    role = user.get("role", "user")
+    redirect = "/dashboard"
+
+    if role == "admin":
+        redirect = "/admin/dashboard"
+
+    elif role == "support":
+        redirect = "/support/dashboard"
+
     return jsonify(
-        success=True,
-        contact=user["contact"],
-        full_name=user["full_name"],
-        role=user.get("role", "normal")
+       success=True,
+       contact=user["contact"],
+       full_name=user["full_name"],
+       role=role,
+       redirect=redirect
     ), 200

@@ -46,3 +46,21 @@ def list_users():
             "status": "error",
             "message": "User service unavailable"
         }), 503
+    
+@public_bp.route("/policies/<policy_id>", methods=["GET"])
+def get_policy(policy_id):
+    db = get_db()
+
+    policy = db["policies"].find_one({"_id": policy_id})
+
+    if not policy:
+        return jsonify({
+            "message": "Policy not found"
+        }), 404
+
+    return jsonify({
+        "title": policy.get("title"),
+        "content": policy.get("content"),
+        "version": policy.get("version"),
+        "updated_at": str(policy.get("updated_at"))
+    }), 200

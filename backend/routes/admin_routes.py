@@ -12,27 +12,14 @@ from backend.models.models import create_user, get_all_users
 # Load environment variables
 # ----------------------------
 load_dotenv()
+full_name = data.get("full_name")
+contact = data.get("contact")
+user_role = data.get("role")
 
 # ----------------------------
 # Blueprint
 # ----------------------------
 admin_bp = Blueprint("admin", __name__)
-
-# ----------------------------
-# ADMIN LOGIN
-# ----------------------------
-@admin_bp.route("/admin/login", methods=["POST"])
-def admin_login():
-    role = get_role(request)
-
-    if role != "admin":
-        return jsonify({"message": "Unauthorized: Invalid API Key"}), 401
-
-    return jsonify({
-        "message": "Admin authenticated successfully",
-        "role": role,
-        "status": "ok"
-    }), 200
 
 # ----------------------------
 # Dashboard
@@ -51,33 +38,38 @@ def manage_users():
     db = get_db()
     data = request.get_json(silent=True) or {}
 
-    username = data.get("username")
+    contact = data.get("contact")
     user_role = data.get("role")
 
-    if not username or not user_role:
-        return jsonify({"message": "Missing fields: username and role required"}), 400
+    if not full_name or not contact or not user_role:
+        return jsonify({
+            "message": "Missing fields: full_name, contact and role required"
+        }), 400
 
     # Only allow valid roles: admin, support, user
-    if user_role not in ["admin", "support", "user"]:
-        return jsonify({"message": "Invalid role. Must be 'admin', 'support', or 'user'."}), 400
+    if user_role not in ["support", "user"]:
+        return jsonify({
+            "message": "Invalid role. Must be 'support' or 'user'."
+            }), 400
 
     # Create user in DB
-    user = create_user(db, username, user_role)
+    user = create_user(db, full_name, contact, user_role)
 
     log_admin_action(
         db,
         action="create_user",
-        resource=username,
+        resource=contact,
         actor="admin",
         metadata={"role": user_role}
     )
 
     return jsonify({
-        "message": f"User {username} with role {user_role} created successfully.",
+        "message": f"User {contact} with role {user_role} created successfully.",
         "user": {
-            "username": user["username"],
+            "full_name": user["full_name"],
+            "contact": user["contact"],
             "role": user["role"]
-        }
+            }
     }), 201
 
 # ----------------------------
@@ -92,14 +84,53 @@ def list_users():
     users = []
     for u in users_from_db:
         users.append({
-            "username": u.get("username"),
+            "full_name": u.get("full_name"),
+            "contact": u.get("contact"),
             "role": u.get("role", "user"),
+            "verified": u.get("verified", False),
             "created_at": str(u.get("created_at"))
-        })
+            })
 
     return jsonify({
         "users": users,
         "total": len(users)
+    }), 200
+
+@admin_bp.route("/admin/update-policy", methods=["POST"])
+@require_role("admin")
+def update_policy():
+    db = get_db()
+    data = request.get_json(silent=True) or {}
+
+    policy_id = data.get("policy_id")
+    content = data.get("content")
+
+    if not policy_id or not content:
+        return jsonify({
+            "message": "policy_id and content required"
+        }), 400
+
+    db["policies"].update_one(
+        {"_id": policy_id},
+        {
+            "$set": {
+                "content": content,
+                "updated_at": datetime.utcnow(),
+                "updated_by": "admin"
+            }
+        },
+        upsert=True
+    )
+
+    log_admin_action(
+        db,
+        action="update_policy",
+        resource=policy_id,
+        actor="admin"
+    )
+
+    return jsonify({
+        "message": f"{policy_id} updated successfully"
     }), 200
 
 # ----------------------------

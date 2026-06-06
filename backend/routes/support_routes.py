@@ -26,8 +26,17 @@ def support_dashboard():
     if role != "support":
         return jsonify({"message": "Forbidden"}), 403
 
+    db = get_db()
+
+    total_open = db[COLLECTIONS["support_tickets"]].count_documents({"status": "open"})
+    my_tickets = db[COLLECTIONS["support_tickets"]].count_documents({"assigned_to": role})
+
     return jsonify({
-        "message": "Welcome, Support Team! You can manage tickets."
+        "message": "Support Dashboard",
+        "stats": {
+            "open_tickets": total_open,
+            "my_tickets": my_tickets
+        }
     }), 200
 
 # ----------------------------
@@ -40,7 +49,7 @@ def view_tickets():
         return jsonify({"message": "Forbidden"}), 403
 
     db = get_db()
-    tickets = list(db[COLLECTIONS["support_tickets"]].find())
+    tickets = list(db[COLLECTIONS["support_tickets"]].find().limit(50))
 
     sanitized = []
     for t in tickets:
@@ -56,6 +65,36 @@ def view_tickets():
     return jsonify({
         "tickets": sanitized,
         "total": len(sanitized)
+    }), 200
+#-------------------
+#ti
+#-------------------
+@support_bp.route("/assign-ticket", methods=["POST"])
+def assign_ticket():
+    role = get_role(request)
+    if role != "support":
+        return jsonify({"message": "Forbidden"}), 403
+
+    db = get_db()
+    data = request.get_json(silent=True) or {}
+
+    ticket_id = data.get("ticket_id")
+
+    if not ticket_id:
+        return jsonify({"message": "Missing ticket_id"}), 400
+
+    try:
+        oid = ObjectId(ticket_id)
+    except Exception:
+        return jsonify({"message": "Invalid ticket_id"}), 400
+
+    db[COLLECTIONS["support_tickets"]].update_one(
+        {"_id": oid},
+        {"$set": {"assigned_to": role}}
+    )
+
+    return jsonify({
+        "message": f"Ticket assigned to {role}"
     }), 200
 
 # ----------------------------
@@ -73,11 +112,25 @@ def resolve_ticket():
     ticket_id = data.get("ticket_id")
     resolution = data.get("resolution")
 
-    if not ticket_id or not resolution:
+    if not ticket_id or not resolution or not resolution.strip():
         return jsonify({"message": "Missing fields"}), 400
 
+    try:
+        oid = ObjectId(ticket_id)
+    except Exception:
+        return jsonify({"message": "Invalid ticket_id"}), 400
+
+    ticket = db[COLLECTIONS["support_tickets"]].find_one({"_id": oid})
+
+    if not ticket:
+        return jsonify({"message": "Ticket not found"}), 404
+
+    # 🚨 OWNERSHIP CHECK (NEW CORE FEATURE)
+    if ticket.get("assigned_to") not in [None, role]:
+        return jsonify({"message": "Not assigned to you"}), 403
+
     result = db[COLLECTIONS["support_tickets"]].update_one(
-        {"_id": ObjectId(ticket_id)},
+        {"_id": oid},
         {
             "$set": {
                 "status": "resolved",
@@ -91,27 +144,10 @@ def resolve_ticket():
         db,
         action="resolve_ticket",
         resource=ticket_id,
-        actor="support",
+        actor=role,
         metadata={"resolved": result.modified_count > 0}
     )
 
     return jsonify({
         "message": f"Ticket {ticket_id} resolved."
     }), 200
-
-# ----------------------------
-# Support Login
-# ----------------------------
-@support_bp.route("/login", methods=["POST"])
-def support_login():
-    role = get_role(request)
-
-    if role != "support":
-        return jsonify({"message": "Unauthorized: Invalid API Key"}), 401
-
-    return jsonify({
-        "message": "Support authenticated successfully",
-        "role": role,
-        "status": "ok"
-    }), 200
-
