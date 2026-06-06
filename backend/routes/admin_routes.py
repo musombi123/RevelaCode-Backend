@@ -1,3 +1,4 @@
+from backend import data
 from flask import Blueprint, request, jsonify
 from datetime import datetime
 from dotenv import load_dotenv
@@ -38,6 +39,7 @@ def manage_users():
     db = get_db()
     data = request.get_json(silent=True) or {}
 
+    full_name = data.get("full_name")
     contact = data.get("contact")
     user_role = data.get("role")
 
