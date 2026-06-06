@@ -1,4 +1,3 @@
-from backend import data
 from flask import Blueprint, request, jsonify
 from datetime import datetime
 from dotenv import load_dotenv
@@ -13,9 +12,6 @@ from backend.models.models import create_user, get_all_users
 # Load environment variables
 # ----------------------------
 load_dotenv()
-full_name = data.get("full_name")
-contact = data.get("contact")
-user_role = data.get("role")
 
 # ----------------------------
 # Blueprint
