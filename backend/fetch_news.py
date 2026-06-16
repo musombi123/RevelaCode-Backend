@@ -4,8 +4,24 @@ import shutil
 import logging
 from datetime import datetime, timedelta, timezone
 import requests
+from backend.alert_engine import process_events
+import feedparser
 
 # === CONFIG / ENVIRONMENT VARIABLES ===
+# === GLOBAL RSS SOURCES ===
+RSS_SOURCES = [
+    "https://news.google.com/rss/search?q=world+news+when:1d",
+    "https://feeds.bbci.co.uk/news/world/rss.xml",
+    "https://www.aljazeera.com/xml/rss/all.xml",
+]
+
+# === VIDEO SOURCES (prophecy + geopolitics) ===
+VIDEO_RSS_SOURCES = [
+    "https://news.google.com/rss/search?q=prophecy+end+times+when:1d&tbm=vid",
+    "https://news.google.com/rss/search?q=israel+war+news+video&tbm=vid",
+    "https://news.google.com/rss/search?q=middle+east+conflict+video&tbm=vid",
+]
+
 API_KEY = os.environ.get("NEWS_API_KEY")
 if not API_KEY:
     raise ValueError("❌ NEWS_API_KEY not set in environment variables!")
@@ -30,6 +46,24 @@ os.makedirs(ARCHIVED_DIR, exist_ok=True)
 
 # === ARCHIVE LOG FILE ===
 LOG_FILE = os.path.join(ARCHIVED_DIR, "archive_log.json")
+
+# === HIGH-LEVEL FUNCTIONS ===
+def fetch_rss(url, content_type="article"):
+    items = []
+
+    feed = feedparser.parse(url)
+
+    for entry in feed.entries:
+        items.append({
+            "type": content_type,
+            "title": entry.get("title", ""),
+            "description": entry.get("summary", ""),
+            "url": entry.get("link", ""),
+            "publishedAt": entry.get("published", ""),
+            "source": "rss"
+        })
+
+    return items
 
 def log_archive(filename):
     log_entry = {"filename": filename, "archived_at": datetime.now().isoformat()}
@@ -63,6 +97,25 @@ def archive_old_events():
                 shutil.move(src, dst)
                 log_archive(filename)
                 logging.info(f"📦 Archived: {filename}")
+
+# === FETCH ARTICLES FROM RSS SOURCES ===
+def fetch_video_feeds():
+    videos = []
+
+    for url in VIDEO_RSS_SOURCES:
+        videos.extend(fetch_rss(url, "video"))
+
+    logging.info(f"🎥 Fetched videos: {len(videos)}")
+    return videos
+
+def fetch_global_rss():
+    articles = []
+
+    for url in RSS_SOURCES:
+        articles.extend(fetch_rss(url, "article"))
+
+    logging.info(f"🌍 RSS articles fetched: {len(articles)}")
+    return articles
 
 # === FETCH ARTICLES FROM NEWSAPI ===
 def fetch_articles(api_key, query):
@@ -116,6 +169,7 @@ def save_to_json(articles, query):
     events = []
     for article in articles:
         events.append({
+            "type": article.get("type", "article"),
             "headline": article.get("title", ""),
             "description": article.get("description", ""),
             "content": article.get("content", ""),
@@ -132,13 +186,47 @@ def save_to_json(articles, query):
 
     logging.info(f"💾 Saved {len(events)} events to {filename}")
 
+def normalize_event(item):
+    return {
+        "type": item.get("type", "article"),
+        "headline": item.get("headline") or item.get("title", ""),
+        "description": item.get("description", ""),
+        "content": item.get("content", ""),
+        "url": item.get("url", ""),
+        "publishedAt": item.get("publishedAt", ""),
+        "source": item.get("source", "")
+    }
+
 # === MAIN ===
 if __name__ == "__main__":
     archive_old_events()
-    articles = fetch_articles(API_KEY, QUERY)
-    if articles:
-        save_to_json(articles, QUERY)
-    else:
-        logging.warning("⚠️ No articles fetched; nothing to save.")
 
-    logging.info("✅ Events fetch and archive complete. Ready for Render deployment.")
+    articles_api = fetch_articles(API_KEY, QUERY)
+    articles_rss = fetch_global_rss()
+    videos = fetch_video_feeds()
+
+    raw_data = []
+
+    if articles_api:
+        raw_data.extend(articles_api)
+
+    if articles_rss:
+        raw_data.extend(articles_rss)
+
+    if videos:
+        raw_data.extend(videos)
+
+    # 🔥 NORMALIZE EVERYTHING
+    all_data = [normalize_event(item) for item in raw_data]
+
+    # 💾 SAVE FIRST (important for debugging + audit trail)
+    if all_data:
+        save_to_json(all_data, QUERY)
+
+        # 🚨 THEN RUN ALERT ENGINE
+        process_events(all_data)
+
+    else:
+        logging.warning("⚠️ No content fetched")
+
+    logging.info("✅ Multi-source ingestion complete")

@@ -3,7 +3,7 @@ import logging
 import os
 import time
 from datetime import datetime
-
+from backend.filter_prophecy_news import filter_prophetic_events
 # ======================================================
 # CONFIG
 # ======================================================
@@ -68,17 +68,35 @@ def run_pipeline():
             logger.info("🧪 DRY RUN — skipped execution")
             continue
 
-        result = subprocess.run(
-            cmd,
-            shell=True,
-            cwd=BASE_DIR
-        )
+        result = subprocess.run(cmd, shell=True, cwd=BASE_DIR)
 
         if result.returncode != 0:
             logger.error(f"❌ Failed: {cmd}")
             return
 
         logger.info(f"✅ Completed: {cmd}")
+
+    # 🔥 NEW: LOAD DATA AFTER FETCH STEP
+    try:
+        from backend.alert_engine import process_events
+
+        latest_file = sorted(
+            [f for f in os.listdir("events") if f.endswith(".json")]
+        )[-1]
+
+        with open(os.path.join("events", latest_file), "r") as f:
+            raw_events = json.load(f)
+
+        # 🔥 APPLY FILTER HERE
+        filtered = filter_prophetic_events(raw_events)
+
+        logger.info(f"🔮 Filtered prophetic events: {len(filtered)}")
+
+        # 🚨 SEND TO ALERT ENGINE
+        process_events(filtered)
+
+    except Exception as e:
+        logger.error(f"❌ Alert pipeline failed: {e}")
 
     logger.info("✅ Daily pipeline finished")
 
