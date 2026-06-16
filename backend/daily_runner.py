@@ -4,7 +4,7 @@ import os
 import time
 from datetime import datetime
 from backend.filter_prophecy_news import filter_prophetic_events
-
+import json
 # ======================================================
 # CONFIG
 # ======================================================
