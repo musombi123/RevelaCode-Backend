@@ -13,10 +13,13 @@ BASE_DIR = os.path.dirname(
 # PATHS (ALL INSIDE /backend)
 # ======================================================
 
-SYMBOLS_FILE = os.path.join(BASE_DIR, "symbols_keywords.json")
+SYMBOLS_FILE = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    "symbols_keywords.json"
+)
+
 TAGGED_DIR = os.path.join(BASE_DIR, "events_tagged")
 OUTPUT_DIR = os.path.join(BASE_DIR, "events_decoded")
-
 # ======================================================
 # LOAD SYMBOLS
 # ======================================================
