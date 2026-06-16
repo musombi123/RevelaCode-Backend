@@ -167,19 +167,32 @@ def save_to_json(articles, query):
     filename = os.path.join(EVENTS_DIR, f"events_{safe_query}_{today}.json")
 
     events = []
+
     for article in articles:
+        source = article.get("source", "")
+
+        if isinstance(source, dict):
+           source_name = source.get("name", "")
+           source_id = source.get("id", "")
+        else:
+           source_name = str(source)
+           source_id = ""
+
         events.append({
-            "type": article.get("type", "article"),
-            "headline": article.get("title", ""),
+           "type": article.get("type", "article"),
+           "headline": (
+               article.get("headline")
+               or article.get("title", "")
+            ),
             "description": article.get("description", ""),
             "content": article.get("content", ""),
             "author": article.get("author", ""),
             "url": article.get("url", ""),
             "urlToImage": article.get("urlToImage", ""),
             "publishedAt": article.get("publishedAt", ""),
-            "source": article.get("source", {}).get("name", ""),
-            "source_id": article.get("source", {}).get("id", "")
-        })
+            "source": source_name,
+            "source_id": source_id,
+       })
 
     with open(filename, "w", encoding="utf-8") as f:
         json.dump(events, f, indent=2, ensure_ascii=False)
@@ -187,14 +200,28 @@ def save_to_json(articles, query):
     logging.info(f"💾 Saved {len(events)} events to {filename}")
 
 def normalize_event(item):
+    headline = (
+        item.get("headline")
+        or item.get("title")
+        or ""
+    )
+
+    source = item.get("source", "")
+
+    if isinstance(source, dict):
+        source = source.get("name", "")
+
     return {
         "type": item.get("type", "article"),
-        "headline": item.get("headline") or item.get("title", ""),
+        "headline": headline,
         "description": item.get("description", ""),
         "content": item.get("content", ""),
+        "author": item.get("author", ""),
         "url": item.get("url", ""),
+        "urlToImage": item.get("urlToImage", ""),
         "publishedAt": item.get("publishedAt", ""),
-        "source": item.get("source", "")
+        "source": source,
+        "source_id": item.get("source_id", "")
     }
 
 # === MAIN ===
@@ -219,10 +246,23 @@ if __name__ == "__main__":
     # 🔥 NORMALIZE EVERYTHING
     all_data = [normalize_event(item) for item in raw_data]
 
+    unique = {}
+
+    for item in all_data:
+        url = item.get("url")
+
+        if url:
+            unique[url] = item
+
+    all_data = list(unique.values())
+
+    logging.info(
+        f"🧹 Unique events after deduplication: {len(all_data)}"
+    )
+
     # 💾 SAVE FIRST (important for debugging + audit trail)
     if all_data:
         save_to_json(all_data, QUERY)
-
     else:
         logging.warning("⚠️ No content fetched")
 
