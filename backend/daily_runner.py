@@ -5,6 +5,7 @@ import time
 from datetime import datetime
 from backend.filter_prophecy_news import filter_prophetic_events
 import json
+from backend.notifications_service import push_prophecy_event
 # ======================================================
 # CONFIG
 # ======================================================
@@ -96,8 +97,18 @@ def run_pipeline():
 
         logger.info(f"🔮 Filtered prophetic events: {len(filtered)}")
 
+        for event in filtered:
+            if event.get("prophecy_score", 0) >= 10:
+                push_prophecy_event(event)
+
         # 🚨 SEND TO ALERT ENGINE
         process_events(filtered)
+
+        from backend.prophecy_notifications import (
+            push_daily_prophecy_summary
+        )
+
+        push_daily_prophecy_summary(filtered)
 
     except Exception as e:
         logger.error(f"❌ Alert pipeline failed: {e}")

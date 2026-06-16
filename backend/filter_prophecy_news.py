@@ -44,7 +44,7 @@ IGNORE_TOPICS = [
 
 
 def calculate_score(text):
-    text = text.lower()
+    text = (text or "").lower()
     score = 0
 
     for k, v in HIGH_WEIGHT.items():
@@ -63,7 +63,8 @@ def calculate_score(text):
 
 
 def is_noise(text):
-    return any(word in text.lower() for word in IGNORE_TOPICS)
+    text = (text or "").lower()
+    return any(word in text for word in IGNORE_TOPICS)
 
 
 def extract_entities(text):
@@ -90,5 +91,18 @@ def filter_prophetic_events(events, threshold=6):
             article["prophecy_score"] = score
             article["entities"] = extract_entities(text)
             filtered.append(article)
+
+    return filtered
+
+def filter_prophetic_events(events, threshold=6):
+    filtered = []
+
+    for article in events:
+        ...
+        if score >= threshold:
+            ...
+            filtered.append(article)
+
+    print(f"🔮 Prophetic filter: {len(filtered)} / {len(events)} events kept")
 
     return filtered
