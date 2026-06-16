@@ -3,7 +3,6 @@ import logging
 import os
 import time
 from datetime import datetime
-from backend.filter_prophecy_news import filter_prophetic_events
 # ======================================================
 # CONFIG
 # ======================================================
@@ -20,10 +19,11 @@ LOCK_FILE = os.path.join(
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 commands = [
-    "python fetch_news.py",
-    "python categorize.py",
-    "python decode_news.py",
-    "python archive_old_events.py"
+    "python -m backend.fetch_news",
+    "python -m backend.filter_prophecy_news",
+    "python -m backend.categorize",
+    "python -m backend.decode_news",
+    "python -m backend.archive_old_events"
 ]
 
 
