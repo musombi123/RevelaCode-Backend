@@ -3,6 +3,8 @@ import logging
 import os
 import time
 from datetime import datetime
+from backend.filter_prophecy_news import filter_prophetic_events
+
 # ======================================================
 # CONFIG
 # ======================================================
@@ -16,7 +18,9 @@ LOCK_FILE = os.path.join(
     ".daily_runner.lock"
 )
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+BASE_DIR = os.path.dirname(
+    os.path.dirname(os.path.abspath(__file__))
+)
 
 commands = [
     "python -m backend.fetch_news",
