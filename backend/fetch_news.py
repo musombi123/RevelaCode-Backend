@@ -223,9 +223,6 @@ if __name__ == "__main__":
     if all_data:
         save_to_json(all_data, QUERY)
 
-        # 🚨 THEN RUN ALERT ENGINE
-        process_events(all_data)
-
     else:
         logging.warning("⚠️ No content fetched")
 
