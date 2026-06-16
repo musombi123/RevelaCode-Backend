@@ -75,7 +75,11 @@ def filter_prophetic_events(events, threshold=6):
     filtered = []
 
     for article in events:
-        text = (article.get("headline", "") + " " + article.get("description", "")).lower()
+        headline = article.get("headline") or ""
+        description = article.get("description") or ""
+        content = article.get("content") or ""
+
+        text = f"{headline} {description} {content}".lower()
 
         if is_noise(text):
             continue
