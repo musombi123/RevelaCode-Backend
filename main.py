@@ -53,6 +53,13 @@ except Exception as e:
     logger.warning(f"MongoDB not available, running without DB: {e}")
     db = None
 
+# ---------- EMAIL TEST (OPTIONAL) ----------
+try:
+    from backend.test_email import send_test_email
+    send_test_email()
+except Exception as e:
+    logger.error(f"Email startup test failed: {e}")
+
 # ---------- BLUEPRINT REGISTRATION HELPER ----------
 def register_bp(import_path: str, bp_name: str):
     try:

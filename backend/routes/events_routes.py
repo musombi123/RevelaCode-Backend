@@ -13,6 +13,8 @@ EVENTS_FOLDER = os.path.join(
 )
 decoder = BibleDecoder()
 
+events_bp = Blueprint("events", __name__)
+
 DATE_RE = re.compile(r"(\d{4}-\d{2}-\d{2})")
 
 def enrich_event_with_symbols(event: dict) -> dict:
