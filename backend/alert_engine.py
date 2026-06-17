@@ -1,7 +1,7 @@
 import time
 import json
 import os
-from backend.prophecy_scorer import score
+from backend.filter_prophecy_news import calculate_score
 from backend.notifier import send_alert
 
 SEEN_FILE = "seen_events.json"
@@ -26,7 +26,7 @@ def process_events(events):
             continue
 
         text = event.get("headline", "") + " " + event.get("description", "")
-        s = score(text)
+        s = calculate_score(text)
 
         event["score"] = s
 
