@@ -85,11 +85,17 @@ def run_pipeline():
     try:
         from backend.alert_engine import process_events
 
+        DECODED_DIR = os.path.join(BASE_DIR, "events_decoded")
+
         latest_file = sorted(
-            [f for f in os.listdir("events") if f.endswith(".json")]
+            [f for f in os.listdir(DECODED_DIR) if f.endswith(".json")]
         )[-1]
 
-        with open(os.path.join("events", latest_file), "r") as f:
+        with open(
+            os.path.join(DECODED_DIR, latest_file),
+            "r",
+            encoding="utf-8"
+        ) as f:
             raw_events = json.load(f)
 
         # 🔥 APPLY FILTER HERE

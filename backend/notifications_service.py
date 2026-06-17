@@ -21,11 +21,14 @@ def push_prophecy_event(event):
         text=f"🚨 Prophecy Alert: {headline}",
         extra={
             "type": "prophecy_event",
-            "headline": headline,
-            "score": event.get("prophecy_score", 0),
+            "score": score,
             "url": event.get("url", ""),
-            "categories": event.get("matched_symbols", []),
+            "headline": event.get("headline", ""),
             "source": event.get("source", ""),
-            "publishedAt": event.get("publishedAt", "")
+            "publishedAt": event.get("publishedAt", ""),
+            "categories": event.get("categories", []),
+            "matched_symbols": event.get("matched_symbols", []),
+            "matched_verses": event.get("matched_verses", [])
         }
     )
+    
