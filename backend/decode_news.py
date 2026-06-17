@@ -31,18 +31,21 @@ def load_symbols():
 # ======================================================
 # DECODE LOGIC
 # ======================================================
-
 def decode_event(event, symbols):
-    # Skip if already decoded
-    # Always overwrite to ensure consistency
-    event["matched_symbols"] = matched_symbols
-    event["matched_verses"] = matched_verses
-
-    matched_verses = []
+    # ALWAYS initialize first (critical fix)
     matched_symbols = []
+    matched_verses = []
 
-    headline = (event.get("headline") or "") + " " + (event.get("description") or "")
-    headline = headline.lower()
+    headline = (
+        (event.get("headline") or "") + " " +
+        (event.get("description") or "")
+    ).lower()
+
+    # safety check
+    if not headline.strip():
+        event["matched_symbols"] = ["general"]
+        event["matched_verses"] = []
+        return event
 
     for symbol in symbols.get("symbols", []):
         symbol_name = (
@@ -63,6 +66,7 @@ def decode_event(event, symbols):
                 if verse not in matched_verses:
                     matched_verses.append(verse)
 
+    # fallback guarantee (IMPORTANT)
     if not matched_symbols:
         matched_symbols = ["general"]
 
