@@ -94,15 +94,3 @@ def filter_prophetic_events(events, threshold=6):
 
     return filtered
 
-def filter_prophetic_events(events, threshold=6):
-    filtered = []
-
-    for article in events:
-        ...
-        if score >= threshold:
-            ...
-            filtered.append(article)
-
-    print(f"🔮 Prophetic filter: {len(filtered)} / {len(events)} events kept")
-
-    return filtered
