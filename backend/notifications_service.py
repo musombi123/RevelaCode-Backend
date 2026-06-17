@@ -3,7 +3,6 @@ from backend.routes.notifications_routes import (
     load_notifications
 )
 
-
 def push_prophecy_event(event):
     headline = event.get("headline") or ""
 
@@ -21,7 +20,7 @@ def push_prophecy_event(event):
         text=f"🚨 Prophecy Alert: {headline}",
         extra={
             "type": "prophecy_event",
-            "score": score,
+            "score": event.get("prophecy_score", event.get("score", 0)),
             "url": event.get("url", ""),
             "headline": event.get("headline", ""),
             "source": event.get("source", ""),
@@ -31,4 +30,3 @@ def push_prophecy_event(event):
             "matched_verses": event.get("matched_verses", [])
         }
     )
-    
