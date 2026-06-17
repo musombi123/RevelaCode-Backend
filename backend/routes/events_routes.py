@@ -3,9 +3,14 @@ from datetime import datetime, timedelta
 import os, json, re
 from backend.bible_decoder import BibleDecoder
 
-events_bp = Blueprint("events", __name__)
+BASE_DIR = os.path.dirname(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+)
 
-EVENTS_FOLDER = os.path.join("backend", "events_decoded")
+EVENTS_FOLDER = os.path.join(
+    BASE_DIR,
+    "events_decoded"
+)
 decoder = BibleDecoder()
 
 DATE_RE = re.compile(r"(\d{4}-\d{2}-\d{2})")
