@@ -10,9 +10,25 @@ import feedparser
 # === CONFIG / ENVIRONMENT VARIABLES ===
 # === GLOBAL RSS SOURCES ===
 RSS_SOURCES = [
-    "https://news.google.com/rss/search?q=world+news+when:1d",
+    # GLOBAL CORE
     "https://feeds.bbci.co.uk/news/world/rss.xml",
     "https://www.aljazeera.com/xml/rss/all.xml",
+
+    # AFRICA
+    "https://allafrica.com/tools/headlines/rdf/latest/headlines.rdf",
+    "https://www.standardmedia.co.ke/rss/headlines.php",
+
+    # EUROPE
+    "https://www.france24.com/en/rss",
+    "https://www.dw.com/en/top-stories/rss",
+
+    # ASIA
+    "https://timesofindia.indiatimes.com/rssfeeds/296589292.cms",
+    "https://www.scmp.com/rss/91/feed",
+
+    # AMERICAS
+    "https://rss.nytimes.com/services/xml/rss/nyt/World.xml",
+    "https://feeds.a.dj.com/rss/RSSWorldNews.xml"
 ]
 
 # === VIDEO SOURCES (prophecy + geopolitics) ===
@@ -21,6 +37,27 @@ VIDEO_RSS_SOURCES = [
     "https://news.google.com/rss/search?q=israel+war+news+video&tbm=vid",
     "https://news.google.com/rss/search?q=middle+east+conflict+video&tbm=vid",
 ]
+
+REGION_MAP = {
+    "africa": [
+        "nigeria", "kenya", "south africa", "ethiopia", "ghana", "africa"
+    ],
+    "asia": [
+        "china", "india", "japan", "korea", "pakistan", "philippines"
+    ],
+    "europe": [
+        "france", "germany", "uk", "europe", "italy", "spain", "russia"
+    ],
+    "americas": [
+        "usa", "united states", "canada", "brazil", "mexico"
+    ],
+    "middle_east": [
+        "israel", "iran", "iraq", "syria", "saudi", "yemen", "gaza"
+    ],
+    "oceania": [
+        "australia", "new zealand"
+    ]
+}
 
 API_KEY = os.environ.get("NEWS_API_KEY")
 if not API_KEY:
@@ -224,6 +261,17 @@ def normalize_event(item):
         "source_id": item.get("source_id", "")
     }
 
+def detect_region(text):
+    text = text.lower()
+
+    for region, keywords in REGION_MAP.items():
+        if any(k in text for k in keywords):
+            return region
+
+    return "global"
+
+
+
 # === MAIN ===
 if __name__ == "__main__":
     archive_old_events()
@@ -245,6 +293,11 @@ if __name__ == "__main__":
 
     # 🔥 NORMALIZE EVERYTHING
     all_data = [normalize_event(item) for item in raw_data]
+
+    # 🔥 ADD REGION HERE
+    for item in all_data:
+        text = f"{item.get('headline','')} {item.get('description','')}"
+        item["region"] = detect_region(text)
 
     unique = {}
 
