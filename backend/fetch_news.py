@@ -87,7 +87,6 @@ LOG_FILE = os.path.join(ARCHIVED_DIR, "archive_log.json")
 # === HIGH-LEVEL FUNCTIONS ===
 def fetch_rss(url, content_type="article"):
     items = []
-
     feed = feedparser.parse(url)
 
     for entry in feed.entries:
@@ -97,7 +96,11 @@ def fetch_rss(url, content_type="article"):
             "description": entry.get("summary", ""),
             "url": entry.get("link", ""),
             "publishedAt": entry.get("published", ""),
-            "source": "rss"
+            "source": "rss",
+
+            # 🔥 IMPORTANT FOR FRONTEND VIDEO AUTOPLAY
+            "media_type": content_type,
+            "video_url": entry.get("link", "") if content_type == "video" else None
         })
 
     return items
@@ -237,14 +240,9 @@ def save_to_json(articles, query):
     logging.info(f"💾 Saved {len(events)} events to {filename}")
 
 def normalize_event(item):
-    headline = (
-        item.get("headline")
-        or item.get("title")
-        or ""
-    )
+    headline = item.get("headline") or item.get("title") or ""
 
     source = item.get("source", "")
-
     if isinstance(source, dict):
         source = source.get("name", "")
 
@@ -258,7 +256,10 @@ def normalize_event(item):
         "urlToImage": item.get("urlToImage", ""),
         "publishedAt": item.get("publishedAt", ""),
         "source": source,
-        "source_id": item.get("source_id", "")
+        "source_id": item.get("source_id", ""),
+
+        # 🔥 ADD THIS
+        "media_type": item.get("type", "article"),  # article | video
     }
 
 def detect_region(text):
