@@ -1,5 +1,3 @@
-# backend/test_email.py
-
 import os
 import smtplib
 import logging
@@ -18,54 +16,47 @@ SMTP_USER = os.getenv("SMTP_USER")
 SMTP_PASS = os.getenv("SMTP_PASS")
 SMTP_FROM = os.getenv("SMTP_FROM")
 
-TEST_RECIPIENT = "[mellanmakenji3@gmail.com](mailto:mellanmakenji3@gmail.com)"
+TEST_RECIPIENT = "mellanmakenji3@gmail.com"
+
 
 def send_test_email():
-try:
-msg = MIMEMultipart()
-msg["From"] = SMTP_FROM
-msg["To"] = TEST_RECIPIENT
-msg["Subject"] = "RevelaCode Email Test"
+    try:
+        msg = MIMEMultipart()
+        msg["From"] = SMTP_FROM
+        msg["To"] = TEST_RECIPIENT
+        msg["Subject"] = "RevelaCode Email Test"
 
-```
-    body = """
-```
+        body = (
+            "Hello Mellan,\n\n"
+            "This is a test email from RevelaCode backend.\n\n"
+            "If you received this, Gmail SMTP works on Render.\n\n"
+            "- RevelaCode AI"
+        )
 
-Hello Mellan,
+        msg.attach(MIMEText(body, "plain"))
 
-This is a test email from the RevelaCode backend.
+        logger.info(f"Connecting to {SMTP_HOST}:{SMTP_PORT}")
 
-If you received this message, Gmail SMTP is working correctly on Render.
+        server = smtplib.SMTP(SMTP_HOST, SMTP_PORT)
+        server.ehlo()
+        server.starttls()
+        server.ehlo()
 
-RevelaCode AI
-"""
-msg.attach(MIMEText(body, "plain"))
+        logger.info("Logging into SMTP server...")
 
-```
-    logger.info(f"Connecting to {SMTP_HOST}:{SMTP_PORT}")
+        server.login(SMTP_USER, SMTP_PASS)
 
-    server = smtplib.SMTP(SMTP_HOST, SMTP_PORT)
-    server.ehlo()
-    server.starttls()
-    server.ehlo()
+        logger.info(f"Sending email to {TEST_RECIPIENT}...")
 
-    logger.info("Logging into Gmail...")
-    server.login(SMTP_USER, SMTP_PASS)
+        server.sendmail(SMTP_FROM, TEST_RECIPIENT, msg.as_string())
 
-    logger.info(f"Sending email to {TEST_RECIPIENT}...")
-    server.sendmail(
-        SMTP_FROM,
-        TEST_RECIPIENT,
-        msg.as_string()
-    )
+        server.quit()
 
-    server.quit()
+        logger.info("✅ Email sent successfully!")
 
-    logger.info("✅ Email sent successfully!")
+    except Exception as e:
+        logger.exception(f"❌ Email test failed: {e}")
 
-except Exception as e:
-    logger.exception(f"❌ Email test failed: {e}")
-```
 
-if **name** == "**main**":
-send_test_email()
+if __name__ == "__main__":
+    send_test_email()
