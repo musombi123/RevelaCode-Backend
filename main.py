@@ -45,8 +45,8 @@ CORS(
     methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
 )
 
-from backend.email_service import send_test_email
-send_test_email("mellanmakenji3@gmail.com")
+#from backend.email_service import send_test_email
+#send_test_email("mellanmakenji3@gmail.com")
 
 # ---------- DB INIT (OPTIONAL / SAFE) ----------
 try:
