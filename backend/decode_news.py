@@ -34,8 +34,9 @@ def load_symbols():
 
 def decode_event(event, symbols):
     # Skip if already decoded
-    if "matched_symbols" in event:
-        return event
+    # Always overwrite to ensure consistency
+    event["matched_symbols"] = matched_symbols
+    event["matched_verses"] = matched_verses
 
     matched_verses = []
     matched_symbols = []
