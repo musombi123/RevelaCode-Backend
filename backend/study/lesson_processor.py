@@ -125,6 +125,35 @@ class LessonProcessor:
                 datetime.utcnow()
             )
 
+            # Prevent duplicate uploads
+
+            existing = db[
+                "study_materials"
+            ].find_one({
+
+                "title": title,
+                "category": category,
+                "subcategory": subcategory
+
+            })
+
+            if existing:
+
+                existing["_id"] = str(
+                    existing["_id"]
+                )
+
+                return {
+
+                    "success": False,
+
+                    "message":
+                    "Material already exists",
+
+                    "material":
+                    existing
+                }
+
 
             result = db[
                 "study_materials"
@@ -132,12 +161,12 @@ class LessonProcessor:
                 material_data
             )
 
-
             material_data[
                 "_id"
             ] = str(
                 result.inserted_id
             )
+
 
         except Exception as e:
 
