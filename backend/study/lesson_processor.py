@@ -2,9 +2,16 @@
 
 import os
 import json
-from uuid import uuid4
 
-from backend.models.StudyMaterial import StudyMaterial
+from uuid import uuid4
+from datetime import datetime
+
+from backend.models.StudyMaterial import (
+    StudyMaterial
+)
+
+from backend.db import get_db
+
 
 BASE_DIR = os.path.dirname(
     os.path.dirname(__file__)
@@ -19,93 +26,193 @@ STUDY_STORAGE = os.path.join(
 
 class LessonProcessor:
 
+
     @staticmethod
     def ensure_path(path):
+
         if not os.path.exists(path):
+
             os.makedirs(path)
+
 
 
     @staticmethod
     def process_text_material(
+
         title,
         category,
         subcategory,
         content,
         year=None,
         tags=None
+
     ):
 
         material = StudyMaterial(
+
             title=title,
             category=category,
             subcategory=subcategory,
             content=content,
             year=year,
             tags=tags
+
         )
 
+
+        material_data = (
+            material.to_dict()
+        )
+
+
+        # ==================
+        # FILE BACKUP
+        # ==================
+
         save_path = os.path.join(
+
             STUDY_STORAGE,
+
             category,
+
             subcategory,
-            str(year if year else "general")
+
+            str(
+                year if year
+                else "general"
+            )
+
         )
 
         LessonProcessor.ensure_path(
             save_path
         )
 
-        filename = f"{uuid4()}.json"
 
-        full_path = os.path.join(
-            save_path,
-            filename
+        filename = (
+            f"{uuid4()}.json"
         )
 
+        full_path = os.path.join(
+
+            save_path,
+
+            filename
+
+        )
+
+
         with open(
+
             full_path,
+
             "w",
+
             encoding="utf-8"
+
         ) as f:
 
             json.dump(
-                material.to_dict(),
+
+                material_data,
+
                 f,
+
                 indent=4,
+
                 ensure_ascii=False
+
             )
 
-        return {
-            "success": True,
-            "message": "Study material created",
-            "file": filename,
-            "material": material.to_dict()
-        }
 
-
-    @staticmethod
-    def process_uploaded_file(file):
+        # ==================
+        # SAVE TO DATABASE
+        # ==================
 
         try:
 
-            filename = file.filename
+            db = get_db()
 
-            content = file.read()
+            material_data[
+                "file_backup"
+            ] = filename
+
+            material_data[
+                "created_at"
+            ] = datetime.utcnow()
+
+            db[
+                "study_materials"
+            ].insert_one(
+
+                material_data
+
+            )
+
+        except Exception as e:
+
+            print(
+                "Mongo save error:",
+                e
+            )
+
+
+        return {
+
+            "success":True,
+
+            "message":
+            "Study material created",
+
+            "file":
+            filename,
+
+            "material":
+            material_data
+
+        }
+
+
+
+    @staticmethod
+    def process_uploaded_file(
+        file
+    ):
+
+        try:
+
+            filename = (
+                file.filename
+            )
+
+            content = (
+                file.read()
+            )
 
             text = content.decode(
+
                 "utf-8",
+
                 errors="ignore"
+
             )
 
             return {
-                "success": True,
-                "content": text,
-                "filename": filename
+
+                "success":True,
+
+                "content":text,
+
+                "filename":filename
+
             }
 
         except Exception as e:
 
             return {
-                "success": False,
-                "error": str(e)
+
+                "success":False,
+
+                "error":str(e)
+
             }
