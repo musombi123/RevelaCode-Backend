@@ -6,6 +6,9 @@ from flask import jsonify
 
 from backend.study.study_service import StudyService
 from backend.study.lesson_processor import LessonProcessor
+from backend.study.material_preferences import (
+    MaterialPreferences
+)
 
 study_bp = Blueprint(
     "study",
@@ -34,6 +37,66 @@ def get_materials():
         "materials":materials
     })
 
+# ======================
+# Save preferences
+# ======================
+
+@study_bp.route(
+    "/preferences",
+    methods=["POST"]
+)
+def save_preferences():
+
+    data = request.json
+
+    user_id = data.get(
+        "user_id"
+    )
+
+    preferences = data.get(
+        "preferences",
+        []
+    )
+
+    result = (
+        MaterialPreferences
+        .save_preferences(
+            user_id,
+            preferences
+        )
+    )
+
+    return jsonify(
+        result
+    )
+
+
+# ======================
+# Recommended materials
+# ======================
+
+@study_bp.route(
+    "/recommend/<user_id>",
+    methods=["GET"]
+)
+def recommended_materials(
+    user_id
+):
+
+    materials = (
+        MaterialPreferences
+        .get_recommended_materials(
+            user_id
+        )
+    )
+
+    return jsonify({
+
+        "success": True,
+        "count": len(materials),
+        "materials": materials
+
+    })
 
 @study_bp.route(
     "/upload",
