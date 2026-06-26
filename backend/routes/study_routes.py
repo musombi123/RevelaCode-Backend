@@ -1,136 +1,55 @@
-# backend/routes/study_routes.py
+# backend/study/lesson_processor.py
 
-from flask import Blueprint
-from flask import request
-from flask import jsonify
+import os
+import json
 
-from backend.study.study_service import StudyService
-from backend.study.lesson_processor import LessonProcessor
-from backend.study.ai_context_service import (
-AIContextService
+from uuid import uuid4
+from datetime import datetime
+
+from backend.models.StudyMaterial import (
+    StudyMaterial
 )
 
-from backend.study.bookmark_service import (
-BookmarkService
-)
-from backend.study.material_preferences import (
-    MaterialPreferences
-)
+from backend.db import get_db
 
-study_bp = Blueprint(
-    "study",
-    __name__,
-    url_prefix="/study"
+
+BASE_DIR = os.path.dirname(
+    os.path.dirname(__file__)
 )
 
-
-# ==========================
-# Get all study materials
-# ==========================
-
-@study_bp.route(
-    "/materials",
-    methods=["GET"]
+STUDY_STORAGE = os.path.join(
+    BASE_DIR,
+    "user_data",
+    "study_materials"
 )
-def get_materials():
-
-    category = request.args.get(
-        "category"
-    )
-
-    materials = StudyService.get_materials(
-        category
-    )
-
-    return jsonify({
-        "success": True,
-        "count": len(materials),
-        "materials": materials
-    })
 
 
-# ==========================
-# Get one material
-# ==========================
-
-@study_bp.route(
-    "/material/<material_id>",
-    methods=["GET"]
-)
-def get_material(material_id):
-
-    material = (
-        StudyService.get_material_by_id(
-            material_id
-        )
-    )
-
-    if not material:
-
-        return jsonify({
-            "success": False,
-            "message": "Material not found"
-        }), 404
-
-    return jsonify({
-        "success": True,
-        "material": material
-    })
+class LessonProcessor:
 
 
-# ==========================
-# Search study materials
-# ==========================
+    @staticmethod
+    def ensure_path(path):
 
-@study_bp.route(
-    "/search",
-    methods=["GET"]
-)
-def search_materials():
+        if not os.path.exists(path):
 
-    query = request.args.get(
-        "q",
-        ""
-    )
-
-    results = (
-        StudyService.search_materials(
-            query
-        )
-    )
-
-    return jsonify({
-        "success": True,
-        "count": len(results),
-        "results": results
-    })
+            os.makedirs(path)
 
 
-# ==========================
-# Upload material
-# ==========================
 
-@study_bp.route(
-    "/upload",
-    methods=["POST"]
-)
-def upload_material():
+    @staticmethod
+    def process_text_material(
 
-    data = request.json
+        title,
+        category,
+        subcategory,
+        content,
+        year=None,
+        tags=None
 
-    title = data.get("title")
-    category = data.get("category")
-    subcategory = data.get(
-        "subcategory"
-    )
-    content = data.get("content")
+    ):
 
-    year = data.get("year")
-    tags = data.get("tags", [])
+        material = StudyMaterial(
 
-    result = (
-        LessonProcessor
-        .process_text_material(
             title=title,
             category=category,
             subcategory=subcategory,
@@ -138,201 +57,147 @@ def upload_material():
             year=year,
             tags=tags
         )
-    )
 
-    return jsonify(result)
 
-# ======================
-# Save preferences
-# ======================
-
-@study_bp.route(
-    "/preferences",
-    methods=["POST"]
-)
-def save_preferences():
-
-    data = request.json
-
-    user_id = data.get(
-        "user_id"
-    )
-
-    preferences = data.get(
-        "preferences",
-        []
-    )
-
-    result=(
-
-        MaterialPreferences
-        .save_preferences(
-
-            user_id,
-
-            preferences
-
+        material_data = (
+            material.to_dict()
         )
 
-    )
 
-    return jsonify(
-        result
-    )
+        # -----------------
+        # Save file backup
+        # -----------------
 
+        save_path = os.path.join(
 
-
-# ======================
-# Recommended materials
-# ======================
-
-@study_bp.route(
-    "/recommend/<user_id>",
-    methods=["GET"]
-)
-def recommended_materials(
-    user_id
-):
-
-    materials=(
-
-        MaterialPreferences
-        .get_recommended_materials(
-            user_id
+            STUDY_STORAGE,
+            category,
+            subcategory,
+            str(year or "general")
         )
 
-    )
 
-    return jsonify({
-
-        "success":True,
-
-        "count":
-        len(materials),
-
-        "materials":
-        materials
-
-    })
-# ==========================
-# Ask RevelaAI
-# ==========================
-
-@study_bp.route(
-    "/ask-ai",
-    methods=["POST"]
-)
-def ask_ai():
-
-    data = request.json
-
-    material_id = data.get(
-        "material_id"
-    )
-
-    question = data.get(
-        "question"
-    )
-
-    if not material_id:
-
-        return jsonify({
-            "success": False,
-            "message":"material_id required"
-        }),400
-
-    if not question:
-
-        return jsonify({
-            "success": False,
-            "message":"question required"
-        }),400
-
-    result = (
-        AIContextService
-        .ask_material_ai(
-            material_id,
-            question
+        LessonProcessor.ensure_path(
+            save_path
         )
-    )
-
-    return jsonify(
-        result
-    )
 
 
-# ==========================
-# Bookmark material
-# ==========================
-
-@study_bp.route(
-    "/bookmark",
-    methods=["POST"]
-)
-def bookmark_material():
-
-    data = request.json
-
-    user_id = data.get(
-        "user_id"
-    )
-
-    material_id = data.get(
-        "material_id"
-    )
-
-    if not user_id:
-
-        return jsonify({
-            "success":False,
-            "message":"user_id required"
-        }),400
-
-    if not material_id:
-
-        return jsonify({
-            "success":False,
-            "message":"material_id required"
-        }),400
-
-
-    result = (
-        BookmarkService
-        .add_bookmark(
-            user_id,
-            material_id
+        filename = (
+            f"{uuid4()}.json"
         )
-    )
-
-    return jsonify(
-        result
-    )
 
 
-# ==========================
-# User bookmarks
-# ==========================
-
-@study_bp.route(
-    "/bookmarks/<user_id>",
-    methods=["GET"]
-)
-def get_bookmarks(
-    user_id
-):
-
-    bookmarks = (
-        BookmarkService
-        .get_user_bookmarks(
-            user_id
+        full_path = os.path.join(
+            save_path,
+            filename
         )
-    )
 
-    return jsonify({
 
-        "success":True,
-        "count":len(
-            bookmarks
-        ),
-        "bookmarks":bookmarks
-    })
+        with open(
+            full_path,
+            "w",
+            encoding="utf-8"
+        ) as f:
+
+            json.dump(
+                material_data,
+                f,
+                indent=4,
+                ensure_ascii=False
+            )
+
+
+        # -----------------
+        # Save Mongo
+        # -----------------
+
+        try:
+
+            db = get_db()
+
+            material_data[
+                "file_backup"
+            ] = filename
+
+            material_data[
+                "created_at"
+            ] = str(
+                datetime.utcnow()
+            )
+
+
+            result = db[
+                "study_materials"
+            ].insert_one(
+                material_data
+            )
+
+
+            material_data[
+                "_id"
+            ] = str(
+                result.inserted_id
+            )
+
+        except Exception as e:
+
+            print(
+                "Mongo Error:",
+                str(e)
+            )
+
+
+        # -----------------
+        # IMPORTANT
+        # -----------------
+
+        return {
+
+            "success": True,
+
+            "message":
+            "Study material created",
+
+            "file":
+            filename,
+
+            "material":
+            material_data
+        }
+
+
+
+    @staticmethod
+    def process_uploaded_file(
+        file
+    ):
+
+        try:
+
+            filename = (
+                file.filename
+            )
+
+            content = (
+                file.read()
+            )
+
+            text = content.decode(
+                "utf-8",
+                errors="ignore"
+            )
+
+            return {
+
+                "success": True,
+                "content": text,
+                "filename": filename
+            }
+
+        except Exception as e:
+
+            return {
+
+                "success": False,
+                "error": str(e)
+            }
