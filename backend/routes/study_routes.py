@@ -1,29 +1,51 @@
 # backend/study/lesson_processor.py
 
-import os
-import json
+from flask import Blueprint
+from flask import request
+from flask import jsonify
 
-from uuid import uuid4
-from datetime import datetime
+from backend.study.study_service import StudyService
+from backend.study.lesson_processor import LessonProcessor
 
-from backend.models.StudyMaterial import (
-    StudyMaterial
+
+try:
+    from backend.study.ai_context_service import (
+        AIContextService
+    )
+except Exception as e:
+    print(
+        "AIContextService failed:",
+        str(e)
+    )
+
+
+try:
+    from backend.study.bookmark_service import (
+        BookmarkService
+    )
+except Exception as e:
+    print(
+        "BookmarkService failed:",
+        str(e)
+    )
+
+
+try:
+    from backend.study.material_preferences import (
+        MaterialPreferences
+    )
+except Exception as e:
+    print(
+        "MaterialPreferences failed:",
+        str(e)
+    )
+
+
+study_bp = Blueprint(
+    "study",
+    __name__,
+    url_prefix="/study"
 )
-
-from backend.db import get_db
-
-
-BASE_DIR = os.path.dirname(
-    os.path.dirname(__file__)
-)
-
-STUDY_STORAGE = os.path.join(
-    BASE_DIR,
-    "user_data",
-    "study_materials"
-)
-
-
 class LessonProcessor:
 
 
