@@ -13,6 +13,9 @@ AIContextService
 from backend.study.bookmark_service import (
 BookmarkService
 )
+from backend.study.material_preferences import (
+    MaterialPreferences
+)
 
 study_bp = Blueprint(
     "study",
@@ -138,6 +141,79 @@ def upload_material():
     )
 
     return jsonify(result)
+
+# ======================
+# Save preferences
+# ======================
+
+@study_bp.route(
+    "/preferences",
+    methods=["POST"]
+)
+def save_preferences():
+
+    data = request.json
+
+    user_id = data.get(
+        "user_id"
+    )
+
+    preferences = data.get(
+        "preferences",
+        []
+    )
+
+    result=(
+
+        MaterialPreferences
+        .save_preferences(
+
+            user_id,
+
+            preferences
+
+        )
+
+    )
+
+    return jsonify(
+        result
+    )
+
+
+
+# ======================
+# Recommended materials
+# ======================
+
+@study_bp.route(
+    "/recommend/<user_id>",
+    methods=["GET"]
+)
+def recommended_materials(
+    user_id
+):
+
+    materials=(
+
+        MaterialPreferences
+        .get_recommended_materials(
+            user_id
+        )
+
+    )
+
+    return jsonify({
+
+        "success":True,
+
+        "count":
+        len(materials),
+
+        "materials":
+        materials
+
+    })
 # ==========================
 # Ask RevelaAI
 # ==========================
