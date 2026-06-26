@@ -141,12 +141,15 @@ class LessonProcessor:
                 "created_at"
             ] = datetime.utcnow()
 
-            db[
+            result = db[
                 "study_materials"
             ].insert_one(
-
                 material_data
+            )
 
+            # convert Mongo ObjectId
+            material_data["_id"] = str(
+                result.inserted_id
             )
 
         except Exception as e:
@@ -155,23 +158,6 @@ class LessonProcessor:
                 "Mongo save error:",
                 e
             )
-
-
-        return {
-
-            "success":True,
-
-            "message":
-            "Study material created",
-
-            "file":
-            filename,
-
-            "material":
-            material_data
-
-        }
-
 
 
     @staticmethod
