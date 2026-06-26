@@ -55,6 +55,34 @@ class AIContextService:
                 }
             )
 
+            # AI fallback handling
+            if isinstance(
+                ai_response,
+                dict
+            ) and ai_response.get(
+                "fallback"
+            ):
+
+                content = (
+                    lesson_content[:300]
+                )
+
+                return {
+
+                    "success": True,
+
+                    "material_title":
+                    material.get(
+                        "title"
+                    ),
+
+                    "question":
+                    user_question,
+
+                    "answer":
+                    f"AI is busy right now.\n\nStudy summary:\n{content}"
+                }
+
             return {
 
                 "success": True,

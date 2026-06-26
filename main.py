@@ -57,11 +57,11 @@ except Exception as e:
     db = None
 
 # ---------- EMAIL TEST (OPTIONAL) ----------
-try:
-    from backend.test_email import send_test_email
-    send_test_email()
-except Exception as e:
-    logger.error(f"Email startup test failed: {e}")
+#try:
+#    from backend.test_email import send_test_email
+#    send_test_email()
+#except Exception as e:
+#    logger.error(f"Email startup test failed: {e}")
 
 #--------- BLUEPRINTS ----------
 from backend.routes.study_routes import study_bp
