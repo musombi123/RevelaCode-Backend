@@ -1,142 +1,99 @@
-# backend/study/lesson_processor.py
+# backend/routes/study_routes.py
 
-import os
-import json
+from flask import Blueprint
+from flask import request
+from flask import jsonify
 
-from uuid import uuid4
-from datetime import datetime
+from backend.study.study_service import StudyService
+from backend.study.lesson_processor import LessonProcessor
 
-from backend.models.StudyMaterial import StudyMaterial
-from backend.db import get_db
-
-
-BASE_DIR = os.path.dirname(
-    os.path.dirname(__file__)
-)
-
-STUDY_STORAGE = os.path.join(
-    BASE_DIR,
-    "user_data",
-    "study_materials"
+study_bp = Blueprint(
+    "study",
+    __name__,
+    url_prefix="/study"
 )
 
 
-class LessonProcessor:
+@study_bp.route(
+    "/materials",
+    methods=["GET"]
+)
+def get_materials():
 
-    @staticmethod
-    def ensure_path(path):
+    category=request.args.get(
+        "category"
+    )
 
-        if not os.path.exists(path):
-            os.makedirs(path)
+    materials=StudyService.get_materials(
+        category
+    )
 
-    @staticmethod
-    def process_text_material(
-        title,
-        category,
-        subcategory,
-        content,
-        year=None,
-        tags=None
-    ):
+    return jsonify({
+        "success":True,
+        "count":len(materials),
+        "materials":materials
+    })
 
-        material = StudyMaterial(
-            title=title,
-            category=category,
-            subcategory=subcategory,
-            content=content,
-            year=year,
-            tags=tags
-        )
 
-        material_data = material.to_dict()
+@study_bp.route(
+    "/upload",
+    methods=["POST"]
+)
+def upload_material():
 
-        save_path = os.path.join(
-            STUDY_STORAGE,
-            category,
-            subcategory,
-            str(year or "general")
-        )
+    data=request.json
 
-        LessonProcessor.ensure_path(
-            save_path
-        )
+    result=LessonProcessor.process_text_material(
+        title=data.get("title"),
+        category=data.get("category"),
+        subcategory=data.get("subcategory"),
+        content=data.get("content"),
+        year=data.get("year"),
+        tags=data.get("tags",[])
+    )
 
-        filename = f"{uuid4()}.json"
+    return jsonify(result)
 
-        full_path = os.path.join(
-            save_path,
-            filename
-        )
 
-        with open(
-            full_path,
-            "w",
-            encoding="utf-8"
-        ) as f:
+@study_bp.route(
+    "/material/<material_id>",
+    methods=["GET"]
+)
+def get_material(material_id):
 
-            json.dump(
-                material_data,
-                f,
-                indent=4,
-                ensure_ascii=False
-            )
+    material=StudyService.get_material_by_id(
+        material_id
+    )
 
-        try:
+    if not material:
 
-            db = get_db()
+        return jsonify({
+            "success":False,
+            "message":"Material not found"
+        }),404
 
-            material_data["file_backup"] = filename
-            material_data["created_at"] = str(
-                datetime.utcnow()
-            )
+    return jsonify({
+        "success":True,
+        "material":material
+    })
 
-            result = db[
-                "study_materials"
-            ].insert_one(
-                material_data
-            )
 
-            material_data["_id"] = str(
-                result.inserted_id
-            )
+@study_bp.route(
+    "/search",
+    methods=["GET"]
+)
+def search_materials():
 
-        except Exception as e:
+    query=request.args.get(
+        "q",""
+    )
 
-            print(
-                "Mongo Error:",
-                str(e)
-            )
+    results=StudyService.search_materials(
+        query
+    )
 
-        return {
-            "success": True,
-            "message": "Study material created",
-            "file": filename,
-            "material": material_data
-        }
-
-    @staticmethod
-    def process_uploaded_file(file):
-
-        try:
-
-            filename = file.filename
-
-            content = file.read()
-
-            text = content.decode(
-                "utf-8",
-                errors="ignore"
-            )
-
-            return {
-                "success": True,
-                "content": text,
-                "filename": filename
-            }
-
-        except Exception as e:
-
-            return {
-                "success": False,
-                "error": str(e)
-            }
+    return jsonify({
+        "success":True,
+        "count":len(results),
+        "results":results
+    })
