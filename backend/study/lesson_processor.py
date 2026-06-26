@@ -56,7 +56,6 @@ class LessonProcessor:
             content=content,
             year=year,
             tags=tags
-
         )
 
 
@@ -65,24 +64,18 @@ class LessonProcessor:
         )
 
 
-        # ==================
-        # FILE BACKUP
-        # ==================
+        # -----------------
+        # Save file backup
+        # -----------------
 
         save_path = os.path.join(
 
             STUDY_STORAGE,
-
             category,
-
             subcategory,
-
-            str(
-                year if year
-                else "general"
-            )
-
+            str(year or "general")
         )
+
 
         LessonProcessor.ensure_path(
             save_path
@@ -93,41 +86,30 @@ class LessonProcessor:
             f"{uuid4()}.json"
         )
 
+
         full_path = os.path.join(
-
             save_path,
-
             filename
-
         )
 
 
         with open(
-
             full_path,
-
             "w",
-
             encoding="utf-8"
-
         ) as f:
 
             json.dump(
-
                 material_data,
-
                 f,
-
                 indent=4,
-
                 ensure_ascii=False
-
             )
 
 
-        # ==================
-        # SAVE TO DATABASE
-        # ==================
+        # -----------------
+        # Save Mongo
+        # -----------------
 
         try:
 
@@ -139,7 +121,10 @@ class LessonProcessor:
 
             material_data[
                 "created_at"
-            ] = datetime.utcnow()
+            ] = str(
+                datetime.utcnow()
+            )
+
 
             result = db[
                 "study_materials"
@@ -147,17 +132,39 @@ class LessonProcessor:
                 material_data
             )
 
-            # convert Mongo ObjectId
-            material_data["_id"] = str(
+
+            material_data[
+                "_id"
+            ] = str(
                 result.inserted_id
             )
 
         except Exception as e:
 
             print(
-                "Mongo save error:",
-                e
+                "Mongo Error:",
+                str(e)
             )
+
+
+        # -----------------
+        # IMPORTANT
+        # -----------------
+
+        return {
+
+            "success": True,
+
+            "message":
+            "Study material created",
+
+            "file":
+            filename,
+
+            "material":
+            material_data
+        }
+
 
 
     @staticmethod
@@ -176,29 +183,21 @@ class LessonProcessor:
             )
 
             text = content.decode(
-
                 "utf-8",
-
                 errors="ignore"
-
             )
 
             return {
 
-                "success":True,
-
-                "content":text,
-
-                "filename":filename
-
+                "success": True,
+                "content": text,
+                "filename": filename
             }
 
         except Exception as e:
 
             return {
 
-                "success":False,
-
-                "error":str(e)
-
+                "success": False,
+                "error": str(e)
             }
