@@ -1,0 +1,9 @@
+{
+  "symbol_decoder": "Explain the symbol '{symbol}' using its meaning, references, religion, related symbols, and interpretations.",
+
+  "comparison_mode": "Compare '{symbol}' across Christianity, Islam, Judaism, Hinduism, and Buddhism.",
+
+  "dream_mode": "Interpret the dream symbols '{symbols}' using available symbolism databases.",
+
+  "timeline_mode": "Place '{symbol}' within the prophecy timeline and explain surrounding events."
+}

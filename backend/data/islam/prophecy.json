@@ -1,0 +1,36 @@
+{
+  "dajjal": {
+    "symbol": "Dajjal",
+    "religion": "Islam",
+    "category": "Person",
+    "meaning": "The great deceiver appearing before the Day of Judgment.",
+    "reference": "Hadith",
+    "status": "future",
+    "tags": [
+      "Deception",
+      "End Times"
+    ]
+  },
+
+  "mahdi": {
+    "symbol": "Mahdi",
+    "religion": "Islam",
+    "category": "Person",
+    "meaning": "Guided leader who appears before the end times.",
+    "reference": "Hadith",
+    "status": "future",
+    "tags": [
+      "Leadership",
+      "End Times"
+    ]
+  },
+
+  "yajuj and majuj": {
+    "symbol": "Ya'juj and Ma'juj",
+    "religion": "Islam",
+    "category": "Nation",
+    "meaning": "Corrupt forces released near the end of time.",
+    "reference": "Quran 18:94",
+    "status": "future"
+  }
+}

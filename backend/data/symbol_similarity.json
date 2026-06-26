@@ -1,0 +1,21 @@
+{
+  "antichrist": {
+    "similar_symbols": [
+      {
+        "religion": "Islam",
+        "symbol": "dajjal",
+        "similarity": 88
+      }
+    ]
+  },
+
+  "gog and magog": {
+    "similar_symbols": [
+      {
+        "religion": "Islam",
+        "symbol": "yajuj and majuj",
+        "similarity": 98
+      }
+    ]
+  }
+}

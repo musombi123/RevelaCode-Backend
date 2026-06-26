@@ -7,6 +7,8 @@ from backend.utils.decorators import require_role
 from backend.utils.auth_keys import get_role
 from backend.utils.audit_logger import log_admin_action
 from backend.models.models import create_user, get_all_users
+from backend.study.lesson_processor import LessonProcessor
+from backend.study.study_service import StudyService
 
 # ----------------------------
 # Load environment variables
@@ -166,3 +168,179 @@ def update_scripture():
         "message": "Scripture updated successfully.",
         "modified": result.modified_count
     }), 200
+# ----------------------------
+# Study Material Upload
+# ----------------------------
+
+@admin_bp.route(
+    "/admin/study/upload",
+    methods=["POST"]
+)
+@require_role("admin")
+def upload_study_material():
+
+    db = get_db()
+
+    data = request.get_json(
+        silent=True
+    ) or {}
+
+    title = data.get(
+        "title"
+    )
+
+    category = data.get(
+        "category"
+    )
+
+    subcategory = data.get(
+        "subcategory"
+    )
+
+    content = data.get(
+        "content"
+    )
+
+    year = data.get(
+        "year"
+    )
+
+    tags = data.get(
+        "tags",
+        []
+    )
+
+    if not all([
+        title,
+        category,
+        subcategory,
+        content
+    ]):
+
+        return jsonify({
+
+            "message":
+            "title, category, subcategory and content required"
+
+        }),400
+
+
+    result = (
+        LessonProcessor
+        .process_text_material(
+
+            title=title,
+            category=category,
+            subcategory=subcategory,
+            content=content,
+            year=year,
+            tags=tags
+        )
+    )
+
+    log_admin_action(
+
+        db,
+
+        action="upload_study_material",
+
+        resource=title,
+
+        actor="admin",
+
+        metadata={
+
+            "category":
+            category,
+
+            "subcategory":
+            subcategory
+        }
+    )
+
+    return jsonify(
+        result
+    ),201
+
+
+
+# ----------------------------
+# Study Materials List
+# ----------------------------
+
+@admin_bp.route(
+    "/admin/study/materials",
+    methods=["GET"]
+)
+@require_role("admin")
+def admin_list_materials():
+
+    category = request.args.get(
+        "category"
+    )
+
+    materials = (
+        StudyService
+        .get_materials(
+            category
+        )
+    )
+
+    return jsonify({
+
+        "materials":
+        materials,
+
+        "count":
+        len(materials)
+
+    }),200
+
+
+
+# ----------------------------
+# Study Material Statistics
+# ----------------------------
+
+@admin_bp.route(
+    "/admin/study/stats",
+    methods=["GET"]
+)
+@require_role("admin")
+def study_stats():
+
+    materials = (
+        StudyService
+        .get_materials()
+    )
+
+    faith_count = len([
+
+        m for m in materials
+
+        if m.get(
+            "category"
+        )=="faith"
+    ])
+
+    education_count = len([
+
+        m for m in materials
+
+        if m.get(
+            "category"
+        )=="education"
+    ])
+
+    return jsonify({
+
+        "total_materials":
+        len(materials),
+
+        "faith_materials":
+        faith_count,
+
+        "education_materials":
+        education_count
+
+    }),200

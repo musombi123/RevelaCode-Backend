@@ -1,0 +1,31 @@
+{
+  "jesus christ": {
+    "category": "Person",
+    "role": "Messiah",
+    "status": "fulfilled and future return",
+    "references": [
+      "Matthew",
+      "John",
+      "Revelation 19"
+    ]
+  },
+
+  "antichrist": {
+    "category": "Person",
+    "role": "Deceiver",
+    "status": "future",
+    "references": [
+      "2 Thessalonians 2",
+      "1 John 2:18"
+    ]
+  },
+
+  "false prophet": {
+    "category": "Person",
+    "role": "Religious Deceiver",
+    "status": "future",
+    "references": [
+      "Revelation 13"
+    ]
+  }
+}

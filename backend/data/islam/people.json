@@ -1,0 +1,23 @@
+{
+  "isa": {
+    "category": "Person",
+    "role": "Prophet and Messiah",
+    "status": "future return",
+    "references": [
+      "Quran",
+      "Hadith"
+    ]
+  },
+
+  "mahdi": {
+    "category": "Person",
+    "role": "Guided Leader",
+    "status": "future"
+  },
+
+  "dajjal": {
+    "category": "Person",
+    "role": "Great Deceiver",
+    "status": "future"
+  }
+}

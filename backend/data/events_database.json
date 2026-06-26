@@ -1,0 +1,21 @@
+{
+  "flood of noah": {
+    "category": "Judgment",
+    "status": "fulfilled"
+  },
+
+  "exodus": {
+    "category": "Deliverance",
+    "status": "fulfilled"
+  },
+
+  "crucifixion": {
+    "category": "Redemption",
+    "status": "fulfilled"
+  },
+
+  "second coming": {
+    "category": "Future",
+    "status": "future"
+  }
+}

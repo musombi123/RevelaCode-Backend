@@ -63,6 +63,13 @@ try:
 except Exception as e:
     logger.error(f"Email startup test failed: {e}")
 
+#--------- BLUEPRINTS ----------
+from backend.routes.study_routes import study_bp
+
+app.register_blueprint(
+    study_bp
+)
+
 # ---------- BLUEPRINT REGISTRATION HELPER ----------
 def register_bp(import_path: str, bp_name: str):
     try:

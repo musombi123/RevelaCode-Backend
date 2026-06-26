@@ -1,0 +1,15 @@
+{
+  "maitreya": {
+    "religion": "Buddhism",
+    "category": "Person",
+    "meaning": "Future Buddha who will restore Dharma.",
+    "status": "future"
+  },
+
+  "decline of dharma": {
+    "religion": "Buddhism",
+    "category": "Warning",
+    "meaning": "Spiritual truth becomes increasingly forgotten.",
+    "status": "ongoing"
+  }
+}

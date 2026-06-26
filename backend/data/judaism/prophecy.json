@@ -1,0 +1,22 @@
+{
+  "messiah ben david": {
+    "religion": "Judaism",
+    "category": "Person",
+    "meaning": "Future king descended from David.",
+    "status": "future"
+  },
+
+  "third temple": {
+    "religion": "Judaism",
+    "category": "Place",
+    "meaning": "Future rebuilt temple in Jerusalem.",
+    "status": "future"
+  },
+
+  "gathering of exiles": {
+    "religion": "Judaism",
+    "category": "Restoration",
+    "meaning": "Return of Jewish people to Israel.",
+    "status": "ongoing"
+  }
+}

@@ -1,0 +1,41 @@
+{
+  "Christianity": {
+    "founded": "1st Century",
+    "primary_texts": [
+      "Bible"
+    ]
+  },
+
+  "Islam": {
+    "founded": "7th Century",
+    "primary_texts": [
+      "Quran",
+      "Hadith"
+    ]
+  },
+
+  "Judaism": {
+    "founded": "Ancient",
+    "primary_texts": [
+      "Tanakh",
+      "Talmud"
+    ]
+  },
+
+  "Hinduism": {
+    "founded": "Ancient",
+    "primary_texts": [
+      "Vedas",
+      "Upanishads",
+      "Puranas"
+    ]
+  },
+
+  "Buddhism": {
+    "founded": "5th Century BC",
+    "primary_texts": [
+      "Tripitaka",
+      "Sutras"
+    ]
+  }
+}

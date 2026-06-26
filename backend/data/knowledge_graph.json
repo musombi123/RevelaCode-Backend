@@ -1,0 +1,34 @@
+{
+  "antichrist": {
+    "connected_to": [
+      "beast",
+      "false prophet",
+      "dajjal",
+      "end times"
+    ]
+  },
+
+  "beast": {
+    "connected_to": [
+      "dragon",
+      "babylon",
+      "antichrist"
+    ]
+  },
+
+  "jesus christ": {
+    "connected_to": [
+      "messiah",
+      "new jerusalem",
+      "millennial kingdom"
+    ]
+  },
+
+  "maitreya": {
+    "connected_to": [
+      "future buddha",
+      "restoration",
+      "dharma"
+    ]
+  }
+}

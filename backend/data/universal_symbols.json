@@ -1,0 +1,41 @@
+{
+  "lion": {
+    "categories": [
+      "Power",
+      "Leadership",
+      "Royalty"
+    ]
+  },
+
+  "serpent": {
+    "categories": [
+      "Wisdom",
+      "Temptation",
+      "Transformation"
+    ]
+  },
+
+  "fire": {
+    "categories": [
+      "Judgment",
+      "Purification",
+      "Divine Presence"
+    ]
+  },
+
+  "water": {
+    "categories": [
+      "Life",
+      "Purification",
+      "Renewal"
+    ]
+  },
+
+  "mountain": {
+    "categories": [
+      "Kingdom",
+      "Authority",
+      "Divine Encounter"
+    ]
+  }
+}

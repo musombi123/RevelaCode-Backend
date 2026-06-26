@@ -1,0 +1,22 @@
+{
+  "kali yuga": {
+    "religion": "Hinduism",
+    "category": "Age",
+    "meaning": "Current age of moral decline.",
+    "status": "ongoing"
+  },
+
+  "kalki": {
+    "religion": "Hinduism",
+    "category": "Person",
+    "meaning": "Final avatar of Vishnu.",
+    "status": "future"
+  },
+
+  "dharma decline": {
+    "religion": "Hinduism",
+    "category": "Warning",
+    "meaning": "Progressive loss of righteousness.",
+    "status": "ongoing"
+  }
+}
