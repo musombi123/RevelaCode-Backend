@@ -75,26 +75,28 @@ def manage_users():
 # ----------------------------
 # User Management - LIST USERS
 # ----------------------------
-@admin_bp.route("/admin/list-users", methods=["GET"])
+@admin_bp.route("/admin/list-users")
 @require_role("admin")
 def list_users():
-    db = get_db()
-    users_from_db = get_all_users(db)
 
-    users = []
-    for u in users_from_db:
-        users.append({
-            "full_name": u.get("full_name"),
-            "contact": u.get("contact"),
-            "role": u.get("role", "user"),
-            "verified": u.get("verified", False),
-            "created_at": str(u.get("created_at"))
-            })
+    db = get_db()
+
+    print(db.list_collection_names())
+
+    users = list(db["users"].find())
+
+    print("TOTAL:", len(users))
 
     return jsonify({
-        "users": users,
-        "total": len(users)
-    }), 200
+        "users":[
+            {
+                "full_name":u.get("full_name"),
+                "contact":u.get("contact"),
+                "role":u.get("role")
+            }
+            for u in users
+        ]
+    })
 
 @admin_bp.route("/admin/update-policy", methods=["POST"])
 @require_role("admin")
