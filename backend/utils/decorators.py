@@ -1,27 +1,35 @@
 from functools import wraps
 from flask import request, jsonify
-from backend.routes.notifications_routes import push_notification
-from backend.utils.auth_keys import get_role as auth_get_role  # ✅ corrected
 
-# Simple role-based access + optional notification + logging
+from backend.routes.notifications_routes import push_notification
+from backend.utils.auth_keys import get_role as auth_get_role
+
+
 def require_role(role_name, notify=False, notify_text=None):
-    def decorator(f):
-        @wraps(f)
+    def decorator(func):
+        @wraps(func)
         def wrapper(*args, **kwargs):
             role = auth_get_role(request)
 
             if role != role_name:
-                return jsonify({"message": "Forbidden"}), 403
+                return jsonify({
+                    "success": False,
+                    "message": "Forbidden"
+                }), 403
 
-            result = f(*args, **kwargs)
+            response = func(*args, **kwargs)
 
-            # Optional notification
             if notify and notify_text:
                 push_notification(
                     f"{role_name} action: {notify_text}",
-                    extra={"type": "role_action", "actor_role": role_name}
+                    extra={
+                        "type": "role_action",
+                        "actor_role": role_name
+                    }
                 )
 
-            return result
+            return response
+
         return wrapper
+
     return decorator
