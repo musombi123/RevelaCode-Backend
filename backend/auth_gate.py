@@ -7,6 +7,13 @@ from datetime import datetime, timedelta
 from flask import Blueprint, request, jsonify
 from werkzeug.security import generate_password_hash
 from werkzeug.security import check_password_hash
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+
+ADMIN_API_KEY = os.getenv("ADMIN_API_KEY", "")
+SUPPORT_API_KEY = os.getenv("SUPPORT_API_KEY", "")
 
 # ---------------- MONGO SETUP ----------------
 try:
@@ -190,18 +197,23 @@ def login():
         return jsonify(success=False, message="Invalid password"), 401
 
     role = user.get("role", "user")
+
     redirect = "/dashboard"
+    api_key = ""
 
     if role == "admin":
         redirect = "/admin/dashboard"
+        api_key = ADMIN_API_KEY
 
     elif role == "support":
         redirect = "/support/dashboard"
+        api_key = SUPPORT_API_KEY
 
     return jsonify(
-       success=True,
-       contact=user["contact"],
-       full_name=user["full_name"],
-       role=role,
-       redirect=redirect
+        success=True,
+        contact=user["contact"],
+        full_name=user["full_name"],
+        role=role,
+        redirect=redirect,
+        api_key=api_key
     ), 200
