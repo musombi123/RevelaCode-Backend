@@ -87,11 +87,17 @@ class MaterialPreferences:
         db = get_db()
 
         preferences = (
+
             MaterialPreferences
             .get_preferences(
                 user_id
             )
         )
+
+        if not preferences:
+
+            return []
+
 
         materials = list(
 
@@ -103,6 +109,7 @@ class MaterialPreferences:
 
                     {
                         "subcategory":{
+
                             "$in":
                             preferences
                         }
@@ -110,6 +117,23 @@ class MaterialPreferences:
 
                     {
                         "category":{
+
+                            "$in":
+                            preferences
+                        }
+                    },
+
+                    {
+                        "tags":{
+
+                            "$in":
+                            preferences
+                        }
+                    },
+
+                    {
+                        "material_type":{
+
                             "$in":
                             preferences
                         }
@@ -121,10 +145,84 @@ class MaterialPreferences:
 
         )
 
-        for m in materials:
 
-            m["_id"] = str(
-                m["_id"]
+        for item in materials:
+
+            item["_id"] = str(
+                item["_id"]
             )
 
-        return materials
+
+        # -------------------
+        # ranking score
+        # -------------------
+
+        ranked=[]
+
+        for material in materials:
+
+            score=0
+
+
+            if material.get(
+                "category"
+            ) in preferences:
+
+                score += 3
+
+
+            if material.get(
+                "subcategory"
+            ) in preferences:
+
+                score += 2
+
+
+            material_tags = material.get(
+                "tags",
+                []
+            )
+
+            score += len(
+
+                set(
+                    material_tags
+                )
+
+                &
+
+                set(
+                    preferences
+                )
+
+            )
+
+
+            if material.get(
+                "material_type"
+            ) in preferences:
+
+                score += 2
+
+
+            material[
+                "recommendation_score"
+            ]=score
+
+
+            ranked.append(
+                material
+            )
+
+
+        ranked.sort(
+
+            key=lambda x:
+                x[
+                   "recommendation_score"
+                ],
+
+            reverse=True
+        )
+
+        return ranked

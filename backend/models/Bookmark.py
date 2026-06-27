@@ -7,9 +7,19 @@ import uuid
 class Bookmark:
 
     def __init__(
+
         self,
+
         user_id,
-        material_id
+        material_id,
+
+        material_type="lesson",
+
+        title=None,
+
+        category=None,
+
+        notes=None
     ):
 
         self.id = str(
@@ -18,9 +28,28 @@ class Bookmark:
 
         self.user_id = user_id
 
-        self.material_id = material_id
+        self.material_id = (
+            material_id
+        )
+
+        # lesson/pdf/docx/rootword
+        self.material_type = (
+            material_type
+        )
+
+        # quick display title
+        self.title = title
+
+        self.category = category
+
+        self.notes = notes
 
         self.created_at = (
+            datetime.utcnow()
+            .isoformat()
+        )
+
+        self.last_accessed = (
             datetime.utcnow()
             .isoformat()
         )
@@ -30,8 +59,30 @@ class Bookmark:
 
         return {
 
-            "id": self.id,
-            "user_id": self.user_id,
-            "material_id": self.material_id,
-            "created_at": self.created_at
+            "id":
+            self.id,
+
+            "user_id":
+            self.user_id,
+
+            "material_id":
+            self.material_id,
+
+            "material_type":
+            self.material_type,
+
+            "title":
+            self.title,
+
+            "category":
+            self.category,
+
+            "notes":
+            self.notes,
+
+            "created_at":
+            self.created_at,
+
+            "last_accessed":
+            self.last_accessed
         }
