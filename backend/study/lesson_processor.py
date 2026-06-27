@@ -9,6 +9,13 @@ from datetime import datetime
 from backend.models.StudyMaterial import (
     StudyMaterial
 )
+from backend.study.upload_service import (
+    UploadService
+)
+
+from backend.study.file_extractors import (
+    FileExtractors
+)
 
 from backend.db import get_db
 
@@ -37,75 +44,91 @@ class LessonProcessor:
 
 
     @staticmethod
-    def process_text_material(
+    def process_uploaded_file(file):
 
-        title,
-        category,
-        subcategory,
-        content,
-        year=None,
-        tags=None
+        try:
 
-    ):
+            filename = file.filename
 
-        material = StudyMaterial(
-
-            title=title,
-            category=category,
-            subcategory=subcategory,
-            content=content,
-            year=year,
-            tags=tags
-        )
-
-
-        material_data = (
-            material.to_dict()
-        )
-
-
-        # -----------------
-        # Save file backup
-        # -----------------
-
-        save_path = os.path.join(
-
-            STUDY_STORAGE,
-            category,
-            subcategory,
-            str(year or "general")
-        )
-
-
-        LessonProcessor.ensure_path(
-            save_path
-        )
-
-
-        filename = (
-            f"{uuid4()}.json"
-        )
-
-
-        full_path = os.path.join(
-            save_path,
-            filename
-        )
-
-
-        with open(
-            full_path,
-            "w",
-            encoding="utf-8"
-        ) as f:
-
-            json.dump(
-                material_data,
-                f,
-                indent=4,
-                ensure_ascii=False
+            extension = (
+                filename.split(
+                    "."
+                )[-1].lower()
             )
 
+            # -----------------
+            # Save physical file
+            # -----------------
+
+            path = (
+                UploadService.save(
+                    file
+                )
+            )
+
+            # -----------------
+            # File handlers
+            # -----------------
+
+            extractors = {
+
+                "pdf":
+                FileExtractors.extract_pdf,
+
+                "docx":
+                FileExtractors.extract_docx,
+
+                "txt":
+                FileExtractors.extract_txt
+            }
+
+            extractor = (
+                extractors.get(
+                    extension
+                )
+            )
+
+            if not extractor:
+
+                return {
+
+                    "success": False,
+
+                    "message":
+                    f"{extension} not supported"
+                }
+
+            # -----------------
+            # Extract text
+            # -----------------
+
+            content = (
+                extractor(
+                    path
+                )
+            )
+
+            return {
+
+                "success": True,
+
+                "filename": filename,
+
+                "file_type": extension,
+
+                "content": content,
+
+                "path": path
+            }
+
+        except Exception as e:
+
+            return {
+
+                "success": False,
+
+                "error": str(e)
+            }
 
         # -----------------
         # Save Mongo

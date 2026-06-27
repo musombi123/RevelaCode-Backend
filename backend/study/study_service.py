@@ -3,92 +3,244 @@
 import os
 import json
 
-BASE_DIR = os.path.dirname(os.path.dirname(__file__))
+from backend.db import get_db
+
+
+BASE_DIR = os.path.dirname(
+    os.path.dirname(__file__)
+)
 
 STUDY_PATH = os.path.join(
+
     BASE_DIR,
+
     "user_data",
+
     "study_materials"
 )
 
 
 class StudyService:
 
+
     @staticmethod
     def get_categories():
-        return ["faith", "education"]
+
+        return [
+
+            "faith",
+            "education"
+        ]
 
 
     @staticmethod
-    def get_materials(category=None):
-        materials = []
+    def get_materials(
 
-        if not os.path.exists(STUDY_PATH):
+        category=None,
+        subcategory=None,
+        file_type=None
+
+    ):
+
+        db = get_db()
+
+        query = {}
+
+        if category:
+
+            query[
+                "category"
+            ] = category
+
+        if subcategory:
+
+            query[
+                "subcategory"
+            ] = subcategory
+
+        if file_type:
+
+            query[
+                "file_type"
+            ] = file_type
+
+        try:
+
+            materials = list(
+
+                db[
+                    "study_materials"
+                ].find(
+                    query
+                )
+
+            )
+
+            for item in materials:
+
+                item["_id"] = str(
+                    item["_id"]
+                )
+
+            return materials
+
+
+        except Exception:
+
+            # fallback to local files
+
+            return StudyService.load_local(
+                category
+            )
+
+
+    @staticmethod
+    def load_local(
+        category=None
+    ):
+
+        materials=[]
+
+        if not os.path.exists(
+            STUDY_PATH
+        ):
+
             return []
 
-        for root, dirs, files in os.walk(STUDY_PATH):
+        for root,dirs,files in os.walk(
+            STUDY_PATH
+        ):
+
             for file in files:
 
-                if not file.endswith(".json"):
+                if not file.endswith(
+                    ".json"
+                ):
+
                     continue
 
-                file_path = os.path.join(root, file)
-
                 try:
-                    with open(file_path, "r", encoding="utf-8") as f:
-                        data = json.load(f)
 
-                        if category:
-                            if data.get("category") != category:
-                                continue
+                    path=os.path.join(
+                        root,
+                        file
+                    )
 
-                        materials.append(data)
+                    with open(
+
+                        path,
+                        "r",
+                        encoding="utf-8"
+
+                    ) as f:
+
+                        data=json.load(f)
+
+                    if category:
+
+                        if data.get(
+                            "category"
+                        ) != category:
+
+                            continue
+
+                    materials.append(
+                        data
+                    )
 
                 except Exception as e:
+
                     print(
-                        f"Error reading {file}: {e}"
+                        f"Read error:{e}"
                     )
 
         return materials
 
 
     @staticmethod
-    def get_material_by_id(material_id):
+    def get_material_by_id(
+        material_id
+    ):
 
-        materials = StudyService.get_materials()
+        db=get_db()
 
-        for item in materials:
-            if item.get("id") == material_id:
-                return item
+        material=db[
+            "study_materials"
+        ].find_one({
 
-        return None
+            "_id":material_id
+
+        })
+
+        if material:
+
+            material["_id"]=str(
+                material["_id"]
+            )
+
+        return material
 
 
     @staticmethod
-    def search_materials(query):
+    def search_materials(
+        query
+    ):
 
-        results = []
+        db=get_db()
 
-        materials = StudyService.get_materials()
+        results=list(
 
-        query = query.lower()
+            db[
+                "study_materials"
+            ]
 
-        for item in materials:
+            .find({
 
-            title = item.get(
-                "title",
-                ""
-            ).lower()
+                "$or":[
 
-            content = item.get(
-                "content",
-                ""
-            ).lower()
+                    {
 
-            if (
-                query in title or
-                query in content
-            ):
-                results.append(item)
+                        "title":{
+
+                            "$regex":
+                            query,
+
+                            "$options":"i"
+                        }
+                    },
+
+                    {
+
+                        "content":{
+
+                            "$regex":
+                            query,
+
+                            "$options":"i"
+                        }
+                    },
+
+                    {
+
+                        "tags":{
+
+                            "$regex":
+                            query,
+
+                            "$options":"i"
+                        }
+                    }
+
+                ]
+
+            })
+
+        )
+
+        for item in results:
+
+            item["_id"]=str(
+                item["_id"]
+            )
 
         return results

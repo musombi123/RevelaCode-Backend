@@ -10,6 +10,13 @@ from backend.study.lesson_processor import LessonProcessor
 from backend.study.material_preferences import (
     MaterialPreferences
 )
+from backend.study.rootword_service import (
+    RootWordService
+)
+
+from backend.study.bookmark_service import (
+    BookmarkService
+)
 
 study_bp = Blueprint(
     "study",
@@ -105,41 +112,59 @@ def recommended_materials(
 )
 def upload_material():
 
-    data=request.json
+    if "file" in request.files:
 
-    result=LessonProcessor.process_text_material(
-        title=data.get("title"),
-        category=data.get("category"),
-        subcategory=data.get("subcategory"),
-        content=data.get("content"),
-        year=data.get("year"),
-        tags=data.get("tags",[])
+        file = request.files["file"]
+
+        extracted = (
+
+            LessonProcessor
+            .process_uploaded_file(
+                file
+            )
+        )
+
+        return jsonify(
+            extracted
+        )
+
+    data = request.json or {}
+
+    result = (
+
+        LessonProcessor
+        .process_text_material(
+
+            title=data.get(
+                "title"
+            ),
+
+            category=data.get(
+                "category"
+            ),
+
+            subcategory=data.get(
+                "subcategory"
+            ),
+
+            content=data.get(
+                "content"
+            ),
+
+            year=data.get(
+                "year"
+            ),
+
+            tags=data.get(
+                "tags",
+                []
+            )
+        )
     )
 
-    return jsonify(result)
-
-
-@study_bp.route(
-    "/material/<material_id>",
-    methods=["GET"]
-)
-def get_material(material_id):
-
-    material=StudyService.get_material_by_id(
-        material_id
+    return jsonify(
+        result
     )
-
-    if not material:
-
-        return jsonify({
-            "success":False,
-            "message":"Material not found"
-        }),404
-
-    return jsonify({
-        "success":True,
-        "material":material
-    })
 
 
 @study_bp.route(
@@ -163,6 +188,84 @@ def search_materials():
     })
 
 # ======================
+# Rootword Search
+# ======================
+
+@study_bp.route(
+    "/rootword",
+    methods=["GET"]
+)
+def search_rootword():
+
+    word = request.args.get(
+        "word"
+    )
+
+    result = (
+
+        RootWordService
+        .search(word)
+    )
+
+    return jsonify(
+        result
+    )
+
+
+# ======================
+# Add Rootword
+# ======================
+
+@study_bp.route(
+    "/rootword",
+    methods=["POST"]
+)
+def add_rootword():
+
+    data = request.json or {}
+
+    result = (
+
+        RootWordService
+        .add_rootword(
+
+            word=data.get(
+                "word"
+            ),
+
+            language=data.get(
+                "language"
+            ),
+
+            strong_number=data.get(
+                "strong_number"
+            ),
+
+            transliteration=data.get(
+                "transliteration"
+            ),
+
+            meaning=data.get(
+                "meaning"
+            ),
+
+            scriptures=data.get(
+                "scriptures",
+                []
+            ),
+
+            notes=data.get(
+                "notes",
+                []
+            )
+        )
+    )
+
+    return jsonify(
+        result
+    )
+
+# ======================
 # Save bookmark
 # ======================
 
@@ -174,58 +277,49 @@ def save_bookmark():
 
     data = request.json or {}
 
-    user_id = data.get(
-        "user_id"
+    result = (
+
+        BookmarkService
+        .add_bookmark(
+
+            data.get(
+                "user_id"
+            ),
+
+            data.get(
+                "material_id"
+            )
+        )
     )
 
-    material_id = data.get(
-        "material_id"
+    return jsonify(
+        result
+    )@study_bp.route(
+    "/bookmark",
+    methods=["POST"]
+)
+def save_bookmark():
+
+    data = request.json or {}
+
+    result = (
+
+        BookmarkService
+        .add_bookmark(
+
+            data.get(
+                "user_id"
+            ),
+
+            data.get(
+                "material_id"
+            )
+        )
     )
 
-    if not user_id or not material_id:
-
-        return jsonify({
-            "success":False,
-            "message":"user_id and material_id required"
-        }),400
-
-
-    db = get_db()
-
-    existing = db[
-        "study_bookmarks"
-    ].find_one({
-
-        "user_id":user_id,
-        "material_id":material_id
-    })
-
-
-    if existing:
-
-        return jsonify({
-
-            "success":True,
-            "message":"Already bookmarked"
-
-        })
-
-
-    db[
-        "study_bookmarks"
-    ].insert_one({
-
-        "user_id":user_id,
-        "material_id":material_id
-    })
-
-
-    return jsonify({
-
-        "success":True,
-        "message":"Bookmark saved"
-
-    })
+    return jsonify(
+        result
+    )
 
 
 # ======================
@@ -236,6 +330,29 @@ def save_bookmark():
     "/bookmarks/<user_id>",
     methods=["GET"]
 )
+def get_bookmarks(
+    user_id
+):
+
+    bookmarks=(
+
+        BookmarkService
+        .get_user_bookmarks(
+            user_id
+        )
+    )
+
+    return jsonify({
+
+        "success":True,
+
+        "count":
+        len(bookmarks),
+
+        "bookmarks":
+        bookmarks
+    })
+
 def get_bookmarks(user_id):
 
     from backend.db import get_db
