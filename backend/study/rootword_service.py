@@ -1,10 +1,7 @@
-# backend/study/rootword_service.py
-
 from backend.db import get_db
 
 
 class RootWordService:
-
 
     @staticmethod
     def add_rootword(
@@ -12,23 +9,68 @@ class RootWordService:
         word,
         language,
         strong_number,
-        meaning,
-        scriptures=None,
-        notes=None
 
+        transliteration=None,
+
+        meaning=None,
+
+        scriptures=None,
+
+        notes=None
     ):
 
         db = get_db()
+
+        existing = db[
+            "rootwords"
+        ].find_one({
+
+            "$or":[
+
+                {
+                    "word":word
+                },
+
+                {
+                    "strong_number":
+                    strong_number
+                }
+            ]
+        })
+
+        if existing:
+
+            existing["_id"] = str(
+                existing["_id"]
+            )
+
+            return {
+
+                "success":False,
+
+                "message":
+                "Root word already exists",
+
+                "data":
+                existing
+            }
+
 
         data = {
 
             "word":word,
 
-            "language":language,
+            "language":
+            language,
 
-            "strong_number":strong_number,
+            "strong_number":
+            strong_number,
 
-            "meaning":meaning,
+            "transliteration":
+            transliteration,
+
+            "meaning":
+            meaning,
 
             "scriptures":
             scriptures or [],
@@ -36,6 +78,7 @@ class RootWordService:
             "notes":
             notes or []
         }
+
 
         result = db[
             "rootwords"
@@ -47,39 +90,10 @@ class RootWordService:
             result.inserted_id
         )
 
-        return data
+        return {
 
+            "success":True,
 
-    @staticmethod
-    def search(word):
-
-        db = get_db()
-
-        result = db[
-            "rootwords"
-        ].find_one({
-
-            "$or":[
-
-                {
-                    "word":{
-                        "$regex":
-                        word,
-                        "$options":"i"
-                    }
-                },
-
-                {
-                    "strong_number":
-                    word
-                }
-            ]
-        })
-
-        if result:
-
-            result["_id"] = str(
-                result["_id"]
-            )
-
-        return result
+            "data":
+            data
+        }
