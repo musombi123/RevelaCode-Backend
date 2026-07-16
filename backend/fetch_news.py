@@ -295,6 +295,26 @@ if __name__ == "__main__":
     # 🔥 NORMALIZE EVERYTHING
     all_data = [normalize_event(item) for item in raw_data]
 
+    from backend.media_extractor import extract_media
+
+    for item in all_data:
+        
+        media = extract_media(item["url"])
+
+        item["media"] = media
+
+        if not item["urlToImage"]:
+
+            if media["images"]:
+
+                item["urlToImage"] = media["images"][0]
+
+        if media["videos"]:
+
+            item["media_type"] = "video"
+
+            item["video_url"] = media["videos"][0]
+
     # 🔥 ADD REGION HERE
     for item in all_data:
         text = f"{item.get('headline','')} {item.get('description','')}"
