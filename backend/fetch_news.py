@@ -295,9 +295,6 @@ if __name__ == "__main__":
     # 🔥 NORMALIZE EVERYTHING
     all_data = [normalize_event(item) for item in raw_data]
 
-    # SAVE IMMEDIATELY
-    save_to_json(all_data, QUERY)
-
     from backend.media_extractor import extract_media
 
     for item in all_data:
