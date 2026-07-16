@@ -295,25 +295,38 @@ if __name__ == "__main__":
     # 🔥 NORMALIZE EVERYTHING
     all_data = [normalize_event(item) for item in raw_data]
 
+    # SAVE IMMEDIATELY
+    save_to_json(all_data, QUERY)
+
     from backend.media_extractor import extract_media
 
     for item in all_data:
-        
-        media = extract_media(item["url"])
 
-        item["media"] = media
+        if not item.get("url"):
+            continue
 
-        if not item["urlToImage"]:
+        # Skip only if we already have both an image and a video
+        if item.get("urlToImage") and item.get("video_url"):
+            continue
 
-            if media["images"]:
+        try:
+            media = extract_media(item["url"])
 
+            item["media"] = media
+
+            # Fill missing image only
+            if not item.get("urlToImage") and media["images"]:
                 item["urlToImage"] = media["images"][0]
 
-        if media["videos"]:
+            # Fill missing video only
+            if not item.get("video_url") and media["videos"]:
+                item["media_type"] = "video"
+                item["video_url"] = media["videos"][0]
 
-            item["media_type"] = "video"
-
-            item["video_url"] = media["videos"][0]
+        except Exception as e:
+            logging.warning(
+                f"Media extraction failed for {item.get('url')}: {e}"
+            )
 
     # 🔥 ADD REGION HERE
     for item in all_data:

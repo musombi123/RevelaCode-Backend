@@ -2,57 +2,125 @@ import requests
 from bs4 import BeautifulSoup
 
 
+HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 Chrome/138.0 Safari/537.36"
+    )
+}
+
+
+def add_unique(lst, value):
+    if value and value not in lst:
+        lst.append(value)
+
+
 def extract_media(article_url):
     media = {
         "images": [],
-        "videos": [],
+        "videos": []
     }
 
     try:
-        headers = {
-            "User-Agent":
-            "Mozilla/5.0"
-        }
+        r = requests.get(
+            article_url,
+            headers=HEADERS,
+            timeout=10,
+            allow_redirects=True
+        )
 
-        r = requests.get(article_url, timeout=10, headers=headers)
+        if r.status_code != 200:
+            return media
 
-        soup = BeautifulSoup(r.text, "html.parser")
+        soup = BeautifulSoup(r.text, "lxml")
 
-        # OpenGraph Image
-        og = soup.find("meta", property="og:image")
+        # -----------------------------------
+        # Open Graph
+        # -----------------------------------
 
-        if og:
-            media["images"].append(og.get("content"))
+        for tag in soup.find_all("meta"):
+            prop = tag.get("property", "")
+            name = tag.get("name", "")
+            content = tag.get("content")
 
-        # Twitter Image
-        tw = soup.find("meta", attrs={"name": "twitter:image"})
+            if not content:
+                continue
 
-        if tw:
-            media["images"].append(tw.get("content"))
+            if prop in (
+                "og:image",
+                "og:image:url",
+                "og:image:secure_url"
+            ):
+                add_unique(media["images"], content)
 
-        # OpenGraph Video
-        ogv = soup.find("meta", property="og:video")
+            elif prop in (
+                "og:video",
+                "og:video:url",
+                "og:video:secure_url"
+            ):
+                add_unique(media["videos"], content)
 
-        if ogv:
-            media["videos"].append(ogv.get("content"))
+            elif name in (
+                "twitter:image",
+                "twitter:image:src"
+            ):
+                add_unique(media["images"], content)
 
-        # HTML5 videos
-        for video in soup.find_all("video"):
-            src = video.get("src")
+            elif name in (
+                "twitter:player",
+                "twitter:player:stream"
+            ):
+                add_unique(media["videos"], content)
+
+        # -----------------------------------
+        # IMG tags
+        # -----------------------------------
+
+        for img in soup.find_all("img"):
+            src = (
+                img.get("src")
+                or img.get("data-src")
+                or img.get("data-original")
+                or img.get("data-lazy-src")
+            )
 
             if src:
-                media["videos"].append(src)
+                add_unique(media["images"], src)
 
-        # YouTube iframes
+        # -----------------------------------
+        # VIDEO tags
+        # -----------------------------------
+
+        for video in soup.find_all("video"):
+
+            if video.get("src"):
+                add_unique(media["videos"], video["src"])
+
+            for source in video.find_all("source"):
+                if source.get("src"):
+                    add_unique(media["videos"], source["src"])
+
+        # -----------------------------------
+        # IFRAMES
+        # -----------------------------------
+
         for iframe in soup.find_all("iframe"):
 
             src = iframe.get("src")
 
-            if src and "youtube" in src:
-                media["videos"].append(src)
+            if not src:
+                continue
 
-        media["images"] = list(set(media["images"]))
-        media["videos"] = list(set(media["videos"]))
+            if any(
+                x in src.lower()
+                for x in (
+                    "youtube",
+                    "youtu.be",
+                    "vimeo",
+                    "dailymotion"
+                )
+            ):
+                add_unique(media["videos"], src)
 
     except Exception:
         pass
