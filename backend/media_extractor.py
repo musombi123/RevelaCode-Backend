@@ -1,7 +1,8 @@
 import logging
+from urllib.parse import urljoin
+
 import requests
 from bs4 import BeautifulSoup
-from urllib.parse import urljoin
 
 logger = logging.getLogger(__name__)
 
@@ -12,7 +13,7 @@ HEADERS = {
     )
 }
 
-# Reuse one HTTP session for all requests
+# Reuse one HTTP session
 SESSION = requests.Session()
 SESSION.headers.update(HEADERS)
 
@@ -47,17 +48,11 @@ TWITTER_VIDEOS = {
 
 
 def add_unique(lst, value):
-    """
-    Add an item only if it exists and is not already present.
-    """
     if value and value not in lst:
         lst.append(value)
 
 
 def absolute_url(base, url):
-    """
-    Convert relative URLs into absolute URLs.
-    """
     if not url:
         return None
     return urljoin(base, url)
@@ -65,13 +60,16 @@ def absolute_url(base, url):
 
 def extract_media(article_url):
     """
-    Extract images and videos from an article page.
+    Fast, non-blocking media extraction.
 
     Returns:
     {
-        "images": [...],
-        "videos": [...]
+        "images": [],
+        "videos": []
     }
+
+    This function is intentionally designed to fail fast so it never
+    delays event ingestion.
     """
 
     media = {
@@ -83,25 +81,29 @@ def extract_media(article_url):
 
         response = SESSION.get(
             article_url,
-            timeout=(3, 6),
-            allow_redirects=True
+            timeout=(1.5, 2.5),      # MUCH faster timeout
+            allow_redirects=True,
+            stream=True
         )
 
         if response.status_code != 200:
-            logger.debug(
-                "Skipped %s (HTTP %s)",
-                article_url,
-                response.status_code
-            )
             return media
 
-        soup = BeautifulSoup(response.text, "lxml")
+        content_type = response.headers.get("Content-Type", "").lower()
 
-        # ------------------------------------------------
-        # OpenGraph + Twitter Cards
-        # ------------------------------------------------
+        if "text/html" not in content_type:
+            return media
 
-        for tag in soup.find_all("meta"):
+        # Parse only the beginning of the page.
+        html = response.text[:500000]
+
+        soup = BeautifulSoup(html, "lxml")
+
+        # ----------------------------------------------------
+        # OpenGraph / Twitter Metadata
+        # ----------------------------------------------------
+
+        for tag in soup.find_all("meta", limit=50):
 
             content = tag.get("content")
 
@@ -135,17 +137,17 @@ def extract_media(article_url):
                     absolute_url(article_url, content)
                 )
 
-            # Early exit
-            if media["images"] and media["videos"]:
-                break
+            # We already found enough.
+            if len(media["images"]) >= 1 and len(media["videos"]) >= 1:
+                return media
 
-        # ------------------------------------------------
-        # HTML Images
-        # ------------------------------------------------
+        # ----------------------------------------------------
+        # Images
+        # ----------------------------------------------------
 
-        if len(media["images"]) < 3:
+        if not media["images"]:
 
-            for img in soup.find_all("img", limit=20):
+            for img in soup.find_all("img", limit=10):
 
                 src = (
                     img.get("src")
@@ -154,24 +156,22 @@ def extract_media(article_url):
                     or img.get("data-lazy-src")
                 )
 
-                if not src:
-                    continue
-
-                add_unique(
-                    media["images"],
-                    absolute_url(article_url, src)
-                )
+                if src:
+                    add_unique(
+                        media["images"],
+                        absolute_url(article_url, src)
+                    )
 
                 if len(media["images"]) >= 3:
                     break
 
-        # ------------------------------------------------
-        # HTML5 Videos
-        # ------------------------------------------------
+        # ----------------------------------------------------
+        # HTML5 Video
+        # ----------------------------------------------------
 
         if not media["videos"]:
 
-            for video in soup.find_all("video", limit=5):
+            for video in soup.find_all("video", limit=3):
 
                 src = video.get("src")
 
@@ -181,7 +181,10 @@ def extract_media(article_url):
                         absolute_url(article_url, src)
                     )
 
-                for source in video.find_all("source"):
+                if media["videos"]:
+                    break
+
+                for source in video.find_all("source", limit=2):
 
                     src = source.get("src")
 
@@ -194,43 +197,33 @@ def extract_media(article_url):
                 if media["videos"]:
                     break
 
-        # ------------------------------------------------
-        # Embedded Players
-        # ------------------------------------------------
+        # ----------------------------------------------------
+        # Embedded Video
+        # ----------------------------------------------------
 
         if not media["videos"]:
 
-            for iframe in soup.find_all("iframe", limit=10):
+            for iframe in soup.find_all("iframe", limit=5):
 
                 src = iframe.get("src")
 
-                if not src:
-                    continue
-
-                if any(host in src.lower() for host in VIDEO_HOSTS):
-
+                if (
+                    src
+                    and any(host in src.lower() for host in VIDEO_HOSTS)
+                ):
                     add_unique(
                         media["videos"],
                         absolute_url(article_url, src)
                     )
-
                     break
 
     except requests.exceptions.Timeout:
-        logger.debug("Timeout extracting media: %s", article_url)
+        logger.debug("Media timeout: %s", article_url)
 
     except requests.exceptions.RequestException as e:
-        logger.debug(
-            "Request failed for %s: %s",
-            article_url,
-            e
-        )
+        logger.debug("Media request failed: %s (%s)", article_url, e)
 
-    except Exception as e:
-        logger.debug(
-            "Media extraction error for %s: %s",
-            article_url,
-            e
-        )
+    except Exception:
+        logger.exception("Media extraction failed: %s", article_url)
 
     return media
