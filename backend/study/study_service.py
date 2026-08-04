@@ -22,47 +22,66 @@ STUDY_PATH = os.path.join(
 
 class StudyService:
 
-    @staticmethod
-    def get_categories():
-        return [
-            "faith",
-            "education"
-        ]
-
-    @staticmethod
-    def get_materials(
-        category=None,
-        subcategory=None,
-        file_type=None
-    ):
+        @staticmethod
+    def get_material_by_id(material_id):
 
         db = get_db()
-        query = {}
 
-        if category:
-            query["category"] = category
-
-        if subcategory:
-            query["subcategory"] = subcategory
-
-        if file_type:
-            query["file_type"] = file_type
-
+        # --------------------------------------------------
+        # First try MongoDB ObjectId
+        # --------------------------------------------------
         try:
 
-            materials = list(
-                db["study_materials"].find(query)
-            )
+            material = db["study_materials"].find_one({
+                "_id": ObjectId(material_id)
+            })
 
-            for material in materials:
+            if material:
                 material["_id"] = str(material["_id"])
+                return material
 
-            return materials
+        except (InvalidId, TypeError):
+            pass
 
         except Exception as e:
+            print(f"MongoDB ObjectId lookup error: {e}")
 
-            print(f"Database error: {e}")
-            return StudyService.load_local(category)
+        # --------------------------------------------------
+        # Second try custom UUID field ("id")
+        # --------------------------------------------------
+        try:
+
+            material = db["study_materials"].find_one({
+                "id": material_id
+            })
+
+            if material:
+                material["_id"] = str(material["_id"])
+                return material
+
+        except Exception as e:
+            print(f"UUID lookup error: {e}")
+
+        # --------------------------------------------------
+        # Third try local JSON fallback
+        # --------------------------------------------------
+        try:
+
+            materials = StudyService.load_local()
+
+            for material in materials:
+
+                if (
+                    material.get("_id") == material_id
+                    or material.get("id") == material_id
+                    or material.get("material_id") == material_id
+                ):
+                    return material
+
+        except Exception as e:
+            print(f"Local lookup error: {e}")
+
+        return None
 
     @staticmethod
     def load_local(category=None):
