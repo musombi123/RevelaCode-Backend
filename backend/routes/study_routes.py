@@ -165,7 +165,7 @@ def upload_material():
     return jsonify(
         result
     )
-
+    
 
 @study_bp.route(
     "/search",
@@ -264,37 +264,33 @@ def add_rootword():
     return jsonify(
         result
     )
+    
+from bson import ObjectId
 
+@study_bp.route(
+    "/material/<material_id>",
+    methods=["GET"]
+)
+def get_material(material_id):
+
+    material = StudyService.get_material_by_id(material_id)
+
+    if not material:
+        return jsonify({
+            "success": False,
+            "message": "Material not found"
+        }), 404
+
+    return jsonify({
+        "success": True,
+        "material": material
+    })
+    
 # ======================
 # Save bookmark
 # ======================
 
 @study_bp.route(
-    "/bookmark",
-    methods=["POST"]
-)
-def save_bookmark():
-
-    data = request.json or {}
-
-    result = (
-
-        BookmarkService
-        .add_bookmark(
-
-            data.get(
-                "user_id"
-            ),
-
-            data.get(
-                "material_id"
-            )
-        )
-    )
-
-    return jsonify(
-        result
-    )@study_bp.route(
     "/bookmark",
     methods=["POST"]
 )
