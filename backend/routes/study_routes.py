@@ -265,8 +265,6 @@ def add_rootword():
         result
     )
     
-from bson import ObjectId
-
 @study_bp.route(
     "/material/<material_id>",
     methods=["GET"]
@@ -326,28 +324,6 @@ def save_bookmark():
     "/bookmarks/<user_id>",
     methods=["GET"]
 )
-def get_bookmarks(
-    user_id
-):
-
-    bookmarks=(
-
-        BookmarkService
-        .get_user_bookmarks(
-            user_id
-        )
-    )
-
-    return jsonify({
-
-        "success":True,
-
-        "count":
-        len(bookmarks),
-
-        "bookmarks":
-        bookmarks
-    })
 
 def get_bookmarks(user_id):
 
