@@ -9,16 +9,13 @@ BASE_DIR = os.path.dirname(
     os.path.dirname(os.path.abspath(__file__))
 )
 
-# ======================================================
-# PATHS
-# ======================================================
-
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 SYMBOLS_FILE = os.path.join(CURRENT_DIR, "symbols_keywords.json")
 
 TAGGED_DIR = os.path.join(BASE_DIR, "events_tagged")
 OUTPUT_DIR = os.path.join(BASE_DIR, "events_decoded")
+
 
 # ======================================================
 # LOAD SYMBOLS
@@ -28,58 +25,57 @@ def load_symbols():
     with open(SYMBOLS_FILE, "r", encoding="utf-8") as f:
         return json.load(f)
 
+
 # ======================================================
 # NORMALIZE EVENT
 # ======================================================
 
 def normalize_event(event):
     """
-    Guarantees every event has the same schema.
+    Guarantees every event has a consistent schema and
+    removes None values that can crash decoding.
     """
 
-    event.setdefault("headline", "")
-    event.setdefault("description", "")
-    event.setdefault("content", "")
-    event.setdefault("author", "")
+    event["headline"] = event.get("headline") or ""
+    event["description"] = event.get("description") or ""
+    event["content"] = event.get("content") or ""
+    event["author"] = event.get("author") or ""
 
-    event.setdefault("url", "")
-    event.setdefault("publishedAt", "")
+    event["url"] = event.get("url") or ""
+    event["publishedAt"] = event.get("publishedAt") or ""
 
-    event.setdefault("source", "")
-    event.setdefault("source_id", "")
+    event["source"] = event.get("source") or ""
+    event["source_id"] = event.get("source_id") or ""
 
-    event.setdefault("region", "global")
-    event.setdefault("location", {})
+    event["region"] = event.get("region") or "global"
+    event["location"] = event.get("location") or {}
 
-    event.setdefault("categories", ["general"])
+    event["categories"] = event.get("categories") or ["general"]
 
-    event.setdefault("matched_symbols", [])
-    event.setdefault("matched_verses", [])
+    event["matched_symbols"] = event.get("matched_symbols") or []
+    event["matched_verses"] = event.get("matched_verses") or []
 
-    event.setdefault("media_type", "article")
+    event["media_type"] = event.get("media_type") or "article"
 
-    event.setdefault("urlToImage", "")
-    event.setdefault("video_url", "")
+    event["urlToImage"] = event.get("urlToImage") or ""
+    event["video_url"] = event.get("video_url") or ""
 
-    event.setdefault("media", {})
-    event["media"].setdefault("images", [])
-    event["media"].setdefault("videos", [])
+    media = event.get("media") or {}
 
-    # Backward compatibility
-    if (
-        not event["urlToImage"]
-        and event["media"]["images"]
-    ):
-        event["urlToImage"] = event["media"]["images"][0]
+    media["images"] = media.get("images") or []
+    media["videos"] = media.get("videos") or []
 
-    if (
-        not event["video_url"]
-        and event["media"]["videos"]
-    ):
-        event["video_url"] = event["media"]["videos"][0]
+    event["media"] = media
+
+    if not event["urlToImage"] and media["images"]:
+        event["urlToImage"] = media["images"][0]
+
+    if not event["video_url"] and media["videos"]:
+        event["video_url"] = media["videos"][0]
         event["media_type"] = "video"
 
     return event
+
 
 # ======================================================
 # DECODE EVENT
@@ -92,17 +88,15 @@ def decode_event(event, symbols):
     matched_symbols = []
     matched_verses = []
 
-    searchable_text = (
-        event["headline"] +
-        " " +
-        event["description"]
-    ).lower()
+    searchable_text = " ".join([
+        event["headline"],
+        event["description"],
+        event["content"]
+    ]).lower()
 
     if not searchable_text.strip():
-
         event["matched_symbols"] = ["general"]
         event["matched_verses"] = []
-
         return event
 
     for symbol in symbols.get("symbols", []):
@@ -122,10 +116,7 @@ def decode_event(event, symbols):
             for keyword in keywords
         ):
 
-            if (
-                symbol_name
-                and symbol_name not in matched_symbols
-            ):
+            if symbol_name and symbol_name not in matched_symbols:
                 matched_symbols.append(symbol_name)
 
             for verse in verses:
@@ -144,6 +135,7 @@ def decode_event(event, symbols):
 
     return event
 
+
 # ======================================================
 # FILE PROCESSING
 # ======================================================
@@ -153,15 +145,27 @@ def decode_events_file(filename):
     input_path = os.path.join(TAGGED_DIR, filename)
     output_path = os.path.join(OUTPUT_DIR, filename)
 
+    if not os.path.exists(input_path):
+        print(f"❌ Missing file: {input_path}")
+        return
+
     with open(input_path, "r", encoding="utf-8") as f:
         events = json.load(f)
 
     symbols = load_symbols()
 
-    decoded_events = [
-        decode_event(event, symbols)
-        for event in events
-    ]
+    decoded_events = []
+
+    for event in events:
+        try:
+            decoded_events.append(
+                decode_event(event, symbols)
+            )
+        except Exception as e:
+            print(
+                f"⚠️ Failed to decode event: "
+                f"{event.get('headline','<unknown>')} ({e})"
+            )
 
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
@@ -173,13 +177,9 @@ def decode_events_file(filename):
             ensure_ascii=False
         )
 
-    print(
-        f"✅ Decoded {len(decoded_events)} events"
-    )
+    print(f"✅ Decoded {len(decoded_events)} events")
+    print(f"📁 Saved to {output_path}")
 
-    print(
-        f"📁 Saved to {output_path}"
-    )
 
 # ======================================================
 # CLI
