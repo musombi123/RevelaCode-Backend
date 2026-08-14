@@ -31,8 +31,8 @@ CORS(
             "origins": [
                 "https://revelacode-frontend.onrender.com",
                 "https://www.revelacode-frontend.onrender.com",
-                # Capacitor Android WebView
                 "https://localhost",
+                "http://localhost",
             ]
         }
     },
