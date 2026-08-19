@@ -4,13 +4,10 @@ import json
 import logging
 import os
 import re
+from typing import Any, Dict, List, Optional
 
 
 logger = logging.getLogger(__name__)
-
-logging.basicConfig(
-    level=logging.INFO
-)
 
 
 # =========================================================
@@ -23,7 +20,7 @@ SYMBOLS_FILE = os.path.join(
 )
 
 
-def load_symbols_data():
+def load_symbols_data() -> Dict[str, Any]:
     try:
         with open(
             SYMBOLS_FILE,
@@ -37,18 +34,15 @@ def load_symbols_data():
                 "symbols_data.json must contain a JSON object."
             )
 
-        symbols = payload.get(
-            "symbols",
-            {},
-        )
+        symbols = payload.get("symbols")
 
         if not isinstance(symbols, dict):
             raise ValueError(
-                "symbols_data.json must contain a valid 'symbols' object."
+                "symbols_data.json is missing a valid 'symbols' object."
             )
 
         logger.info(
-            "✅ Loaded symbols_data.json | schema=%s | symbols=%d",
+            "✅ Loaded symbols_data.json | schema=%s | records=%d",
             payload.get(
                 "schema_version",
                 "unknown",
@@ -60,12 +54,14 @@ def load_symbols_data():
 
     except Exception as exc:
         logger.exception(
-            "❌ Could not load symbols_data.json: %s",
+            "❌ Failed to load symbols_data.json: %s",
             exc,
         )
 
         return {
             "schema_version": "unknown",
+            "generated_for": "RevelaCode Prophecy Explorer",
+            "generated_note": "",
             "symbols": {},
         }
 
@@ -79,17 +75,20 @@ SYMBOLS_DATA = load_symbols_data()
 
 class BibleDecoder:
 
-    def __init__(self, symbols=None):
+    def __init__(
+        self,
+        symbols: Optional[Dict[str, Any]] = None,
+    ):
         """
-        Supports either:
+        Accept either the complete dataset:
 
-        Full dataset:
         {
             "schema_version": "2.0",
             "symbols": {...}
         }
 
-        OR directly supplied symbols:
+        or only:
+
         {
             "666": {...},
             "beast": {...}
@@ -104,63 +103,44 @@ class BibleDecoder:
 
         if (
             isinstance(source, dict)
-            and "symbols" in source
+            and isinstance(
+                source.get("symbols"),
+                dict,
+            )
         ):
             self.source = source
-
             self.schema_version = source.get(
                 "schema_version",
                 "unknown",
             )
-
-            self.symbols = source.get(
-                "symbols",
-                {},
-            )
+            self.symbols = source["symbols"]
 
         else:
             self.source = {
                 "schema_version": "unknown",
                 "symbols": source or {},
             }
-
             self.schema_version = "unknown"
             self.symbols = source or {}
 
-        if not isinstance(
-            self.symbols,
-            dict,
-        ):
-            self.symbols = {}
-
     # =====================================================
-    # TEXT NORMALIZATION
+    # NORMALIZATION
     # =====================================================
 
     @staticmethod
-    def normalize_text(text: str) -> str:
-        """
-        Normalize text for reliable matching.
+    def normalize_text(
+        text: Any,
+    ) -> str:
+        text = str(text or "").lower()
 
-        Examples:
-
-        "Mark of the Beast!"
-        -> "mark of the beast"
-
-        "Revelation 13:18"
-        -> "revelation 13 18"
-        """
-
-        text = str(
-            text or ""
-        ).lower()
-
+        # Turn punctuation into spaces.
         text = re.sub(
             r"[^\w\s]",
             " ",
             text,
         )
 
+        # Collapse whitespace.
         text = re.sub(
             r"\s+",
             " ",
@@ -169,12 +149,11 @@ class BibleDecoder:
 
         return text
 
-    # =====================================================
-    # TOKENIZATION
-    # =====================================================
-
     @classmethod
-    def tokenize(cls, text: str):
+    def tokenize(
+        cls,
+        text: Any,
+    ) -> set:
         normalized = cls.normalize_text(
             text
         )
@@ -187,248 +166,265 @@ class BibleDecoder:
         )
 
     # =====================================================
-    # COLLECT SEARCHABLE VALUES
+    # FIELD COLLECTION
     # =====================================================
 
-    def _collect_search_values(
+    def _flatten(
         self,
-        value,
-        output,
-    ):
+        value: Any,
+    ) -> List[str]:
         """
-        Recursively collect strings/numbers
-        from nested dictionaries and lists.
-
-        This lets the decoder search fields such as:
-
-        - symbol
-        - title
-        - summary
-        - primary_reference
-        - cross_references
-        - historical_context
-        - interpretations
-        - sda_perspective
-        - textual_variants
-        - curiosity
-        - related_symbols
-        - evidence_vs_interpretation
-        - confidence
-        - sources
+        Convert nested lists/dictionaries into
+        searchable text.
         """
+
+        values: List[str] = []
 
         if value is None:
-            return
+            return values
 
         if isinstance(value, str):
-            output.append(value)
-            return
+            values.append(value)
+            return values
 
         if isinstance(value, (int, float)):
-            output.append(str(value))
-            return
+            values.append(str(value))
+            return values
 
         if isinstance(value, list):
             for item in value:
-                self._collect_search_values(
-                    item,
-                    output,
+                values.extend(
+                    self._flatten(item)
                 )
-            return
+            return values
 
         if isinstance(value, dict):
             for key, item in value.items():
-                output.append(str(key))
-
-                self._collect_search_values(
-                    item,
-                    output,
+                values.append(str(key))
+                values.extend(
+                    self._flatten(item)
                 )
 
+        return values
+
     # =====================================================
-    # SEARCH DOCUMENT
+    # TEXTUAL FIELD
     # =====================================================
 
-    def build_search_text(
+    def _field_text(
         self,
-        symbol_key,
-        data,
-    ):
-        values = [
-            str(symbol_key)
-        ]
-
-        self._collect_search_values(
-            data,
-            values,
-        )
-
+        data: Dict[str, Any],
+        field: str,
+    ) -> str:
         return self.normalize_text(
-            " ".join(values)
+            " ".join(
+                self._flatten(
+                    data.get(field)
+                )
+            )
         )
 
     # =====================================================
-    # FIELD-SPECIFIC SCORING
+    # SCORE
     # =====================================================
 
-    def score_match(
+    def score_record(
         self,
-        query,
-        symbol_key,
-        data,
-    ):
-        normalized_query = (
-            self.normalize_text(query)
-        )
+        query: str,
+        symbol_key: str,
+        data: Dict[str, Any],
+    ) -> int:
 
-        if not normalized_query:
+        q = self.normalize_text(query)
+
+        if not q:
             return 0
+
+        q_tokens = self.tokenize(q)
 
         symbol = self.normalize_text(
             symbol_key
         )
 
-        data_symbol = self.normalize_text(
-            data.get(
+        fields = {
+            "symbol": self._field_text(
+                data,
                 "symbol",
-                "",
-            )
-        )
-
-        title = self.normalize_text(
-            data.get(
+            ),
+            "title": self._field_text(
+                data,
                 "title",
-                "",
-            )
-        )
-
-        summary = self.normalize_text(
-            data.get(
+            ),
+            "primary_reference": self._field_text(
+                data,
+                "primary_reference",
+            ),
+            "cross_references": self._field_text(
+                data,
+                "cross_references",
+            ),
+            "summary": self._field_text(
+                data,
                 "summary",
-                "",
-            )
-        )
-
-        primary_reference = (
-            self.normalize_text(
-                data.get(
-                    "primary_reference",
-                    "",
-                )
-            )
-        )
-
-        category = self.normalize_text(
-            data.get(
+            ),
+            "category": self._field_text(
+                data,
                 "category",
-                "",
-            )
-        )
-
-        keywords = self.tokenize(
-            " ".join(
-                str(item)
-                for item in data.get(
-                    "keywords",
-                    [],
-                )
-                if item is not None
-            )
-        )
-
-        query_tokens = self.tokenize(
-            normalized_query
-        )
+            ),
+            "status": self._field_text(
+                data,
+                "status",
+            ),
+            "key_question": self._field_text(
+                data,
+                "key_question",
+            ),
+            "curiosity": self._field_text(
+                data,
+                "curiosity",
+            ),
+            "related_symbols": self._field_text(
+                data,
+                "related_symbols",
+            ),
+            "textual_variants": self._field_text(
+                data,
+                "textual_variants",
+            ),
+            "historical_context": self._field_text(
+                data,
+                "historical_context",
+            ),
+            "textual_context": self._field_text(
+                data,
+                "textual_context",
+            ),
+            "interpretations": self._field_text(
+                data,
+                "interpretations",
+            ),
+            "sda_perspective": self._field_text(
+                data,
+                "sda_perspective",
+            ),
+            "evidence": self._field_text(
+                data,
+                "evidence_vs_interpretation",
+            ),
+        }
 
         score = 0
 
-        # -------------------------------------------------
-        # EXACT MATCHES
-        # -------------------------------------------------
+        # =================================================
+        # EXACT HIGH-VALUE MATCHES
+        # =================================================
 
-        if normalized_query == symbol:
-            score += 150
+        if q == symbol:
+            score += 250
 
-        if normalized_query == data_symbol:
-            score += 145
+        if q == fields["symbol"]:
+            score += 230
 
-        if normalized_query == title:
-            score += 135
+        if q == fields["title"]:
+            score += 220
 
-        if normalized_query == primary_reference:
-            score += 125
+        if q == fields["primary_reference"]:
+            score += 200
 
-        # -------------------------------------------------
-        # PREFIX MATCHES
-        # -------------------------------------------------
+        # =================================================
+        # EXACT PHRASE CONTAINMENT
+        # =================================================
 
-        if symbol.startswith(
-            normalized_query
-        ):
-            score += 80
+        if q in symbol:
+            score += 140
 
-        if title.startswith(
-            normalized_query
-        ):
-            score += 75
+        if q in fields["symbol"]:
+            score += 130
 
-        # -------------------------------------------------
-        # PHRASE MATCHES
-        # -------------------------------------------------
+        if q in fields["title"]:
+            score += 120
 
-        if normalized_query in title:
+        if q in fields["primary_reference"]:
+            score += 110
+
+        if q in fields["cross_references"]:
+            score += 90
+
+        if q in fields["summary"]:
             score += 65
 
-        if normalized_query in primary_reference:
+        # =================================================
+        # SPECIAL DISCOVERY FIELDS
+        # =================================================
+
+        if q in fields["key_question"]:
+            score += 70
+
+        if q in fields["curiosity"]:
             score += 60
 
-        if normalized_query in summary:
-            score += 40
+        if q in fields["related_symbols"]:
+            score += 55
 
-        if normalized_query in category:
-            score += 30
+        if q in fields["textual_variants"]:
+            score += 85
 
-        # -------------------------------------------------
-        # KEYWORD OVERLAP
-        # -------------------------------------------------
+        # =================================================
+        # TOKEN OVERLAP
+        # =================================================
 
-        keyword_overlap = (
-            query_tokens & keywords
+        weighted_token_sources = [
+            ("symbol", 35),
+            ("title", 30),
+            ("primary_reference", 28),
+            ("cross_references", 20),
+            ("summary", 15),
+            ("key_question", 14),
+            ("curiosity", 12),
+            ("related_symbols", 10),
+            ("interpretations", 8),
+            ("historical_context", 7),
+        ]
+
+        for field, weight in weighted_token_sources:
+            field_tokens = self.tokenize(
+                fields[field]
+            )
+
+            overlap = (
+                q_tokens &
+                field_tokens
+            )
+
+            if overlap:
+                score += min(
+                    len(overlap) * weight,
+                    weight * 3,
+                )
+
+        # =================================================
+        # GENERAL FALLBACK
+        # =================================================
+
+        all_text = self.normalize_text(
+            " ".join(
+                fields.values()
+            )
         )
 
-        if keyword_overlap:
-            score += min(
-                len(keyword_overlap) * 15,
-                60,
-            )
-
-        # -------------------------------------------------
-        # FULL KNOWLEDGE-BASE OVERLAP
-        # -------------------------------------------------
-
-        searchable_text = (
-            self.build_search_text(
-                symbol_key,
-                data,
-            )
-        )
-
-        searchable_tokens = (
-            self.tokenize(
-                searchable_text
-            )
+        all_tokens = self.tokenize(
+            all_text
         )
 
         overlap = (
-            query_tokens
-            &
-            searchable_tokens
+            q_tokens &
+            all_tokens
         )
 
         if overlap:
             score += min(
-                len(overlap) * 8,
-                40,
+                len(overlap) * 5,
+                30,
             )
 
         return score
@@ -440,22 +436,7 @@ class BibleDecoder:
     def decode_verse(
         self,
         verse: str,
-    ):
-        """
-        Search the prophecy knowledge base.
-
-        Returns:
-
-        {
-            "schema_version": "2.0",
-            "query": "666",
-            "decoded": [
-                {
-                    "666": {...}
-                }
-            ]
-        }
-        """
+    ) -> Dict[str, Any]:
 
         query = str(
             verse or ""
@@ -472,13 +453,14 @@ class BibleDecoder:
         matches = []
 
         for symbol_key, data in self.symbols.items():
+
             if not isinstance(
                 data,
                 dict,
             ):
                 continue
 
-            score = self.score_match(
+            score = self.score_record(
                 query,
                 symbol_key,
                 data,
@@ -495,10 +477,7 @@ class BibleDecoder:
                 }
             )
 
-        # -------------------------------------------------
-        # SORT BY RELEVANCE
-        # -------------------------------------------------
-
+        # Highest relevance first.
         matches.sort(
             key=lambda item: (
                 item["score"],
@@ -511,32 +490,16 @@ class BibleDecoder:
             reverse=True,
         )
 
-        # -------------------------------------------------
-        # RETURN TOP RESULTS
-        # -------------------------------------------------
+        # Return only top useful records.
+        top_matches = matches[:8]
 
-        decoded = []
-
-        for item in matches[:10]:
-            decoded.append(
-                {
-                    item["symbol"]: item["data"]
-                }
-            )
-
-        # -------------------------------------------------
-        # NO MATCH
-        # -------------------------------------------------
-
-        if not decoded:
-            decoded = [
-                {
-                    "message": (
-                        "No symbolic meaning detected "
-                        f"for '{query}'."
-                    )
-                }
-            ]
+        decoded = [
+            {
+                "symbol": item["symbol"],
+                "data": item["data"],
+            }
+            for item in top_matches
+        ]
 
         return {
             "schema_version":
@@ -546,13 +509,13 @@ class BibleDecoder:
         }
 
     # =====================================================
-    # FRONTEND/API ALIAS
+    # TEXT ALIAS
     # =====================================================
 
     def decode_text(
         self,
-        verse: str,
-    ):
+        text: str,
+    ) -> Dict[str, Any]:
         return self.decode_verse(
-            verse
+            text
         )
