@@ -1,121 +1,157 @@
 # backend/study/bookmark_service.py
 
-import os
-import json
+from datetime import datetime
 
-from backend.models.Bookmark import Bookmark
-
-BASE_DIR = os.path.dirname(
-    os.path.dirname(__file__)
-)
-
-BOOKMARKS_FILE = os.path.join(
-    BASE_DIR,
-    "user_data",
-    "bookmarks.json"
-)
+from backend.db import get_db
 
 
 class BookmarkService:
 
-    @staticmethod
-    def load_bookmarks():
+    COLLECTION = "study_bookmarks"
 
-        if not os.path.exists(
-            BOOKMARKS_FILE
-        ):
+    # =====================================================
+    # SAVE BOOKMARK
+    # =====================================================
 
-            return []
-
-        with open(
-            BOOKMARKS_FILE,
-            "r",
-            encoding="utf-8"
-        ) as f:
-
-            return json.load(f)
-
-
-    @staticmethod
-    def save_bookmarks(data):
-
-        with open(
-            BOOKMARKS_FILE,
-            "w",
-            encoding="utf-8"
-        ) as f:
-
-            json.dump(
-                data,
-                f,
-                indent=4
-            )
-
-
-    @staticmethod
+    @classmethod
     def add_bookmark(
+        cls,
         user_id,
-        material_id
+        material_id,
     ):
-
-        bookmarks = (
-            BookmarkService
-            .load_bookmarks()
-        )
-
-        existing = next(
-
-            (
-                b for b in bookmarks
-                if b["user_id"] == user_id
-                and b["material_id"] == material_id
-            ),
-
-            None
-        )
-
-        if existing:
-
+        if not user_id:
             return {
                 "success": False,
-                "message":
-                "Already bookmarked"
+                "message": "user_id is required.",
             }
 
-        bookmark = Bookmark(
-            user_id,
-            material_id
-        )
+        if not material_id:
+            return {
+                "success": False,
+                "message": "material_id is required.",
+            }
 
-        bookmarks.append(
-            bookmark.to_dict()
-        )
+        user_id = str(user_id).strip()
+        material_id = str(material_id).strip()
 
-        BookmarkService.save_bookmarks(
-            bookmarks
-        )
+        if not user_id:
+            return {
+                "success": False,
+                "message": "user_id is required.",
+            }
+
+        if not material_id:
+            return {
+                "success": False,
+                "message": "material_id is required.",
+            }
+
+        db = get_db()
+
+        collection = db[
+            cls.COLLECTION
+        ]
+
+        # -------------------------------------------------
+        # Prevent duplicate bookmarks
+        # -------------------------------------------------
+
+        existing = collection.find_one({
+            "user_id": user_id,
+            "material_id": material_id,
+        })
+
+        if existing:
+            return {
+                "success": True,
+                "already_bookmarked": True,
+                "message": "Material is already bookmarked.",
+                "bookmark": {
+                    "id": str(
+                        existing.get("_id")
+                    ),
+                    "user_id": user_id,
+                    "material_id": material_id,
+                },
+            }
+
+        # -------------------------------------------------
+        # Create bookmark
+        # -------------------------------------------------
+
+        now = datetime.utcnow().isoformat()
+
+        result = collection.insert_one({
+            "user_id": user_id,
+            "material_id": material_id,
+            "created_at": now,
+            "updated_at": now,
+        })
 
         return {
             "success": True,
-            "bookmark":
-            bookmark.to_dict()
+            "already_bookmarked": False,
+            "message": "Material bookmarked successfully.",
+            "bookmark": {
+                "id": str(
+                    result.inserted_id
+                ),
+                "user_id": user_id,
+                "material_id": material_id,
+                "created_at": now,
+            },
         }
 
+    # =====================================================
+    # GET USER BOOKMARKS
+    # =====================================================
 
-    @staticmethod
-    def get_user_bookmarks(
-        user_id
+    @classmethod
+    def get_bookmarks(
+        cls,
+        user_id,
     ):
+        if not user_id:
+            return []
 
-        bookmarks = (
-            BookmarkService
-            .load_bookmarks()
+        db = get_db()
+
+        bookmarks = list(
+            db[
+                cls.COLLECTION
+            ].find({
+                "user_id": str(user_id),
+            })
         )
 
-        return [
+        for bookmark in bookmarks:
+            if bookmark.get("_id"):
+                bookmark["_id"] = str(
+                    bookmark["_id"]
+                )
 
-            b for b in bookmarks
+        return bookmarks
 
-            if b["user_id"]
-            == user_id
-        ]
+    # =====================================================
+    # CHECK BOOKMARK
+    # =====================================================
+
+    @classmethod
+    def is_bookmarked(
+        cls,
+        user_id,
+        material_id,
+    ):
+        if not user_id or not material_id:
+            return False
+
+        db = get_db()
+
+        bookmark = db[
+            cls.COLLECTION
+        ].find_one({
+            "user_id": str(user_id),
+            "material_id": str(material_id),
+        })
+
+        return bookmark is not None
