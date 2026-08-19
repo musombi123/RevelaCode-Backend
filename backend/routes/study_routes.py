@@ -430,22 +430,16 @@ def save_bookmark():
     "/bookmarks/<user_id>",
     methods=["GET"],
 )
-def get_bookmarks(
-    user_id,
-):
+def get_bookmarks(user_id):
 
-    db = get_db()
-
-    bookmarks = list(
-        db["study_bookmarks"].find({
-            "user_id": user_id,
-        })
+    bookmarks = (
+        BookmarkService
+        .get_bookmarks(user_id)
     )
 
     materials = []
 
     for bookmark in bookmarks:
-
         material_id = bookmark.get(
             "material_id"
         )
@@ -470,7 +464,6 @@ def get_bookmarks(
         "count": len(materials),
         "bookmarks": materials,
     }), 200
-
 
 # =========================================================
 # SDA QUARTERLY
