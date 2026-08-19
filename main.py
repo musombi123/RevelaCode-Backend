@@ -7,6 +7,7 @@ from datetime import datetime
 from flask import Flask, jsonify
 from flask_cors import CORS
 from dotenv import load_dotenv
+from backend.study.import_sda_q3_2026 import import_q3
 
 # ---------- ENV ----------
 load_dotenv()
@@ -171,6 +172,68 @@ def daily_runner_loop():
                 logger.error(f"Daily runner failed: {e}")
 
         time.sleep(3600)  # check once per hour
+
+# =========================================================
+# SDA Q3 2026 IMPORT
+# =========================================================
+
+def maybe_import_sda_q3_2026():
+    """
+    Import SDA Q3 2026 lessons only when explicitly enabled.
+
+    Render environment variable:
+
+        IMPORT_SDA_Q3_2026=true
+
+    After the import completes, set it back to false
+    so normal application restarts do not re-import lessons.
+    """
+
+    enabled = os.getenv(
+        "IMPORT_SDA_Q3_2026",
+        "false",
+    ).strip().lower()
+
+    if enabled != "true":
+        logger.info(
+            "ℹ SDA Q3 2026 importer disabled."
+        )
+        return
+
+    logger.info(
+        "🚀 Starting SDA Q3 2026 importer..."
+    )
+
+    try:
+        result = import_q3()
+
+        logger.info(
+            "✅ SDA Q3 2026 import finished | "
+            "requested=%s | successful=%s | failed=%s",
+            result.get(
+                "lessons_requested",
+                0,
+            ),
+            result.get(
+                "successful",
+                0,
+            ),
+            result.get(
+                "failed",
+                0,
+            ),
+        )
+
+        if result.get("failed", 0) > 0:
+            logger.warning(
+                "⚠ SDA Q3 2026 import completed "
+                "with failures."
+            )
+
+    except Exception:
+        logger.exception(
+            "❌ SDA Q3 2026 import failed."
+        )
 
 # ---------- START SERVER ----------
 if __name__ == "__main__":
