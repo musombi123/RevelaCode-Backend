@@ -1,30 +1,36 @@
-# RevelaCode
+# RevelaCode Jumuiya Backend — Biashara v1
 
-✨ **RevelaCode** is an AI-powered faith-tech project that decodes biblical verses, prophecies & global events into meaningful Gen Z insights.  
-Built with Python backend, planned interactive frontend, and daily data scrapers.
+This is a modular extension to the existing RevelaCode Flask + MongoDB backend.
+It does NOT replace the existing Bible, Prophecy, Events, Referential, RevelaAI,
+or authentication systems.
 
-## 🚀 Features
-- Daily global events fetcher & categorizer
-- Decoding engine with biblical prophecy matching
-- Guest mode & user accounts (secure JSON-based)
-- Planned dashboard: theme switcher, font size control, social linking
+## Phase 1
+- Shared Jumuiya integration
+- Existing-auth bridge
+- Biashara business profile
+- Products
+- Customers
+- Orders
+- Expenses
+- Dashboard metrics
+- MongoDB indexes
+- API contract
+- Basic schema tests
 
-## 🛠 Tech stack
-- Python 3
-- JSON storage
-- (Planned) React / HTML frontend
-- Git for version control
+## Register inside existing main.py / app factory
 
-## ⚙ Project structure
-```plaintext
-/backend
-  ├── events/
-  │   └── events_YYYY-MM-DD.json         # Raw daily news fetched
-  ├── events_tagged/
-  │   └── events_YYYY-MM-DD.json         # News tagged by category
-  ├── events_decoded/
-  │   └── events_YYYY-MM-DD.json         # Final decoded events (with matched verses)
-  ├── symbols_data.json                  # Core file: keywords, symbols, and verses
-  ├── decode_news.py                     # Script to decode tagged events
-  ├── fetch_news.py                      # (To be added) script to fetch daily news
-  └── categorize.py                      # (To be added) script to tag categories
+from jumuiya.integration.register import register_jumuiya
+register_jumuiya(app)
+
+The auth bridge expects the existing RevelaCode auth middleware to expose the
+authenticated user as `g.revelacode_user`. Change only
+`jumuiya/integration/auth_bridge.py` if your existing auth uses another context.
+
+API base:
+`/api/jumuiya/biashara`
+
+Next modules should be added beside `biashara/`:
+`shamba/`, `elimu/`, and `community/`.
+
+Architecture:
+ONE RevelaCode frontend + ONE RevelaCode backend + ONE identity + multiple hubs.
