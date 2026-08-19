@@ -18,6 +18,10 @@ from backend.study.bookmark_service import (
     BookmarkService
 )
 
+from backend.study.sda_quarterly_service import (
+    SDAQuarterlyService
+)
+
 study_bp = Blueprint(
     "study",
     __name__,
@@ -366,4 +370,131 @@ def get_bookmarks(user_id):
         "bookmarks":materials,
         "count":len(materials)
 
+    })
+
+
+# =========================================================
+# SDA QUARTERLY
+# =========================================================
+
+@study_bp.route(
+    "/sda/today",
+    methods=["GET"]
+)
+def sda_today():
+
+    material = (
+        SDAQuarterlyService
+        .get_today()
+    )
+
+    if not material:
+        return jsonify({
+            "success": False,
+            "message": (
+                "No SDA quarterly lesson "
+                "is available for today."
+            )
+        }), 404
+
+    return jsonify({
+        "success": True,
+        "material": material
+    })
+
+
+@study_bp.route(
+    "/sda/week",
+    methods=["GET"]
+)
+def sda_current_week():
+
+    materials = (
+        SDAQuarterlyService
+        .get_current_week()
+    )
+
+    return jsonify({
+        "success": True,
+        "count": len(materials),
+        "materials": materials
+    })
+
+
+@study_bp.route(
+    "/sda/date/<lesson_date>",
+    methods=["GET"]
+)
+def sda_by_date(lesson_date):
+
+    parsed = (
+        SDAQuarterlyService
+        .parse_date(
+            lesson_date
+        )
+    )
+
+    if not parsed:
+        return jsonify({
+            "success": False,
+            "message": (
+                "Date must use YYYY-MM-DD."
+            )
+        }), 400
+
+    material = (
+        SDAQuarterlyService
+        .get_by_date(
+            parsed
+        )
+    )
+
+    if not material:
+        return jsonify({
+            "success": False,
+            "message": "Lesson not found."
+        }), 404
+
+    return jsonify({
+        "success": True,
+        "material": material
+    })
+
+
+@study_bp.route(
+    "/sda/quarter/<int:year>/<int:quarter>",
+    methods=["GET"]
+)
+def sda_quarter(
+    year,
+    quarter
+):
+
+    if quarter not in (
+        1,
+        2,
+        3,
+        4,
+    ):
+        return jsonify({
+            "success": False,
+            "message": (
+                "Quarter must be between 1 and 4."
+            )
+        }), 400
+
+    materials = (
+        SDAQuarterlyService
+        .get_quarter(
+            year,
+            quarter,
+        )
+    )
+
+    return jsonify({
+        "success": True,
+        "year": year,
+        "quarter": quarter,
+        "count": len(materials),
+        "materials": materials
     })
