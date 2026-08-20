@@ -2,19 +2,19 @@ from __future__ import annotations
 
 from flask import Blueprint, request
 
-from jumuiya.core.permissions import (
+from backend.jumuiya.core.permissions import (
     require_authenticated,
     current_user_id,
 )
 
-from jumuiya.core.responses import (
+from backend.jumuiya.core.responses import (
     ok,
     created,
 )
 
-from jumuiya.core.errors import APIError
+from backend.jumuiya.core.errors import APIError
 
-from jumuiya.shamba import schemas, services
+from backend.jumuiya.shamba import schemas, services
 
 
 shamba_bp = Blueprint(
