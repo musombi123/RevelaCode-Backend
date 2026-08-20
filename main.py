@@ -1,14 +1,16 @@
 # backend/main.py
 
-import os
+from __future__ import annotations
+
 import logging
+import os
 import threading
 import time
 from datetime import datetime
 
+from dotenv import load_dotenv
 from flask import Flask, jsonify
 from flask_cors import CORS
-from dotenv import load_dotenv
 
 from backend.study.import_sda_q3_2026 import import_q3
 
@@ -479,21 +481,21 @@ def daily_runner_loop():
 
                 current_dir = os.getcwd()
 
-                os.chdir(
-                    backend_dir
-                )
-
                 try:
 
+                    os.chdir(
+                        backend_dir
+                    )
+
                     run_pipeline()
+
+                    last_run_date = today
 
                 finally:
 
                     os.chdir(
                         current_dir
                     )
-
-                last_run_date = today
 
             except Exception as e:
 
@@ -508,13 +510,44 @@ def daily_runner_loop():
 
 
 # =========================================================
-# SERVER START
+# BACKGROUND JOB CONTROL
 # =========================================================
 
-if __name__ == "__main__":
+_background_jobs_started = False
+_background_jobs_lock = threading.Lock()
+
+
+def start_background_jobs():
+    """
+    Start all background jobs exactly once per Python
+    application process.
+
+    This function is called both:
+
+        - when running `python main.py`
+        - when Gunicorn imports `main:app`
+
+    IMPORTANT:
+        Use ONE Gunicorn worker because these jobs live
+        inside the web process.
+    """
+
+    global _background_jobs_started
+
+    with _background_jobs_lock:
+
+        if _background_jobs_started:
+
+            logger.info(
+                "ℹ Background jobs already started."
+            )
+
+            return
+
+        _background_jobs_started = True
 
     # -----------------------------------------------------
-    # SDA IMPORT
+    # SDA IMPORTER
     # -----------------------------------------------------
 
     start_sda_importer()
@@ -523,11 +556,45 @@ if __name__ == "__main__":
     # DAILY RUNNER
     # -----------------------------------------------------
 
-    threading.Thread(
+    daily_thread = threading.Thread(
         target=daily_runner_loop,
         name="Daily-Runner",
         daemon=True,
-    ).start()
+    )
+
+    daily_thread.start()
+
+    logger.info(
+        "🧵 Daily runner thread started."
+    )
+
+
+# =========================================================
+# START BACKGROUND JOBS
+# =========================================================
+#
+# This is deliberately outside:
+#
+#     if __name__ == "__main__":
+#
+# because Gunicorn imports:
+#
+#     main:app
+#
+# and therefore does not execute the __main__ block.
+#
+# With ONE Gunicorn worker, the jobs run once inside the
+# web process.
+# =========================================================
+
+start_background_jobs()
+
+
+# =========================================================
+# MANUAL SERVER START
+# =========================================================
+
+if __name__ == "__main__":
 
     # -----------------------------------------------------
     # PORT
@@ -546,7 +613,7 @@ if __name__ == "__main__":
     )
 
     # -----------------------------------------------------
-    # FLASK
+    # FLASK DEVELOPMENT SERVER
     # -----------------------------------------------------
 
     app.run(
