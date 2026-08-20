@@ -2,40 +2,26 @@
 
 from datetime import date, datetime, timedelta
 from typing import Any, Dict, List, Optional
+from zoneinfo import ZoneInfo
+import uuid
 
 from backend.db import get_db
 
 
 class SDAQuarterlyService:
     """
-    Stores SDA Sabbath School quarterly lessons as normal
-    StudyMaterial documents.
+    Stores SDA Sabbath School quarterly lessons as
+    normal StudyMaterial documents.
 
-    The service is intentionally source-agnostic:
-    - upstream source supplies structured lesson data
-    - this service normalizes it
-    - MongoDB stores one record per daily lesson
+    One daily lesson = one study_materials document.
 
-    Expected lesson payload:
+    Example:
 
-    {
-        "lesson_number": 8,
-        "lesson_title": "The Power of Christ's Resurrection",
-        "quarter": 3,
-        "year": 2026,
-        "week_start": "2026-08-15",
-        "week_end": "2026-08-21",
-        "memory_text": "...",
-        "days": [
-            {
-                "day": "Saturday",
-                "date": "2026-08-15",
-                "title": "The Weekly Lesson",
-                "content": "..."
-            },
-            ...
-        ]
-    }
+        category       = faith
+        subcategory    = sda_quarterly
+        material_type  = lesson
+
+    SDA-specific information lives inside metadata.
     """
 
     COLLECTION = "study_materials"
@@ -46,13 +32,29 @@ class SDAQuarterlyService:
 
     SOURCE_NAME = "SDA Sabbath School"
 
+    TIMEZONE = ZoneInfo(
+        "Africa/Nairobi"
+    )
+
     # =====================================================
     # DATE HELPERS
     # =====================================================
 
     @staticmethod
-    def parse_date(value: Any) -> Optional[date]:
-        if isinstance(value, date):
+    def parse_date(
+        value: Any,
+    ) -> Optional[date]:
+
+        if isinstance(
+            value,
+            datetime,
+        ):
+            return value.date()
+
+        if isinstance(
+            value,
+            date,
+        ):
             return value
 
         if not value:
@@ -60,24 +62,41 @@ class SDAQuarterlyService:
 
         text = str(value).strip()
 
-        for fmt in (
+        formats = (
             "%Y-%m-%d",
             "%Y/%m/%d",
             "%d-%m-%Y",
+            "%d/%m/%Y",
             "%m/%d/%Y",
-        ):
+        )
+
+        for fmt in formats:
+
             try:
                 return datetime.strptime(
                     text,
                     fmt,
                 ).date()
+
             except ValueError:
                 continue
 
         return None
 
+    @classmethod
+    def today_date(cls) -> date:
+        """
+        Return today's date in Kenya.
+        """
+        return datetime.now(
+            cls.TIMEZONE
+        ).date()
+
     @staticmethod
-    def format_date(value: Optional[date]) -> Optional[str]:
+    def format_date(
+        value: Optional[date],
+    ) -> Optional[str]:
+
         if not value:
             return None
 
@@ -88,11 +107,16 @@ class SDAQuarterlyService:
     # =====================================================
 
     @staticmethod
-    def clean_string(value: Any) -> str:
+    def clean_string(
+        value: Any,
+    ) -> str:
+
         if value is None:
             return ""
 
-        return str(value).strip()
+        return str(
+            value
+        ).strip()
 
     # =====================================================
     # WEEK DAYS
@@ -102,20 +126,43 @@ class SDAQuarterlyService:
     def generate_week_dates(
         week_start: date,
     ) -> List[date]:
-        """
-        Generate the seven Sabbath-week dates.
-
-        Sabbath is treated as day 0:
-        Saturday → Friday.
-        """
 
         return [
-            week_start + timedelta(days=i)
+            week_start +
+            timedelta(days=i)
             for i in range(7)
         ]
 
     # =====================================================
-    # MATERIAL DOCUMENT
+    # DETERMINISTIC KEY
+    # =====================================================
+
+    @classmethod
+    def build_lesson_key(
+        cls,
+        year: int,
+        quarter: int,
+        lesson_number: int,
+        day_name: str,
+    ) -> str:
+
+        normalized_day = (
+            cls.clean_string(
+                day_name
+            )
+            .lower()
+            .replace(" ", "-")
+        )
+
+        return (
+            f"sda-{year}"
+            f"-q{quarter}"
+            f"-l{lesson_number}"
+            f"-{normalized_day}"
+        )
+
+    # =====================================================
+    # BUILD MATERIAL
     # =====================================================
 
     @classmethod
@@ -129,16 +176,32 @@ class SDAQuarterlyService:
         year = int(
             quarter.get(
                 "year",
-                lesson.get("year"),
+                lesson.get(
+                    "year",
+                    0,
+                ),
             )
         )
 
         quarter_number = int(
             quarter.get(
                 "quarter",
-                lesson.get("quarter"),
+                lesson.get(
+                    "quarter",
+                    0,
+                ),
             )
         )
+
+        if not year:
+            raise ValueError(
+                "SDA lesson year is required."
+            )
+
+        if not quarter_number:
+            raise ValueError(
+                "SDA quarter number is required."
+            )
 
         lesson_number = int(
             lesson.get(
@@ -150,21 +213,27 @@ class SDAQuarterlyService:
             )
         )
 
-        lesson_title = (
-            cls.clean_string(
-                lesson.get(
-                    "lesson_title"
-                )
+        if not lesson_number:
+            raise ValueError(
+                "SDA lesson number is required."
+            )
+
+        lesson_title = cls.clean_string(
+            lesson.get(
+                "lesson_title"
             )
         )
 
-        day_name = (
-            cls.clean_string(
-                day_item.get(
-                    "day"
-                )
+        day_name = cls.clean_string(
+            day_item.get(
+                "day"
             )
         )
+
+        if not day_name:
+            raise ValueError(
+                "SDA daily lesson day is required."
+            )
 
         lesson_date = cls.parse_date(
             day_item.get(
@@ -174,7 +243,8 @@ class SDAQuarterlyService:
 
         if not lesson_date:
             raise ValueError(
-                "Each SDA daily lesson must have a valid date."
+                "Each SDA daily lesson must have "
+                "a valid date."
             )
 
         daily_title = (
@@ -187,13 +257,17 @@ class SDAQuarterlyService:
             or f"Lesson {lesson_number}"
         )
 
-        content = (
-            cls.clean_string(
-                day_item.get(
-                    "content"
-                )
+        content = cls.clean_string(
+            day_item.get(
+                "content"
             )
         )
+
+        if not content:
+            raise ValueError(
+                f"SDA lesson content is empty for "
+                f"{day_name}."
+            )
 
         memory_text = (
             cls.clean_string(
@@ -209,8 +283,10 @@ class SDAQuarterlyService:
         )
 
         quarter_label = (
-            quarter.get(
-                "label"
+            cls.clean_string(
+                quarter.get(
+                    "label"
+                )
             )
             or f"Q{quarter_number} {year}"
         )
@@ -227,8 +303,27 @@ class SDAQuarterlyService:
             )
         )
 
+        pdf_url = (
+            day_item.get(
+                "pdf_url"
+            )
+            or lesson.get(
+                "pdf_url"
+            )
+        )
+
+        lesson_key = (
+            cls.build_lesson_key(
+                year,
+                quarter_number,
+                lesson_number,
+                day_name,
+            )
+        )
+
         metadata = {
             "program": cls.SOURCE_NAME,
+            "lesson_key": lesson_key,
             "lesson_number": lesson_number,
             "lesson_title": lesson_title,
             "day": day_name,
@@ -246,8 +341,15 @@ class SDAQuarterlyService:
             "quarter": quarter_number,
             "quarter_label": quarter_label,
             "year": year,
+            "book_title": (
+                quarter.get(
+                    "book_title"
+                )
+                or "SDA Sabbath School"
+            ),
             "memory_text": memory_text,
             "source_url": source_url,
+            "pdf_url": pdf_url,
             "source_name": cls.SOURCE_NAME,
             "is_daily_lesson": True,
         }
@@ -255,24 +357,28 @@ class SDAQuarterlyService:
         tags = [
             "SDA",
             "Sabbath School",
-            "quarterly",
+            "Quarterly",
             f"Q{quarter_number}",
             str(year),
             f"Lesson {lesson_number}",
             day_name,
         ]
 
-        # Add optional source tags.
-        extra_tags = day_item.get(
-            "tags"
-        ) or lesson.get(
-            "tags"
-        ) or []
+        extra_tags = (
+            day_item.get(
+                "tags"
+            )
+            or lesson.get(
+                "tags"
+            )
+            or []
+        )
 
         if isinstance(
             extra_tags,
             list,
         ):
+
             tags.extend(
                 [
                     cls.clean_string(tag)
@@ -281,43 +387,51 @@ class SDAQuarterlyService:
                 ]
             )
 
+        now = datetime.utcnow().isoformat()
+
         material = {
+            "id": lesson_key,
+
             "title": (
                 f"{day_name} — "
                 f"{daily_title}"
-                if day_name
-                else daily_title
             ),
+
             "category": cls.CATEGORY,
+
             "subcategory": cls.SUBCATEGORY,
+
             "material_type": cls.MATERIAL_TYPE,
+
             "content": content,
+
             "file_path": None,
+
             "year": year,
+
             "author": (
                 lesson.get(
                     "author"
                 )
                 or cls.SOURCE_NAME
             ),
+
             "tags": sorted(
                 set(tags)
             ),
+
             "metadata": metadata,
+
             "ai_enabled": bool(
                 day_item.get(
                     "ai_enabled",
                     True,
                 )
             ),
-            "created_at": (
-                datetime.utcnow()
-                .isoformat()
-            ),
-            "updated_at": (
-                datetime.utcnow()
-                .isoformat()
-            ),
+
+            "created_at": now,
+
+            "updated_at": now,
         }
 
         return material
@@ -334,57 +448,40 @@ class SDAQuarterlyService:
 
         db = get_db()
 
-        lesson_date = (
+        lesson_key = (
             material.get(
                 "metadata",
                 {}
             ).get(
-                "lesson_date"
+                "lesson_key"
             )
         )
 
-        lesson_number = (
-            material.get(
-                "metadata",
-                {}
-            ).get(
-                "lesson_number"
+        if not lesson_key:
+            raise ValueError(
+                "SDA material is missing lesson_key."
             )
-        )
-
-        year = material.get(
-            "year"
-        )
-
-        quarter = (
-            material.get(
-                "metadata",
-                {}
-            ).get(
-                "quarter"
-            )
-        )
-
-        existing_filter = {
-            "subcategory": cls.SUBCATEGORY,
-            "year": year,
-            "metadata.lesson_date": lesson_date,
-            "metadata.lesson_number": lesson_number,
-            "metadata.quarter": quarter,
-        }
 
         existing = db[
             cls.COLLECTION
         ].find_one(
-            existing_filter
+            {
+                "id": lesson_key,
+            }
         )
 
-        now = (
-            datetime.utcnow()
-            .isoformat()
-        )
+        now = datetime.utcnow().isoformat()
 
         if existing:
+
+            # Preserve original creation date.
+            material["created_at"] = (
+                existing.get(
+                    "created_at"
+                )
+                or now
+            )
+
             material["updated_at"] = now
 
             db[
@@ -402,25 +499,15 @@ class SDAQuarterlyService:
                 existing["_id"]
             )
 
-            # Keep the public id if it already exists.
-            if existing.get("id"):
-                material["id"] = existing["id"]
-
             return {
                 "success": True,
                 "action": "updated",
                 "material": material,
             }
 
-        # -----------------------------------------------
-        # New material
-        # -----------------------------------------------
-
-        import uuid
-
-        material["id"] = str(
-            uuid.uuid4()
-        )
+        # -------------------------------------------------
+        # CREATE
+        # -------------------------------------------------
 
         material["created_at"] = now
         material["updated_at"] = now
@@ -454,7 +541,7 @@ class SDAQuarterlyService:
 
         days = lesson.get(
             "days",
-            []
+            [],
         )
 
         if not isinstance(
@@ -463,6 +550,48 @@ class SDAQuarterlyService:
         ):
             raise ValueError(
                 "Lesson 'days' must be a list."
+            )
+
+        # -------------------------------------------------
+        # STRICT VALIDATION
+        # -------------------------------------------------
+
+        required_days = {
+            "Saturday",
+            "Sunday",
+            "Monday",
+            "Tuesday",
+            "Wednesday",
+            "Thursday",
+            "Friday",
+        }
+
+        received_days = {
+            cls.clean_string(
+                item.get(
+                    "day"
+                )
+            )
+            for item in days
+            if isinstance(
+                item,
+                dict,
+            )
+        }
+
+        missing = (
+            required_days
+            - received_days
+        )
+
+        if missing:
+
+            raise ValueError(
+                "SDA lesson is incomplete. "
+                "Missing days: "
+                + ", ".join(
+                    sorted(missing)
+                )
             )
 
         results = []
@@ -535,7 +664,7 @@ class SDAQuarterlyService:
 
         lessons = quarter.get(
             "lessons",
-            []
+            [],
         )
 
         if not year:
@@ -608,7 +737,7 @@ class SDAQuarterlyService:
 
         target_date = (
             target_date
-            or date.today()
+            or cls.today_date()
         )
 
         material = db[
@@ -658,26 +787,31 @@ class SDAQuarterlyService:
 
         target_date = (
             target_date
-            or date.today()
+            or cls.today_date()
         )
 
-        # Sabbath-based week:
-        # Saturday through Friday.
+        # Python:
+        # Monday = 0
+        # Sunday = 6
+        #
+        # We want Saturday = start.
 
         days_since_saturday = (
             target_date.weekday() + 2
         ) % 7
 
         week_start = (
-            target_date -
-            timedelta(
+            target_date
+            - timedelta(
                 days=days_since_saturday
             )
         )
 
         week_end = (
-            week_start +
-            timedelta(days=6)
+            week_start
+            + timedelta(
+                days=6
+            )
         )
 
         db = get_db()
@@ -700,6 +834,7 @@ class SDAQuarterlyService:
         )
 
         for material in materials:
+
             if material.get("_id"):
                 material["_id"] = str(
                     material["_id"]
@@ -712,7 +847,7 @@ class SDAQuarterlyService:
                     {}
                 ).get(
                     "lesson_date",
-                    ""
+                    "",
                 )
         )
 
@@ -746,6 +881,7 @@ class SDAQuarterlyService:
         )
 
         for material in materials:
+
             if material.get("_id"):
                 material["_id"] = str(
                     material["_id"]
@@ -765,7 +901,7 @@ class SDAQuarterlyService:
                     {}
                 ).get(
                     "lesson_date",
-                    ""
+                    "",
                 ),
             )
         )
