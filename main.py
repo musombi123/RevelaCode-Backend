@@ -34,7 +34,8 @@ logger = logging.getLogger("main")
 
 if os.getenv("FLASK_ENV") != "production":
     logger.info(
-        f"MONGO_URI loaded: {bool(os.getenv('MONGO_URI'))}"
+        "MONGO_URI loaded: %s",
+        bool(os.getenv("MONGO_URI")),
     )
 
 
@@ -73,6 +74,7 @@ CORS(
         "GET",
         "POST",
         "PUT",
+        "PATCH",
         "DELETE",
         "OPTIONS",
     ],
@@ -84,6 +86,7 @@ CORS(
 # =========================================================
 
 try:
+
     from backend.db import db
 
     logger.info(
@@ -93,10 +96,110 @@ try:
 except Exception as e:
 
     logger.warning(
-        f"MongoDB not available, running without DB: {e}"
+        "MongoDB not available, running without DB: %s",
+        e,
     )
 
     db = None
+
+
+# =========================================================
+# BLUEPRINT REGISTRATION HELPER
+# =========================================================
+
+def register_bp(
+    import_path: str,
+    bp_name: str,
+):
+    """
+    Safely import and register an existing Flask blueprint.
+    """
+
+    try:
+
+        module = __import__(
+            import_path,
+            fromlist=[bp_name],
+        )
+
+        bp = getattr(
+            module,
+            bp_name,
+        )
+
+        app.register_blueprint(
+            bp
+        )
+
+        logger.info(
+            "%s registered (%s)",
+            bp_name,
+            import_path,
+        )
+
+        return True
+
+    except Exception as e:
+
+        logger.warning(
+            "%s not available from %s: %s",
+            bp_name,
+            import_path,
+            e,
+        )
+
+        return False
+
+
+# =========================================================
+# EXISTING REVELACODE AUTH & USER MODULES
+# =========================================================
+
+register_bp(
+    "backend.user_profile.auth_gate",
+    "auth_bp",
+)
+
+register_bp(
+    "backend.user_profile.user_data",
+    "user_bp",
+)
+
+register_bp(
+    "backend.account_management",
+    "accounts_bp",
+)
+
+register_bp(
+    "backend.history_bp",
+    "history_bp",
+)
+
+
+# =========================================================
+# JUMUIYA PLATFORM
+# =========================================================
+
+try:
+
+    from backend.jumuiya.integration.register import (
+        register_jumuiya
+    )
+
+    register_jumuiya(
+        app
+    )
+
+    logger.info(
+        "✅ Jumuiya platform registered"
+    )
+
+except Exception as e:
+
+    logger.exception(
+        "❌ Jumuiya registration failed: %s",
+        e,
+    )
 
 
 # =========================================================
@@ -118,9 +221,11 @@ try:
 except Exception as e:
 
     logger.exception(
-        f"study_bp registration failed: {e}"
+        "study_bp registration failed: %s",
+        e,
     )
 
+<<<<<<< HEAD
 
 
 
@@ -203,6 +308,8 @@ except Exception as e:
         "❌ Jumuiya registration failed: %s",
         e,
     )
+=======
+>>>>>>> 07844c0 (jumuiya to the world)
 
 # =========================================================
 # APPLICATION ROUTES
@@ -228,6 +335,7 @@ register_bp(
     "domain_bp",
 )
 
+# Keep using the existing RevelaCode notification system.
 register_bp(
     "backend.routes.notifications_routes",
     "notifications_bp",
@@ -240,7 +348,7 @@ register_bp(
 
 
 # =========================================================
-# ADMIN / SUPPORT / PUBLIC
+# ADMIN
 # =========================================================
 
 try:
@@ -259,9 +367,14 @@ try:
 except Exception as e:
 
     logger.warning(
-        f"admin_bp registration failed: {e}"
+        "admin_bp registration failed: %s",
+        e,
     )
 
+
+# =========================================================
+# SUPPORT
+# =========================================================
 
 try:
 
@@ -279,9 +392,14 @@ try:
 except Exception as e:
 
     logger.warning(
-        f"support_bp registration failed: {e}"
+        "support_bp registration failed: %s",
+        e,
     )
 
+
+# =========================================================
+# PUBLIC ROUTES
+# =========================================================
 
 register_bp(
     "backend.routes.public_routes",
@@ -290,7 +408,7 @@ register_bp(
 
 
 # =========================================================
-# HEALTH ENDPOINTS
+# ROOT HEALTH
 # =========================================================
 
 @app.route(
@@ -317,6 +435,7 @@ def health():
         "mongo_uri_set": bool(
             os.getenv("MONGO_URI")
         ),
+        "jumuiya": True,
     }), 200
 
 
@@ -325,16 +444,6 @@ def health():
 # =========================================================
 
 def maybe_import_sda_q3_2026():
-    """
-    Import SDA Q3 2026 lessons when explicitly enabled.
-
-    Render environment variable:
-
-        IMPORT_SDA_Q3_2026=true
-
-    Once the import succeeds, set the environment
-    variable to false/remove it.
-    """
 
     enabled = os.getenv(
         "IMPORT_SDA_Q3_2026",
@@ -369,28 +478,15 @@ def maybe_import_sda_q3_2026():
         logger.info(
             "✅ SDA Q3 2026 import finished | "
             "requested=%s | successful=%s | failed=%s",
-            result.get(
-                "lessons_requested",
-                0,
-            ),
-            result.get(
-                "successful",
-                0,
-            ),
-            result.get(
-                "failed",
-                0,
-            ),
+            result.get("lessons_requested", 0),
+            result.get("successful", 0),
+            result.get("failed", 0),
         )
 
-        if result.get(
-            "failed",
-            0,
-        ) > 0:
+        if result.get("failed", 0) > 0:
 
             logger.warning(
-                "⚠ SDA Q3 2026 import completed "
-                "with failures."
+                "⚠ SDA Q3 2026 import completed with failures."
             )
 
         else:
@@ -411,13 +507,6 @@ def maybe_import_sda_q3_2026():
 # =========================================================
 
 def start_sda_importer():
-
-    """
-    Run the SDA import outside Flask's main thread.
-
-    This allows Render to bind the web port while
-    the importer is working.
-    """
 
     thread = threading.Thread(
         target=maybe_import_sda_q3_2026,
@@ -481,7 +570,8 @@ def daily_runner_loop():
             except Exception as e:
 
                 logger.exception(
-                    f"Daily runner failed: {e}"
+                    "Daily runner failed: %s",
+                    e,
                 )
 
         time.sleep(
@@ -496,7 +586,7 @@ def daily_runner_loop():
 if __name__ == "__main__":
 
     # -----------------------------------------------------
-    # SDA ONE-TIME IMPORT
+    # SDA IMPORT
     # -----------------------------------------------------
 
     start_sda_importer()
@@ -523,7 +613,8 @@ if __name__ == "__main__":
     )
 
     logger.info(
-        f"Starting server on port {port}"
+        "Starting server on port %s",
+        port,
     )
 
     # -----------------------------------------------------
