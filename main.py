@@ -156,12 +156,12 @@ def register_bp(
 # =========================================================
 
 register_bp(
-    "backend.user_profile.auth_gate",
+    "backend.auth_gate",
     "auth_bp",
 )
 
 register_bp(
-    "backend.user_profile.user_data",
+    "backend.user_data",
     "user_bp",
 )
 
