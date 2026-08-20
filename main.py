@@ -225,91 +225,6 @@ except Exception as e:
         e,
     )
 
-<<<<<<< HEAD
-
-
-
-# =========================================================
-# BLUEPRINT REGISTRATION HELPER
-# =========================================================
-
-def register_bp(
-    import_path: str,
-    bp_name: str,
-):
-    try:
-
-        module = __import__(
-            import_path,
-            fromlist=[bp_name],
-        )
-
-        bp = getattr(
-            module,
-            bp_name,
-        )
-
-        app.register_blueprint(
-            bp
-        )
-
-        logger.info(
-            f"{bp_name} registered ({import_path})"
-        )
-
-    except Exception as e:
-
-        logger.warning(
-            f"{bp_name} not available "
-            f"from {import_path}: {e}"
-        )
-
-
-# =========================================================
-# AUTH & USER MODULES
-# =========================================================
-
-register_bp(
-    "backend.auth_gate",
-    "auth_bp",
-)
-
-register_bp(
-    "backend.user_data",
-    "user_bp",
-)
-
-register_bp(
-    "backend.account_management",
-    "accounts_bp",
-)
-
-register_bp(
-    "backend.history_bp",
-    "history_bp",
-)
-
-# =========================================================
-# JUMUIYA PLATFORM
-# =========================================================
-
-try:
-    from backend.jumuiya.integration.register import register_jumuiya
-
-    register_jumuiya(app)
-
-    logger.info(
-        "✅ Jumuiya platform registered"
-    )
-
-except Exception as e:
-
-    logger.exception(
-        "❌ Jumuiya registration failed: %s",
-        e,
-    )
-=======
->>>>>>> 07844c0 (jumuiya to the world)
 
 # =========================================================
 # APPLICATION ROUTES
@@ -335,7 +250,7 @@ register_bp(
     "domain_bp",
 )
 
-# Keep using the existing RevelaCode notification system.
+# Existing RevelaCode notification system.
 register_bp(
     "backend.routes.notifications_routes",
     "notifications_bp",
@@ -478,15 +393,28 @@ def maybe_import_sda_q3_2026():
         logger.info(
             "✅ SDA Q3 2026 import finished | "
             "requested=%s | successful=%s | failed=%s",
-            result.get("lessons_requested", 0),
-            result.get("successful", 0),
-            result.get("failed", 0),
+            result.get(
+                "lessons_requested",
+                0,
+            ),
+            result.get(
+                "successful",
+                0,
+            ),
+            result.get(
+                "failed",
+                0,
+            ),
         )
 
-        if result.get("failed", 0) > 0:
+        if result.get(
+            "failed",
+            0,
+        ) > 0:
 
             logger.warning(
-                "⚠ SDA Q3 2026 import completed with failures."
+                "⚠ SDA Q3 2026 import completed "
+                "with failures."
             )
 
         else:
