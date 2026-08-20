@@ -1,419 +1,330 @@
-# backend/jumuiya/core/database.py
+# backend/jumuiya/community/routes.py
 
 from __future__ import annotations
 
-from pymongo import ASCENDING, DESCENDING
+from flask import Blueprint, request
 
-from backend.db import get_db
+from backend.jumuiya.core.errors import APIError
+from backend.jumuiya.core.permissions import (
+    require_authenticated,
+    current_user_id,
+)
+from backend.jumuiya.core.responses import (
+    ok,
+    created,
+)
+
+from backend.jumuiya.community import services
 
 
 # =========================================================
-# JUMUIYA COLLECTION ACCESS
+# BLUEPRINT
 # =========================================================
 
-JUMUIYA_PREFIX = "jumuiya_"
+community_bp = Blueprint(
+    "jumuiya_community",
+    __name__,
+)
 
 
-def collection(name: str):
-    """
-    Return a Jumuiya collection from the existing
-    RevelaCode MongoDB database.
+# =========================================================
+# REQUEST HELPERS
+# =========================================================
 
-    Jumuiya collections MUST use the jumuiya_ prefix.
-    """
+def body():
+    data = request.get_json(
+        silent=True
+    )
 
-    if not name:
-        raise ValueError(
-            "Collection name is required."
+    if not isinstance(data, dict):
+        raise APIError(
+            "JSON request body is required.",
+            400,
+            "invalid_json",
         )
 
-    if not name.startswith(
-        JUMUIYA_PREFIX
+    return data
+
+
+def text(
+    data,
+    key,
+    required=False,
+    max_len=5000,
+):
+    value = data.get(
+        key,
+        "",
+    )
+
+    if value is None:
+        value = ""
+
+    if not isinstance(value, str):
+        raise APIError(
+            f"{key} must be text.",
+            422,
+            "validation_error",
+        )
+
+    value = value.strip()
+
+    if required and not value:
+        raise APIError(
+            f"{key} is required.",
+            422,
+            "validation_error",
+        )
+
+    if len(value) > max_len:
+        raise APIError(
+            f"{key} is too long.",
+            422,
+            "validation_error",
+        )
+
+    return value
+
+
+def parse_limit(
+    default=30,
+    maximum=100,
+):
+    try:
+        value = int(
+            request.args.get(
+                "limit",
+                default,
+            )
+        )
+    except (
+        TypeError,
+        ValueError,
     ):
-        raise ValueError(
-            "Jumuiya collections must use "
-            "the 'jumuiya_' prefix."
+        value = default
+
+    return max(
+        1,
+        min(
+            value,
+            maximum,
+        ),
+    )
+
+
+# =========================================================
+# HEALTH
+# =========================================================
+
+@community_bp.get("/health")
+def health():
+    return ok({
+        "hub": "community",
+        "status": "online",
+    })
+
+
+# =========================================================
+# FEED
+# =========================================================
+
+@community_bp.get("/feed")
+@require_authenticated
+def get_feed():
+    return ok(
+        services.feed(
+            category=request.args.get(
+                "category"
+            ),
+            hub=request.args.get(
+                "hub"
+            ),
+            limit=parse_limit(
+                default=30,
+                maximum=100,
+            ),
+        )
+    )
+
+
+# =========================================================
+# CREATE POST
+# =========================================================
+
+@community_bp.post("/posts")
+@require_authenticated
+def create_post():
+
+    data = body()
+
+    hub = (
+        text(
+            data,
+            "hub",
+            required=False,
+            max_len=60,
+        )
+        or "community"
+    ).lower()
+
+    category = (
+        text(
+            data,
+            "category",
+            required=False,
+            max_len=60,
+        )
+        or "general"
+    ).lower()
+
+    allowed_hubs = {
+        "community",
+        "biashara",
+        "shamba",
+        "elimu",
+    }
+
+    if hub not in allowed_hubs:
+        raise APIError(
+            "Invalid community hub.",
+            422,
+            "invalid_hub",
         )
 
-    return get_db()[name]
+    payload = {
+        "title": text(
+            data,
+            "title",
+            required=True,
+            max_len=180,
+        ),
+
+        "body": text(
+            data,
+            "body",
+            required=True,
+            max_len=10000,
+        ),
+
+        "category": category,
+
+        "hub": hub,
+
+        "location": text(
+            data,
+            "location",
+            required=False,
+            max_len=160,
+        ),
+    }
+
+    return created(
+        services.create_post(
+            current_user_id(),
+            payload,
+        ),
+        "Community post published.",
+    )
 
 
 # =========================================================
-# INDEXES
+# UPDATE POST
 # =========================================================
 
-def ensure_indexes():
-    """
-    Create all indexes used by the Jumuiya ecosystem.
+@community_bp.put(
+    "/posts/<post_id>"
+)
+@require_authenticated
+def edit_post(post_id):
 
-    This function is safe to call during application startup.
-    Existing MongoDB indexes are preserved.
-    """
-
-    db = get_db()
-
-    # =====================================================
-    # SHARED JUMUIYA CORE
-    # =====================================================
-
-    db["jumuiya_profiles"].create_index(
-        [
-            ("user_id", ASCENDING),
-        ],
-        unique=True,
+    return ok(
+        services.update_post(
+            current_user_id(),
+            post_id,
+            body(),
+        ),
+        "Post updated.",
     )
 
-    db["jumuiya_transactions"].create_index(
-        [
-            ("user_id", ASCENDING),
-            ("created_at", DESCENDING),
-        ]
+
+# =========================================================
+# DELETE POST
+# =========================================================
+
+@community_bp.delete(
+    "/posts/<post_id>"
+)
+@require_authenticated
+def remove_post(post_id):
+
+    return ok(
+        services.delete_post(
+            current_user_id(),
+            post_id,
+        ),
+        "Post deleted.",
     )
 
-    db["jumuiya_roles"].create_index(
-        [
-            ("user_id", ASCENDING),
-            ("role", ASCENDING),
-        ],
-        unique=True,
+
+# =========================================================
+# COMMENTS
+# =========================================================
+
+@community_bp.get(
+    "/posts/<post_id>/comments"
+)
+@require_authenticated
+def get_comments(post_id):
+
+    return ok(
+        services.comments(
+            post_id,
+            limit=parse_limit(
+                default=100,
+                maximum=200,
+            ),
+        )
     )
 
-    db["jumuiya_notifications"].create_index(
-        [
-            ("user_id", ASCENDING),
-            ("created_at", DESCENDING),
-        ]
+
+@community_bp.post(
+    "/posts/<post_id>/comments"
+)
+@require_authenticated
+def add_comment(post_id):
+
+    data = body()
+
+    comment_body = text(
+        data,
+        "body",
+        required=True,
+        max_len=3000,
     )
 
-    db["jumuiya_audit_logs"].create_index(
-        [
-            ("user_id", ASCENDING),
-            ("created_at", DESCENDING),
-        ]
+    return created(
+        services.add_comment(
+            current_user_id(),
+            post_id,
+            comment_body,
+        ),
+        "Comment added.",
     )
 
-    db["jumuiya_audit_logs"].create_index(
-        [
-            ("resource", ASCENDING),
-            ("resource_id", ASCENDING),
-            ("created_at", DESCENDING),
-        ]
+
+# =========================================================
+# REACTION
+# =========================================================
+
+@community_bp.post(
+    "/posts/<post_id>/react"
+)
+@require_authenticated
+def react(post_id):
+
+    return ok(
+        services.react(
+            current_user_id(),
+            post_id,
+        )
     )
-
-    db["jumuiya_audit_logs"].create_index(
-        [
-            ("action", ASCENDING),
-            ("created_at", DESCENDING),
-        ]
-    )
-
-    # =====================================================
-    # MARKETPLACE
-    # =====================================================
-
-    db["jumuiya_marketplace_listings"].create_index(
-        [
-            ("status", ASCENDING),
-            ("created_at", DESCENDING),
-        ]
-    )
-
-    db["jumuiya_marketplace_listings"].create_index(
-        [
-            ("hub", ASCENDING),
-            ("category", ASCENDING),
-            ("created_at", DESCENDING),
-        ]
-    )
-
-    db["jumuiya_marketplace_listings"].create_index(
-        [
-            ("seller_user_id", ASCENDING),
-            ("created_at", DESCENDING),
-        ]
-    )
-
-    # =====================================================
-    # BIASHARA
-    # =====================================================
-
-    db["jumuiya_businesses"].create_index(
-        [
-            ("owner_user_id", ASCENDING),
-        ],
-        unique=True,
-    )
-
-    db["jumuiya_businesses"].create_index(
-        [
-            ("slug", ASCENDING),
-        ],
-        unique=True,
-    )
-
-    db["jumuiya_businesses"].create_index(
-        [
-            ("county", ASCENDING),
-            ("category", ASCENDING),
-            ("status", ASCENDING),
-        ]
-    )
-
-    db["jumuiya_products"].create_index(
-        [
-            ("business_id", ASCENDING),
-            ("status", ASCENDING),
-        ]
-    )
-
-    db["jumuiya_products"].create_index(
-        [
-            ("business_id", ASCENDING),
-            ("sku", ASCENDING),
-        ]
-    )
-
-    db["jumuiya_customers"].create_index(
-        [
-            ("business_id", ASCENDING),
-            ("created_at", DESCENDING),
-        ]
-    )
-
-    db["jumuiya_orders"].create_index(
-        [
-            ("business_id", ASCENDING),
-            ("created_at", DESCENDING),
-        ]
-    )
-
-    db["jumuiya_orders"].create_index(
-        [
-            ("business_id", ASCENDING),
-            ("status", ASCENDING),
-            ("created_at", DESCENDING),
-        ]
-    )
-
-    db["jumuiya_sales"].create_index(
-        [
-            ("business_id", ASCENDING),
-            ("sold_at", DESCENDING),
-        ]
-    )
-
-    db["jumuiya_expenses"].create_index(
-        [
-            ("business_id", ASCENDING),
-            ("spent_at", DESCENDING),
-        ]
-    )
-
-    db["jumuiya_inventory_movements"].create_index(
-        [
-            ("business_id", ASCENDING),
-            ("product_id", ASCENDING),
-            ("created_at", DESCENDING),
-        ]
-    )
-
-    # =====================================================
-    # SHAMBA
-    # =====================================================
-
-    db["jumuiya_farmers"].create_index(
-        [
-            ("user_id", ASCENDING),
-        ],
-        unique=True,
-    )
-
-    db["jumuiya_farms"].create_index(
-        [
-            ("owner_user_id", ASCENDING),
-            ("created_at", DESCENDING),
-        ]
-    )
-
-    db["jumuiya_farms"].create_index(
-        [
-            ("county", ASCENDING),
-            ("status", ASCENDING),
-        ]
-    )
-
-    db["jumuiya_crops"].create_index(
-        [
-            ("farm_id", ASCENDING),
-            ("status", ASCENDING),
-        ]
-    )
-
-    db["jumuiya_crops"].create_index(
-        [
-            ("owner_user_id", ASCENDING),
-            ("created_at", DESCENDING),
-        ]
-    )
-
-    db["jumuiya_farm_activities"].create_index(
-        [
-            ("farm_id", ASCENDING),
-            ("created_at", DESCENDING),
-        ]
-    )
-
-    db["jumuiya_harvests"].create_index(
-        [
-            ("farm_id", ASCENDING),
-            ("created_at", DESCENDING),
-        ]
-    )
-
-    db["jumuiya_harvests"].create_index(
-        [
-            ("owner_user_id", ASCENDING),
-            ("market_status", ASCENDING),
-            ("created_at", DESCENDING),
-        ]
-    )
-
-    db["jumuiya_market_prices"].create_index(
-        [
-            ("crop", ASCENDING),
-            ("county", ASCENDING),
-            ("created_at", DESCENDING),
-        ]
-    )
-
-    # =====================================================
-    # ELIMU
-    # =====================================================
-
-    db["jumuiya_education_profiles"].create_index(
-        [
-            ("user_id", ASCENDING),
-        ],
-        unique=True,
-    )
-
-    db["jumuiya_education_profiles"].create_index(
-        [
-            ("profile_type", ASCENDING),
-            ("status", ASCENDING),
-        ]
-    )
-
-    db["jumuiya_schools"].create_index(
-        [
-            ("owner_user_id", ASCENDING),
-        ],
-        unique=True,
-    )
-
-    db["jumuiya_schools"].create_index(
-        [
-            ("county", ASCENDING),
-            ("status", ASCENDING),
-        ]
-    )
-
-    db["jumuiya_classes"].create_index(
-        [
-            ("school_id", ASCENDING),
-            ("status", ASCENDING),
-        ]
-    )
-
-    db["jumuiya_lessons"].create_index(
-        [
-            ("subject", ASCENDING),
-            ("created_at", DESCENDING),
-        ]
-    )
-
-    db["jumuiya_lessons"].create_index(
-        [
-            ("school_id", ASCENDING),
-            ("created_at", DESCENDING),
-        ]
-    )
-
-    db["jumuiya_assignments"].create_index(
-        [
-            ("school_id", ASCENDING),
-            ("class_name", ASCENDING),
-            ("created_at", DESCENDING),
-        ]
-    )
-
-    db["jumuiya_fees"].create_index(
-        [
-            ("student_user_id", ASCENDING),
-            ("created_at", DESCENDING),
-        ]
-    )
-
-    db["jumuiya_fees"].create_index(
-        [
-            ("school_id", ASCENDING),
-            ("status", ASCENDING),
-            ("created_at", DESCENDING),
-        ]
-    )
-
-    db["jumuiya_cbc_projects"].create_index(
-        [
-            ("student_user_id", ASCENDING),
-            ("created_at", DESCENDING),
-        ]
-    )
-
-    db["jumuiya_cbc_projects"].create_index(
-        [
-            ("school_id", ASCENDING),
-            ("created_at", DESCENDING),
-        ]
-    )
-
-    # =====================================================
-    # COMMUNITY
-    # =====================================================
-
-    db["jumuiya_community_posts"].create_index(
-        [
-            ("status", ASCENDING),
-            ("created_at", DESCENDING),
-        ]
-    )
-
-    db["jumuiya_community_posts"].create_index(
-        [
-            ("hub", ASCENDING),
-            ("created_at", DESCENDING),
-        ]
-    )
-
-    db["jumuiya_community_posts"].create_index(
-        [
-            ("category", ASCENDING),
-            ("created_at", DESCENDING),
-        ]
-    )
-
-    db["jumuiya_community_comments"].create_index(
-        [
-            ("post_id", ASCENDING),
-            ("created_at", DESCENDING),
-        ]
-    )
-
-    db["jumuiya_community_reactions"].create_index(
-        [
-            ("post_id", ASCENDING),
-            ("user_id", ASCENDING),
-        ],
-        unique=True,
-    )
-
-    return True
