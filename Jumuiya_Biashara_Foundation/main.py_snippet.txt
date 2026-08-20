@@ -1,2 +1,0 @@
-# Add after the existing auth/account blueprint registrations:
-
