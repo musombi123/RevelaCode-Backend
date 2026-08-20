@@ -1,7 +1,7 @@
 from flask import Blueprint,request
-from jumuiya.core.permissions import require_authenticated,current_user_id
-from jumuiya.core.responses import ok
-from jumuiya.notifications import services
+from backend.jumuiya.core.permissions import require_authenticated,current_user_id
+from backend.jumuiya.core.responses import ok
+from backend.jumuiya.notifications import services
 
 notifications_bp=Blueprint("jumuiya_notifications",__name__)
 
