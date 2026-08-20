@@ -4,11 +4,11 @@ from bson import ObjectId
 from bson.errors import InvalidId
 from pymongo import ReturnDocument
 
-from jumuiya.core.database import collection
-from jumuiya.core.errors import APIError
-from jumuiya.core.audit import log_action
+from backend.jumuiya.core.database import collection
+from backend.jumuiya.core.errors import APIError
+from backend.jumuiya.core.audit import log_action
 
-from jumuiya.shamba.models import (
+from backend.jumuiya.shamba.models import (
     farmer_document,
     farm_document,
     crop_document,
