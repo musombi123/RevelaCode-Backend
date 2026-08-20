@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 
 import jwt
+
 from flask import g, request
 
 from backend.jumuiya.core.identity import normalize_user
@@ -16,7 +17,9 @@ from backend.jumuiya.core.identity import normalize_user
 
 JWT_SECRET = os.getenv("JWT_SECRET")
 
-JWT_ALGORITHMS = ["HS256"]
+JWT_ALGORITHM = "HS256"
+
+JWT_ALGORITHMS = [JWT_ALGORITHM]
 
 
 # =========================================================
@@ -27,16 +30,15 @@ def install_auth_bridge(app):
     """
     Connect Jumuiya to the existing RevelaCode authentication.
 
-    Jumuiya does NOT create its own authentication system.
+    RevelaCode owns authentication.
 
-    Existing RevelaCode JWT:
+    Jumuiya consumes the resulting JWT:
+
         Authorization: Bearer <token>
 
-    becomes:
+    and exposes the normalized identity as:
 
         g.jumuiya_user
-
-    for all Jumuiya modules.
     """
 
     if not JWT_SECRET:
@@ -46,12 +48,16 @@ def install_auth_bridge(app):
 
     @app.before_request
     def _jumuiya_auth_bridge():
+        """
+        Populate g.jumuiya_user for requests carrying
+        a valid RevelaCode JWT.
+        """
 
-        # Always reset the identity for every request.
+        # Always reset request identity.
         g.jumuiya_user = None
 
         # -------------------------------------------------
-        # OPTIONS / PREFLIGHT
+        # CORS PREFLIGHT
         # -------------------------------------------------
 
         if request.method == "OPTIONS":
@@ -80,15 +86,20 @@ def install_auth_bridge(app):
             return None
 
         # -------------------------------------------------
-        # JWT
+        # JWT CONFIGURATION
         # -------------------------------------------------
 
         if not JWT_SECRET:
             app.logger.error(
-                "Jumuiya authentication attempted "
-                "but JWT_SECRET is not configured."
+                "Jumuiya authentication attempted but "
+                "JWT_SECRET is not configured."
             )
+
             return None
+
+        # -------------------------------------------------
+        # JWT VALIDATION
+        # -------------------------------------------------
 
         try:
 
@@ -96,6 +107,13 @@ def install_auth_bridge(app):
                 token,
                 JWT_SECRET,
                 algorithms=JWT_ALGORITHMS,
+                options={
+                    "require": [
+                        "sub",
+                        "iat",
+                        "exp",
+                    ]
+                },
             )
 
         except jwt.ExpiredSignatureError:
@@ -103,6 +121,7 @@ def install_auth_bridge(app):
             app.logger.info(
                 "Jumuiya rejected expired JWT."
             )
+
             return None
 
         except jwt.InvalidTokenError:
@@ -110,6 +129,7 @@ def install_auth_bridge(app):
             app.logger.info(
                 "Jumuiya rejected invalid JWT."
             )
+
             return None
 
         except Exception:
@@ -117,6 +137,7 @@ def install_auth_bridge(app):
             app.logger.exception(
                 "Unexpected JWT validation error."
             )
+
             return None
 
         # -------------------------------------------------
@@ -130,22 +151,45 @@ def install_auth_bridge(app):
         )
 
         if user_id is None:
+            app.logger.warning(
+                "Jumuiya JWT contains no usable user ID."
+            )
+
             return None
 
         # -------------------------------------------------
-        # LOAD REVELACODE USER
+        # LOAD AUTHORITATIVE USER
         # -------------------------------------------------
 
         user = _load_user(
-            user_id,
-            payload,
+            user_id
         )
 
         if not user:
+
+            app.logger.warning(
+                "Jumuiya could not resolve authenticated "
+                "user %s from the RevelaCode users collection.",
+                user_id,
+            )
+
             return None
 
         # -------------------------------------------------
-        # NORMALIZE
+        # VERIFY ACCOUNT STATE
+        # -------------------------------------------------
+
+        if not user.get("verified", False):
+
+            app.logger.warning(
+                "Jumuiya rejected unverified user %s.",
+                user_id,
+            )
+
+            return None
+
+        # -------------------------------------------------
+        # NORMALIZE IDENTITY
         # -------------------------------------------------
 
         normalized = normalize_user(
@@ -153,7 +197,18 @@ def install_auth_bridge(app):
         )
 
         if not normalized.get("id"):
+
+            app.logger.warning(
+                "Jumuiya resolved user %s but could not "
+                "normalize the identity.",
+                user_id,
+            )
+
             return None
+
+        # -------------------------------------------------
+        # REQUEST IDENTITY
+        # -------------------------------------------------
 
         g.jumuiya_user = normalized
 
@@ -164,9 +219,14 @@ def install_auth_bridge(app):
 # REVELACODE USER LOADER
 # =========================================================
 
-def _load_user(user_id, payload=None):
+def _load_user(user_id):
+    """
+    Load the authoritative user from the existing
+    RevelaCode users collection.
 
-    payload = payload or {}
+    We deliberately do NOT manufacture a user from JWT
+    claims when the database cannot resolve the account.
+    """
 
     try:
 
@@ -174,19 +234,21 @@ def _load_user(user_id, payload=None):
 
         from bson import ObjectId
 
-        user = None
-
         user_id_string = str(
             user_id
         )
 
+        users = db["users"]
+
+        user = None
+
         # -------------------------------------------------
-        # OBJECT ID
+        # Mongo ObjectId
         # -------------------------------------------------
 
         try:
 
-            user = db["users"].find_one(
+            user = users.find_one(
                 {
                     "_id": ObjectId(
                         user_id_string
@@ -194,96 +256,37 @@ def _load_user(user_id, payload=None):
                 }
             )
 
-        except Exception:
+        except (
+            TypeError,
+            ValueError,
+        ):
             pass
 
         # -------------------------------------------------
-        # STRING USER ID
+        # String user_id
         # -------------------------------------------------
 
         if not user:
 
-            user = db["users"].find_one(
+            user = users.find_one(
                 {
                     "user_id": user_id_string
                 }
             )
 
         # -------------------------------------------------
-        # ID FIELD
+        # String id
         # -------------------------------------------------
 
         if not user:
 
-            user = db["users"].find_one(
+            user = users.find_one(
                 {
                     "id": user_id_string
                 }
             )
 
-        # -------------------------------------------------
-        # CONTACT FALLBACK
-        # -------------------------------------------------
-
-        contact = payload.get(
-            "contact"
-        )
-
-        if not user and contact:
-
-            user = db["users"].find_one(
-                {
-                    "contact": contact
-                }
-            )
-
-        if user:
-            return user
+        return user
 
     except Exception:
         return None
-
-    # -----------------------------------------------------
-    # JWT FALLBACK
-    # -----------------------------------------------------
-    #
-    # We can still construct a minimal identity from a
-    # trusted JWT when the corresponding user document
-    # cannot be loaded.
-    #
-    # This keeps Jumuiya usable with existing JWTs while
-    # avoiding a second authentication system.
-    # -----------------------------------------------------
-
-    return {
-        "id": str(user_id),
-
-        "full_name": (
-            payload.get("full_name")
-            or payload.get("name")
-            or ""
-        ),
-
-        "contact": (
-            payload.get("contact")
-            or payload.get("phone")
-            or ""
-        ),
-
-        "role": (
-            payload.get("role")
-            or "user"
-        ),
-
-        "roles": (
-            payload.get("roles")
-            or [payload.get("role", "user")]
-        ),
-
-        "verified": bool(
-            payload.get(
-                "verified",
-                True,
-            )
-        ),
-    }
