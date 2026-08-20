@@ -1,6 +1,6 @@
 from bson import ObjectId
-from jumuiya.core.database import collection
-from jumuiya.notifications.models import notification_document
+from backend.jumuiya.core.database import collection
+from backend.jumuiya.notifications.models import notification_document
 
 def notify(user_id,data):
     doc=notification_document(user_id,data); r=collection("jumuiya_notifications").insert_one(doc); doc["_id"]=r.inserted_id; return _ser(doc)
