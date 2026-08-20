@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
-from backend.jumuiya.core.errors import register_error_handlers
 from backend.jumuiya.core.database import ensure_indexes
+from backend.jumuiya.core.errors import register_error_handlers
 
-from backend.jumuiya.integration.auth_bridge import install_auth_bridge
+from backend.jumuiya.integration.auth_bridge import (
+    install_auth_bridge,
+)
 
 from backend.jumuiya.identity.routes import identity_bp
 from backend.jumuiya.wallet.routes import wallet_bp
@@ -23,53 +25,52 @@ from backend.jumuiya.community.routes import community_bp
 
 def register_jumuiya(app):
     """
-    Register the complete Jumuiya platform inside the
-    existing RevelaCode Flask application.
+    Register the complete Jumuiya ecosystem inside
+    the existing RevelaCode Flask application.
 
     Architecture:
 
-        RevelaCode Auth
-              │
-              ▼
-        Jumuiya Auth Bridge
-              │
-              ├── Identity
-              ├── Wallet
-              ├── Marketplace
-              ├── Biashara
-              ├── Shamba
-              ├── Elimu
-              └── Community
+        RevelaCode Authentication
+                │
+                ▼
+        Jumuiya Authentication Bridge
+                │
+                ├── Identity
+                ├── Wallet
+                ├── Marketplace
+                ├── Biashara
+                ├── Shamba
+                ├── Elimu
+                └── Community
     """
 
-    app.logger.info(
-        "=============================================="
-    )
+    logger = app.logger
 
-    app.logger.info(
+    logger.info(
+        "=================================================="
+    )
+    logger.info(
         "Starting Jumuiya platform registration..."
     )
 
     # =====================================================
-    # SHARED INFRASTRUCTURE
+    # DATABASE / INDEXES
     # =====================================================
 
     try:
 
         ensure_indexes()
 
-        app.logger.info(
-            "Jumuiya database indexes ready."
+        logger.info(
+            "✅ Jumuiya database indexes ready."
         )
 
     except Exception:
 
-        app.logger.exception(
-            "Jumuiya database/index initialization failed."
+        logger.exception(
+            "❌ Jumuiya database/index initialization failed."
         )
 
-        # Do not silently continue if the database itself
-        # cannot initialize. Jumuiya depends on it.
         raise
 
     # =====================================================
@@ -78,8 +79,8 @@ def register_jumuiya(app):
 
     register_error_handlers(app)
 
-    app.logger.info(
-        "Jumuiya error handlers registered."
+    logger.info(
+        "✅ Jumuiya error handlers registered."
     )
 
     # =====================================================
@@ -88,8 +89,8 @@ def register_jumuiya(app):
 
     install_auth_bridge(app)
 
-    app.logger.info(
-        "Jumuiya authentication bridge installed."
+    logger.info(
+        "✅ Jumuiya authentication bridge installed."
     )
 
     # =====================================================
@@ -101,8 +102,8 @@ def register_jumuiya(app):
         url_prefix="/api/jumuiya/identity",
     )
 
-    app.logger.info(
-        "Jumuiya Identity registered."
+    logger.info(
+        "✅ Jumuiya Identity registered."
     )
 
     # =====================================================
@@ -114,8 +115,8 @@ def register_jumuiya(app):
         url_prefix="/api/jumuiya/wallet",
     )
 
-    app.logger.info(
-        "Jumuiya Wallet registered."
+    logger.info(
+        "✅ Jumuiya Wallet registered."
     )
 
     # =====================================================
@@ -127,8 +128,8 @@ def register_jumuiya(app):
         url_prefix="/api/jumuiya/marketplace",
     )
 
-    app.logger.info(
-        "Jumuiya Marketplace registered."
+    logger.info(
+        "✅ Jumuiya Marketplace registered."
     )
 
     # =====================================================
@@ -140,8 +141,8 @@ def register_jumuiya(app):
         url_prefix="/api/jumuiya/biashara",
     )
 
-    app.logger.info(
-        "Jumuiya Biashara registered."
+    logger.info(
+        "✅ Jumuiya Biashara registered."
     )
 
     # =====================================================
@@ -153,8 +154,8 @@ def register_jumuiya(app):
         url_prefix="/api/jumuiya/shamba",
     )
 
-    app.logger.info(
-        "Jumuiya Shamba registered."
+    logger.info(
+        "✅ Jumuiya Shamba registered."
     )
 
     # =====================================================
@@ -166,8 +167,8 @@ def register_jumuiya(app):
         url_prefix="/api/jumuiya/elimu",
     )
 
-    app.logger.info(
-        "Jumuiya Elimu registered."
+    logger.info(
+        "✅ Jumuiya Elimu registered."
     )
 
     # =====================================================
@@ -179,30 +180,28 @@ def register_jumuiya(app):
         url_prefix="/api/jumuiya/community",
     )
 
-    app.logger.info(
-        "Jumuiya Community registered."
+    logger.info(
+        "✅ Jumuiya Community registered."
     )
 
     # =====================================================
     # COMPLETE
     # =====================================================
 
-    app.logger.info(
-        "Jumuiya platform registered successfully."
+    logger.info(
+        "✅ Jumuiya platform registered successfully."
     )
 
-    app.logger.info(
-        "Available hubs: "
-        "Biashara | Shamba | Elimu | Community"
+    logger.info(
+        "Hubs: Biashara | Shamba | Elimu | Community"
     )
 
-    app.logger.info(
-        "Shared services: "
-        "Identity | Wallet | Marketplace"
+    logger.info(
+        "Shared: Identity | Wallet | Marketplace"
     )
 
-    app.logger.info(
-        "=============================================="
+    logger.info(
+        "=================================================="
     )
 
     return True
