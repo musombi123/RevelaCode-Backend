@@ -121,12 +121,6 @@ except Exception as e:
         f"study_bp registration failed: {e}"
     )
 
-try:
-    from backend.jumuiya.integration.register import register_jumuiya
-    register_jumuiya(app)
-    logger.info("Jumuiya platform registered")
-except Exception as e:
-    logger.exception("Jumuiya registration failed: %s", e)
 
 
 
@@ -190,6 +184,25 @@ register_bp(
     "history_bp",
 )
 
+# =========================================================
+# JUMUIYA PLATFORM
+# =========================================================
+
+try:
+    from backend.jumuiya.integration.register import register_jumuiya
+
+    register_jumuiya(app)
+
+    logger.info(
+        "✅ Jumuiya platform registered"
+    )
+
+except Exception as e:
+
+    logger.exception(
+        "❌ Jumuiya registration failed: %s",
+        e,
+    )
 
 # =========================================================
 # APPLICATION ROUTES
