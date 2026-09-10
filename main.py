@@ -7,9 +7,15 @@ import os
 import threading
 import time
 from datetime import datetime
+import jwt
 
 from dotenv import load_dotenv
-from flask import Flask, jsonify
+from flask import (
+    Flask,
+    jsonify,
+    request,
+    g,
+)
 from flask_cors import CORS
 
 from backend.study.import_sda_q3_2026 import import_q3
@@ -21,6 +27,15 @@ from backend.study.import_sda_q3_2026 import import_q3
 
 load_dotenv()
 
+# =========================================================
+# JWT AUTHENTICATION
+# =========================================================
+
+JWT_SECRET = os.getenv(
+    "JWT_SECRET"
+)
+
+JWT_ALGORITHM = "HS256"
 
 # =========================================================
 # LOGGING
