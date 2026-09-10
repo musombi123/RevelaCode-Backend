@@ -1,0 +1,268 @@
+{
+  "dataset": "kenya_demographics",
+  "country": "Kenya",
+  "country_code": "KE",
+  "version": "1.0.0",
+  "primary_year": 2019,
+  "administrative_level": "county",
+  "source": {
+    "organization": "Kenya National Bureau of Statistics (KNBS)",
+    "report": "2019 Kenya Population and Housing Census",
+    "volumes": [
+      "Volume I - Population by County and Sub-County",
+      "Volume II - Distribution of Population by Administrative Units",
+      "Volume III - Distribution of Population by Age and Sex",
+      "Volume IV - Distribution of Population by Socio-Economic Characteristics"
+    ],
+    "source_url": "https://www.knbs.or.ke/reports/kenya-census-2019/",
+    "notes": "County population totals are from the KNBS 2019 census. Detailed county sex, age, household, urban/rural and socio-economic fields are intentionally not populated unless directly verified from the corresponding KNBS tables."
+  },
+  "national": {
+    "population": 47564296,
+    "male": 23548056,
+    "female": 24014716,
+    "intersex": 1524,
+    "average_household_size": 3.9,
+    "intercensal_growth_rate_percent": 2.2
+  },
+  "statistics": {
+    "county_count": 47
+  },
+  "counties": [
+    {
+      "code": "001",
+      "name": "Mombasa",
+      "population_2019": 1208333
+    },
+    {
+      "code": "002",
+      "name": "Kwale",
+      "population_2019": 866820
+    },
+    {
+      "code": "003",
+      "name": "Kilifi",
+      "population_2019": 1453787
+    },
+    {
+      "code": "004",
+      "name": "Tana River",
+      "population_2019": 315943
+    },
+    {
+      "code": "005",
+      "name": "Lamu",
+      "population_2019": 143920
+    },
+    {
+      "code": "006",
+      "name": "Taita/Taveta",
+      "population_2019": 340671
+    },
+    {
+      "code": "007",
+      "name": "Garissa",
+      "population_2019": 841353
+    },
+    {
+      "code": "008",
+      "name": "Wajir",
+      "population_2019": 781263
+    },
+    {
+      "code": "009",
+      "name": "Mandera",
+      "population_2019": 867457
+    },
+    {
+      "code": "010",
+      "name": "Marsabit",
+      "population_2019": 459785
+    },
+    {
+      "code": "011",
+      "name": "Isiolo",
+      "population_2019": 268002
+    },
+    {
+      "code": "012",
+      "name": "Meru",
+      "population_2019": 1545714
+    },
+    {
+      "code": "013",
+      "name": "Tharaka-Nithi",
+      "population_2019": 393177
+    },
+    {
+      "code": "014",
+      "name": "Embu",
+      "population_2019": 608599
+    },
+    {
+      "code": "015",
+      "name": "Kitui",
+      "population_2019": 1136187
+    },
+    {
+      "code": "016",
+      "name": "Machakos",
+      "population_2019": 1421932
+    },
+    {
+      "code": "017",
+      "name": "Makueni",
+      "population_2019": 987653
+    },
+    {
+      "code": "018",
+      "name": "Nyandarua",
+      "population_2019": 638289
+    },
+    {
+      "code": "019",
+      "name": "Nyeri",
+      "population_2019": 759164
+    },
+    {
+      "code": "020",
+      "name": "Kirinyaga",
+      "population_2019": 610411
+    },
+    {
+      "code": "021",
+      "name": "Murang'a",
+      "population_2019": 1056640
+    },
+    {
+      "code": "022",
+      "name": "Kiambu",
+      "population_2019": 2417735
+    },
+    {
+      "code": "023",
+      "name": "Turkana",
+      "population_2019": 926976
+    },
+    {
+      "code": "024",
+      "name": "West Pokot",
+      "population_2019": 621241
+    },
+    {
+      "code": "025",
+      "name": "Samburu",
+      "population_2019": 310327
+    },
+    {
+      "code": "026",
+      "name": "Trans Nzoia",
+      "population_2019": 990341
+    },
+    {
+      "code": "027",
+      "name": "Uasin Gishu",
+      "population_2019": 1163186
+    },
+    {
+      "code": "028",
+      "name": "Elgeyo-Marakwet",
+      "population_2019": 454480
+    },
+    {
+      "code": "029",
+      "name": "Nandi",
+      "population_2019": 885711
+    },
+    {
+      "code": "030",
+      "name": "Baringo",
+      "population_2019": 666763
+    },
+    {
+      "code": "031",
+      "name": "Laikipia",
+      "population_2019": 518560
+    },
+    {
+      "code": "032",
+      "name": "Nakuru",
+      "population_2019": 2162202
+    },
+    {
+      "code": "033",
+      "name": "Narok",
+      "population_2019": 1157873
+    },
+    {
+      "code": "034",
+      "name": "Kajiado",
+      "population_2019": 1117840
+    },
+    {
+      "code": "035",
+      "name": "Kericho",
+      "population_2019": 901777
+    },
+    {
+      "code": "036",
+      "name": "Bomet",
+      "population_2019": 875689
+    },
+    {
+      "code": "037",
+      "name": "Kakamega",
+      "population_2019": 1867579
+    },
+    {
+      "code": "038",
+      "name": "Vihiga",
+      "population_2019": 590013
+    },
+    {
+      "code": "039",
+      "name": "Bungoma",
+      "population_2019": 1670570
+    },
+    {
+      "code": "040",
+      "name": "Busia",
+      "population_2019": 893681
+    },
+    {
+      "code": "041",
+      "name": "Siaya",
+      "population_2019": 993183
+    },
+    {
+      "code": "042",
+      "name": "Kisumu",
+      "population_2019": 1155574
+    },
+    {
+      "code": "043",
+      "name": "Homa Bay",
+      "population_2019": 1131950
+    },
+    {
+      "code": "044",
+      "name": "Migori",
+      "population_2019": 1116436
+    },
+    {
+      "code": "045",
+      "name": "Kisii",
+      "population_2019": 1266860
+    },
+    {
+      "code": "046",
+      "name": "Nyamira",
+      "population_2019": 605576
+    },
+    {
+      "code": "047",
+      "name": "Nairobi",
+      "population_2019": 4397073
+    }
+  ]
+}
