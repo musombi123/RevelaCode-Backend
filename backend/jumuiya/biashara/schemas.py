@@ -1,9 +1,53 @@
 # backend/jumuiya/biashara/schemas.py
 
+from __future__ import annotations
+
+import re
+from decimal import Decimal, InvalidOperation
+
+
+# =========================================================
+# CONSTANTS
+# =========================================================
+
+DEFAULT_CURRENCY = "KES"
+
+BUSINESS_STATUSES = {
+    "active",
+    "inactive",
+    "suspended",
+}
+
+PRODUCT_STATUSES = {
+    "active",
+    "inactive",
+    "archived",
+}
+
+PAYMENT_METHODS = {
+    "cash",
+    "mpesa",
+    "bank",
+    "card",
+    "mobile_money",
+    "other",
+}
+
+INVENTORY_MOVEMENTS = {
+    "add",
+    "remove",
+    "set",
+}
+
 
 # =========================================================
 # COMMON VALIDATORS
 # =========================================================
+
+def _object(data):
+    if not isinstance(data, dict):
+        raise ValueError("JSON object required.")
+
 
 def _text(
     data,
@@ -17,20 +61,52 @@ def _text(
         value = ""
 
     if not isinstance(value, str):
-        raise ValueError(
-            f"{key} must be text."
-        )
+        raise ValueError(f"{key} must be text.")
 
     value = value.strip()
 
     if required and not value:
-        raise ValueError(
-            f"{key} is required."
-        )
+        raise ValueError(f"{key} is required.")
 
     if len(value) > max_len:
         raise ValueError(
-            f"{key} is too long."
+            f"{key} must not exceed {max_len} characters."
+        )
+
+    return value
+
+
+def _choice(
+    data,
+    key,
+    allowed,
+    required=False,
+    default=None,
+    lowercase=True,
+):
+    value = data.get(key)
+
+    if value is None or value == "":
+        if required:
+            raise ValueError(f"{key} is required.")
+
+        return default
+
+    if not isinstance(value, str):
+        raise ValueError(f"{key} must be text.")
+
+    value = value.strip()
+
+    if lowercase:
+        value = value.lower()
+
+    if value not in allowed:
+        allowed_values = ", ".join(
+            sorted(allowed)
+        )
+
+        raise ValueError(
+            f"{key} must be one of: {allowed_values}."
         )
 
     return value
@@ -41,10 +117,17 @@ def _number(
     key,
     required=False,
     minimum=0,
+    maximum=None,
 ):
     value = data.get(key)
 
-    if value is None and not required:
+    if value is None:
+
+        if required:
+            raise ValueError(
+                f"{key} is required."
+            )
+
         return 0.0
 
     try:
@@ -63,14 +146,172 @@ def _number(
             f"{key} must be at least {minimum}."
         )
 
+    if maximum is not None and value > maximum:
+        raise ValueError(
+            f"{key} must not exceed {maximum}."
+        )
+
     return value
 
 
-def _object(data):
-    if not isinstance(data, dict):
-        raise ValueError(
-            "JSON object required."
+def _money(
+    data,
+    key,
+    required=False,
+    minimum=0,
+):
+    value = data.get(key)
+
+    if value is None:
+
+        if required:
+            raise ValueError(
+                f"{key} is required."
+            )
+
+        return 0.0
+
+    try:
+
+        decimal_value = Decimal(
+            str(value)
         )
+
+    except (
+        InvalidOperation,
+        ValueError,
+        TypeError,
+    ):
+        raise ValueError(
+            f"{key} must be a valid monetary amount."
+        )
+
+    if decimal_value < Decimal(
+        str(minimum)
+    ):
+        raise ValueError(
+            f"{key} must be at least {minimum}."
+        )
+
+    # Two decimal places maximum.
+    decimal_value = decimal_value.quantize(
+        Decimal("0.01")
+    )
+
+    return float(decimal_value)
+
+
+def _email(
+    data,
+    key="email",
+):
+    value = _text(
+        data,
+        key,
+        max_len=160,
+    )
+
+    if not value:
+        return ""
+
+    pattern = (
+        r"^[A-Za-z0-9._%+-]+@"
+        r"[A-Za-z0-9.-]+\.[A-Za-z]{2,}$"
+    )
+
+    if not re.match(
+        pattern,
+        value,
+    ):
+        raise ValueError(
+            f"{key} must be a valid email address."
+        )
+
+    return value.lower()
+
+
+def _phone(
+    data,
+    key="phone",
+):
+    value = _text(
+        data,
+        key,
+        max_len=30,
+    )
+
+    if not value:
+        return ""
+
+    # Accept common international / Kenyan formats
+    cleaned = re.sub(
+        r"[\s().-]",
+        "",
+        value,
+    )
+
+    if not re.match(
+        r"^\+?[0-9]{9,15}$",
+        cleaned,
+    ):
+        raise ValueError(
+            f"{key} must be a valid phone number."
+        )
+
+    return value
+
+
+def _string_list(
+    data,
+    key,
+    max_items=20,
+    item_max_len=80,
+):
+    value = data.get(key)
+
+    if value is None:
+        return []
+
+    if not isinstance(
+        value,
+        list,
+    ):
+        raise ValueError(
+            f"{key} must be a list."
+        )
+
+    if len(value) > max_items:
+        raise ValueError(
+            f"{key} cannot contain more than "
+            f"{max_items} items."
+        )
+
+    cleaned = []
+
+    for item in value:
+
+        if not isinstance(
+            item,
+            str,
+        ):
+            raise ValueError(
+                f"Each {key} item must be text."
+            )
+
+        item = item.strip()
+
+        if not item:
+            continue
+
+        if len(item) > item_max_len:
+            raise ValueError(
+                f"Items in {key} cannot exceed "
+                f"{item_max_len} characters."
+            )
+
+        cleaned.append(item)
+
+    return cleaned
 
 
 # =========================================================
@@ -80,6 +321,27 @@ def _object(data):
 def business_payload(data):
 
     _object(data)
+
+    business_type = _text(
+        data,
+        "business_type",
+        max_len=80,
+    )
+
+    opening_hours = data.get(
+        "opening_hours"
+    )
+
+    if opening_hours is None:
+        opening_hours = {}
+
+    if not isinstance(
+        opening_hours,
+        dict,
+    ):
+        raise ValueError(
+            "opening_hours must be an object."
+        )
 
     return {
         "name": _text(
@@ -95,16 +357,14 @@ def business_payload(data):
             max_len=2000,
         ),
 
-        "phone": _text(
+        "business_type": business_type,
+
+        "phone": _phone(
             data,
-            "phone",
-            max_len=30,
         ),
 
-        "email": _text(
+        "email": _email(
             data,
-            "email",
-            max_len=160,
         ),
 
         "location": _text(
@@ -130,6 +390,28 @@ def business_payload(data):
             "logo_url",
             max_len=500,
         ),
+
+        "currency": _text(
+            data,
+            "currency",
+            max_len=8,
+        ).upper() or DEFAULT_CURRENCY,
+
+        "payment_methods": _string_list(
+            data,
+            "payment_methods",
+            max_items=10,
+            item_max_len=40,
+        ),
+
+        "opening_hours": opening_hours,
+
+        "status": _choice(
+            data,
+            "status",
+            BUSINESS_STATUSES,
+            default="active",
+        ),
     }
 
 
@@ -146,10 +428,6 @@ def product_payload(
 
     result = {}
 
-    # -----------------------------------------------------
-    # TEXT FIELDS
-    # -----------------------------------------------------
-
     text_fields = {
         "name": 160,
         "description": 1000,
@@ -158,7 +436,6 @@ def product_payload(
         "currency": 8,
         "unit": 40,
         "image_url": 500,
-        "status": 30,
     }
 
     for key, max_len in text_fields.items():
@@ -180,9 +457,12 @@ def product_payload(
     # PRICE
     # -----------------------------------------------------
 
-    if not partial or "price" in data:
+    if (
+        not partial
+        or "price" in data
+    ):
 
-        result["price"] = _number(
+        result["price"] = _money(
             data,
             "price",
             required=True,
@@ -190,16 +470,67 @@ def product_payload(
         )
 
     # -----------------------------------------------------
+    # COST PRICE
+    # -----------------------------------------------------
+
+    if (
+        not partial
+        or "cost_price" in data
+    ):
+
+        result["cost_price"] = _money(
+            data,
+            "cost_price",
+            required=False,
+            minimum=0,
+        )
+
+    # -----------------------------------------------------
     # STOCK
     # -----------------------------------------------------
 
-    if not partial or "stock_quantity" in data:
+    if (
+        not partial
+        or "stock_quantity" in data
+    ):
 
         result["stock_quantity"] = _number(
             data,
             "stock_quantity",
             required=False,
             minimum=0,
+        )
+
+    # -----------------------------------------------------
+    # LOW STOCK THRESHOLD
+    # -----------------------------------------------------
+
+    if (
+        not partial
+        or "low_stock_threshold" in data
+    ):
+
+        result["low_stock_threshold"] = _number(
+            data,
+            "low_stock_threshold",
+            required=False,
+            minimum=0,
+        )
+
+    # -----------------------------------------------------
+    # STATUS
+    # -----------------------------------------------------
+
+    if (
+        not partial
+        or "status" in data
+    ):
+
+        result["status"] = _choice(
+            data,
+            "status",
+            PRODUCT_STATUSES,
+            default="active",
         )
 
     # -----------------------------------------------------
@@ -210,8 +541,8 @@ def product_payload(
 
         result["currency"] = (
             result.get("currency")
-            or "KES"
-        )
+            or DEFAULT_CURRENCY
+        ).upper()
 
         result["unit"] = (
             result.get("unit")
@@ -221,6 +552,20 @@ def product_payload(
         result["status"] = (
             result.get("status")
             or "active"
+        )
+
+        result["low_stock_threshold"] = (
+            result.get(
+                "low_stock_threshold"
+            )
+            or 0.0
+        )
+
+        result["cost_price"] = (
+            result.get(
+                "cost_price"
+            )
+            or 0.0
         )
 
     return result
@@ -242,16 +587,12 @@ def customer_payload(data):
             max_len=160,
         ),
 
-        "phone": _text(
+        "phone": _phone(
             data,
-            "phone",
-            max_len=30,
         ),
 
-        "email": _text(
+        "email": _email(
             data,
-            "email",
-            max_len=160,
         ),
 
         "notes": _text(
@@ -290,7 +631,8 @@ def _order_items(items):
             dict,
         ):
             raise ValueError(
-                f"Order item {index + 1} must be an object."
+                f"Order item {index + 1} "
+                f"must be an object."
             )
 
         product_id = item.get(
@@ -299,32 +641,16 @@ def _order_items(items):
 
         if not product_id:
             raise ValueError(
-                f"Order item {index + 1} requires product_id."
+                f"Order item {index + 1} "
+                f"requires product_id."
             )
 
-        try:
-
-            quantity = float(
-                item.get(
-                    "quantity",
-                    0,
-                )
-            )
-
-        except (
-            TypeError,
-            ValueError,
-        ):
-
-            raise ValueError(
-                f"Order item {index + 1} quantity must be a number."
-            )
-
-        if quantity <= 0:
-
-            raise ValueError(
-                f"Order item {index + 1} quantity must be greater than zero."
-            )
+        quantity = _number(
+            item,
+            "quantity",
+            required=True,
+            minimum=0.000001,
+        )
 
         cleaned_item = {
             "product_id": str(
@@ -333,33 +659,33 @@ def _order_items(items):
             "quantity": quantity,
         }
 
-        # Optional snapshot information.
         if item.get("name") is not None:
-            cleaned_item["name"] = str(
-                item["name"]
-            )[:160]
 
-        if item.get("unit_price") is not None:
+            name = item["name"]
 
-            try:
-                unit_price = float(
-                    item["unit_price"]
-                )
-
-            except (
-                TypeError,
-                ValueError,
+            if not isinstance(
+                name,
+                str,
             ):
-
                 raise ValueError(
-                    f"Order item {index + 1} unit_price must be a number."
+                    f"Order item {index + 1} "
+                    f"name must be text."
                 )
 
-            if unit_price < 0:
+            cleaned_item["name"] = (
+                name.strip()[:160]
+            )
 
-                raise ValueError(
-                    f"Order item {index + 1} unit_price cannot be negative."
-                )
+        if item.get(
+            "unit_price"
+        ) is not None:
+
+            unit_price = _money(
+                item,
+                "unit_price",
+                required=True,
+                minimum=0,
+            )
 
             cleaned_item[
                 "unit_price"
@@ -401,7 +727,7 @@ def order_payload(data):
 
         "items": items,
 
-        "total_amount": _number(
+        "total_amount": _money(
             data,
             "total_amount",
             required=True,
@@ -412,7 +738,7 @@ def order_payload(data):
             data,
             "currency",
             max_len=8,
-        ) or "KES",
+        ).upper() or DEFAULT_CURRENCY,
 
         "notes": _text(
             data,
@@ -444,7 +770,7 @@ def expense_payload(data):
             max_len=120,
         ),
 
-        "amount": _number(
+        "amount": _money(
             data,
             "amount",
             required=True,
@@ -455,7 +781,7 @@ def expense_payload(data):
             data,
             "currency",
             max_len=8,
-        ) or "KES",
+        ).upper() or DEFAULT_CURRENCY,
 
         "notes": _text(
             data,
@@ -486,9 +812,11 @@ def sale_payload(data):
             "items must be a list."
         )
 
-    cleaned_items = _order_items(
-        items
-    ) if items else []
+    cleaned_items = (
+        _order_items(items)
+        if items
+        else []
+    )
 
     return {
         "order_id": (
@@ -505,7 +833,7 @@ def sale_payload(data):
 
         "items": cleaned_items,
 
-        "amount": _number(
+        "amount": _money(
             data,
             "amount",
             required=True,
@@ -516,13 +844,14 @@ def sale_payload(data):
             data,
             "currency",
             max_len=8,
-        ) or "KES",
+        ).upper() or DEFAULT_CURRENCY,
 
-        "payment_method": _text(
+        "payment_method": _choice(
             data,
             "payment_method",
-            max_len=40,
-        ) or "cash",
+            PAYMENT_METHODS,
+            default="cash",
+        ),
 
         "reference": _text(
             data,
@@ -540,34 +869,24 @@ def inventory_payload(data):
 
     _object(data)
 
-    movement_type = _text(
+    movement_type = _choice(
         data,
         "movement_type",
+        INVENTORY_MOVEMENTS,
         required=True,
-        max_len=30,
-    ).lower()
+    )
 
-    allowed = {
-        "add",
-        "remove",
-        "set",
-    }
-
-    if movement_type not in allowed:
-
-        raise ValueError(
-            "movement_type must be add, remove, or set."
-        )
+    quantity = _number(
+        data,
+        "quantity",
+        required=True,
+        minimum=0.000001,
+    )
 
     return {
         "movement_type": movement_type,
 
-        "quantity": _number(
-            data,
-            "quantity",
-            required=True,
-            minimum=0,
-        ),
+        "quantity": quantity,
 
         "reason": _text(
             data,
