@@ -4,10 +4,10 @@
   "country_code": "KE",
   "version": "2.0.0",
   "source_status": "live",
-  "updated_at": "2026-09-10T17:27:56.093420+00:00",
+  "updated_at": "2026-09-10T17:40:32.012709+00:00",
   "refresh": {
     "status": "live",
-    "attempted_at": "2026-09-10T17:27:56.093420+00:00",
+    "attempted_at": "2026-09-10T17:40:32.012709+00:00",
     "successful_sources": [
       "cbk_key_rates",
       "cbk_forex",
@@ -31,7 +31,7 @@
       "deposit_rate_percent": 6.93,
       "source": "CBK",
       "source_url": "https://www.centralbank.go.ke/monetary-policy/",
-      "fetched_at": "2026-09-10T17:28:03.824179+00:00"
+      "fetched_at": "2026-09-10T17:40:39.570182+00:00"
     },
     "cbk_forex": {
       "USD": {
@@ -71,12 +71,12 @@
       },
       "source": "CBK",
       "source_url": "https://www.centralbank.go.ke/rates/forex-exchange-rates/",
-      "fetched_at": "2026-09-10T17:28:04.600601+00:00"
+      "fetched_at": "2026-09-10T17:40:47.665878+00:00"
     },
     "cbk_inflation": {
       "source": "CBK",
       "source_url": "https://www.centralbank.go.ke/inflation-rates/",
-      "fetched_at": "2026-09-10T17:28:11.865707+00:00",
+      "fetched_at": "2026-09-10T17:40:54.851376+00:00",
       "year": 2026,
       "month": "August",
       "annual_average_percent": 5.25,
@@ -87,7 +87,7 @@
       "source_url": "https://www.knbs.or.ke/reports/2026-economic-survey/",
       "publication": "2026 Economic Survey",
       "reference_year": 2025,
-      "fetched_at": "2026-09-10T17:28:13.856144+00:00",
+      "fetched_at": "2026-09-10T17:40:59.276738+00:00",
       "real_gdp_growth_percent": 4.6,
       "agriculture_growth_percent": 3.1,
       "mining_growth_percent": 7.8,
@@ -103,7 +103,7 @@
       "source_url": "https://www.knbs.or.ke/reports/consumer-price-indices-and-inflation-rates-august-2026/",
       "reference_year": 2026,
       "reference_month": "August",
-      "fetched_at": "2026-09-10T17:28:15.647288+00:00",
+      "fetched_at": "2026-09-10T17:41:01.915956+00:00",
       "headline_inflation_percent": 6.6,
       "food_non_alcoholic_beverages_percent": 9.0,
       "transport_percent": 15.7,
