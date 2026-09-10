@@ -15,6 +15,15 @@ from backend.jumuiya.marketplace.routes import marketplace_bp
 
 from backend.jumuiya.biashara.routes import biashara_bp
 from backend.jumuiya.shamba.routes import shamba_bp
+
+from backend.jumuiya.biashara.intelligence.routes.intelligence import (
+    intelligence_bp,
+)
+
+from backend.jumuiya.biashara.intelligence.routes.economic import (
+    economic_bp,
+)
+
 from backend.jumuiya.elimu.routes import elimu_bp
 from backend.jumuiya.community.routes import community_bp
 
@@ -143,6 +152,32 @@ def register_jumuiya(app):
 
     logger.info(
         "✅ Jumuiya Biashara registered."
+    )
+
+    # =====================================================
+    # BIASHARA MARKET INTELLIGENCE
+    # =====================================================
+
+    app.register_blueprint(
+        intelligence_bp,
+        url_prefix="/api/jumuiya/biashara/intelligence",
+    )
+
+    logger.info(
+        "✅ Biashara Market Intelligence registered."
+    )
+
+    # =====================================================
+    # BIASHARA LIVE ECONOMIC DATA
+    # =====================================================
+
+    app.register_blueprint(
+        economic_bp,
+        url_prefix="/api/jumuiya/biashara/economic",
+    )
+
+    logger.info(
+        "✅ Biashara Live Economic Intelligence registered."
     )
 
     # =====================================================
