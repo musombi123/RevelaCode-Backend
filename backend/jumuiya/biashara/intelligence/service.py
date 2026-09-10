@@ -52,7 +52,7 @@ DATA_DIR = os.path.join(
 
 AREAS_FILE = os.path.join(
     DATA_DIR,
-    "mombasa_areas.json",
+    "kenya_locations_merged.json",
 )
 
 DEMOGRAPHICS_FILE = os.path.join(

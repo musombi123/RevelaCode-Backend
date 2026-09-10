@@ -10,3 +10,10 @@ services:
         value: production
       - key: PORT
         value: 5000
+
+  - type: cron
+    name: revelacode-market-data-refresh
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python -m backend.jumuiya.biashara.intelligence.jobs.update_market_data
+    schedule: "0 */6 * * *"
