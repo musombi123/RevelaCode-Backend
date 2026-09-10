@@ -1,0 +1,113 @@
+{
+  "dataset": "kenya_economic_indicators",
+  "country": "Kenya",
+  "country_code": "KE",
+  "version": "2.0.0",
+  "source_status": "live",
+  "updated_at": "2026-09-10T17:27:56.093420+00:00",
+  "refresh": {
+    "status": "live",
+    "attempted_at": "2026-09-10T17:27:56.093420+00:00",
+    "successful_sources": [
+      "cbk_key_rates",
+      "cbk_forex",
+      "cbk_inflation",
+      "knbs_economic_survey",
+      "knbs_cpi"
+    ],
+    "failed_sources": [],
+    "errors": {}
+  },
+  "sources": {
+    "cbk_key_rates": {
+      "central_bank_rate_percent": 8.75,
+      "kesonia_percent": 8.7512,
+      "cbk_discount_window_percent": 9.25,
+      "91_day_tbill_percent": 8.767,
+      "repo_percent": 9.25,
+      "inflation_rate_percent": 6.6,
+      "lending_rate_percent": 14.39,
+      "savings_rate_percent": 3.53,
+      "deposit_rate_percent": 6.93,
+      "source": "CBK",
+      "source_url": "https://www.centralbank.go.ke/monetary-policy/",
+      "fetched_at": "2026-09-10T17:28:03.824179+00:00"
+    },
+    "cbk_forex": {
+      "USD": {
+        "mean": 85.1625,
+        "buy": 85.0611,
+        "sell": 85.2639
+      },
+      "GBP": {
+        "mean": 134.106,
+        "buy": 133.933,
+        "sell": 134.28
+      },
+      "EUR": {
+        "mean": 107.857,
+        "buy": 107.717,
+        "sell": 107.997
+      },
+      "ZAR": {
+        "mean": 10.1899,
+        "buy": 10.1675,
+        "sell": 10.2122
+      },
+      "AED": {
+        "mean": 23.1861,
+        "buy": 23.1579,
+        "sell": 23.2143
+      },
+      "CAD": {
+        "mean": 83.2986,
+        "buy": 83.1981,
+        "sell": 83.3991
+      },
+      "CHF": {
+        "mean": 89.8635,
+        "buy": 89.7438,
+        "sell": 89.9832
+      },
+      "source": "CBK",
+      "source_url": "https://www.centralbank.go.ke/rates/forex-exchange-rates/",
+      "fetched_at": "2026-09-10T17:28:04.600601+00:00"
+    },
+    "cbk_inflation": {
+      "source": "CBK",
+      "source_url": "https://www.centralbank.go.ke/inflation-rates/",
+      "fetched_at": "2026-09-10T17:28:11.865707+00:00",
+      "year": 2026,
+      "month": "August",
+      "annual_average_percent": 5.25,
+      "twelve_month_percent": 6.59
+    },
+    "knbs_economic_survey": {
+      "source": "KNBS",
+      "source_url": "https://www.knbs.or.ke/reports/2026-economic-survey/",
+      "publication": "2026 Economic Survey",
+      "reference_year": 2025,
+      "fetched_at": "2026-09-10T17:28:13.856144+00:00",
+      "real_gdp_growth_percent": 4.6,
+      "agriculture_growth_percent": 3.1,
+      "mining_growth_percent": 7.8,
+      "accommodation_food_services_growth_percent": 15.6,
+      "public_administration_growth_percent": 8.3,
+      "financial_insurance_growth_percent": 6.5,
+      "information_communication_growth_percent": 4.8,
+      "transport_storage_growth_percent": 3.7,
+      "wholesale_retail_growth_percent": 3.6
+    },
+    "knbs_cpi": {
+      "source": "KNBS",
+      "source_url": "https://www.knbs.or.ke/reports/consumer-price-indices-and-inflation-rates-august-2026/",
+      "reference_year": 2026,
+      "reference_month": "August",
+      "fetched_at": "2026-09-10T17:28:15.647288+00:00",
+      "headline_inflation_percent": 6.6,
+      "food_non_alcoholic_beverages_percent": 9.0,
+      "transport_percent": 15.7,
+      "housing_water_electricity_fuels_percent": 3.6
+    }
+  }
+}

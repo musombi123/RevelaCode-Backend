@@ -1,0 +1,69 @@
+{
+  "dataset": "kenya_economic_indicators",
+  "country": "Kenya",
+  "country_code": "KE",
+  "version": "2.0.0",
+  "source_status": "partial",
+  "updated_at": "2026-09-10T16:52:11.612541+00:00",
+  "refresh": {
+    "status": "partial",
+    "attempted_at": "2026-09-10T16:52:11.612541+00:00",
+    "errors": {
+      "cbk_key_rates": "404 Client Error: Not Found for url: https://www.centralbank.go.ke/statistics/key-rates/",
+      "knbs_economic_survey": "HTTPSConnectionPool(host='www.knbs.or.ke', port=443): Max retries exceeded with url: /reports/2026-economic-survey/ (Caused by SSLError(SSLCertVerificationError(1, '[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: unable to get local issuer certificate (_ssl.c:1081)')))",
+      "knbs_cpi": "HTTPSConnectionPool(host='www.knbs.or.ke', port=443): Max retries exceeded with url: /reports/consumer-price-indices-and-inflation-rates-august-2026/ (Caused by SSLError(SSLCertVerificationError(1, '[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: unable to get local issuer certificate (_ssl.c:1081)')))"
+    }
+  },
+  "sources": {
+    "cbk_forex": {
+      "USD": {
+        "mean": 85.1625,
+        "buy": 85.0611,
+        "sell": 85.2639
+      },
+      "GBP": {
+        "mean": 134.106,
+        "buy": 133.933,
+        "sell": 134.28
+      },
+      "EUR": {
+        "mean": 107.857,
+        "buy": 107.717,
+        "sell": 107.997
+      },
+      "ZAR": {
+        "mean": 10.1899,
+        "buy": 10.1675,
+        "sell": 10.2122
+      },
+      "AED": {
+        "mean": 23.1861,
+        "buy": 23.1579,
+        "sell": 23.2143
+      },
+      "CAD": {
+        "mean": 83.2986,
+        "buy": 83.1981,
+        "sell": 83.3991
+      },
+      "CHF": {
+        "mean": 89.8635,
+        "buy": 89.7438,
+        "sell": 89.9832
+      },
+      "source_url": "https://www.centralbank.go.ke/rates/forex-exchange-rates/",
+      "fetched_at": "2026-09-10T16:52:26.821706+00:00"
+    },
+    "cbk_inflation": {
+      "source_url": "https://www.centralbank.go.ke/inflation-rates/",
+      "fetched_at": "2026-09-10T16:52:34.731927+00:00",
+      "year": 2026,
+      "month": "August",
+      "annual_average_percent": 5.25,
+      "twelve_month_percent": 6.59
+    }
+  },
+  "business_intelligence": {
+    "note": "Use source reference periods when comparing indicators; live daily indicators and annual indicators update on different schedules."
+  }
+}
