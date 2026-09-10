@@ -1,4 +1,4 @@
-# backend/jumuiya/biashara/intelligence/routes.py
+# backend/jumuiya/biashara/intelligence/routes/intelligence.py
 
 from __future__ import annotations
 

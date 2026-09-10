@@ -6,11 +6,15 @@ Exposes the live economic-data service to the Biashara frontend.
 Endpoints:
     GET  /health
     GET  /indicators
+    GET  /status
     POST /refresh
 
 The route layer deliberately contains no source-specific scraping logic.
+
 All fetching, validation, normalization, caching, and source handling
-belongs in services/economic_data_service.py.
+belongs in:
+
+    services/economic_data_service.py
 """
 
 from __future__ import annotations
@@ -20,8 +24,11 @@ from typing import Any
 from flask import Blueprint, request
 
 from backend.jumuiya.core.errors import APIError
-from backend.jumuiya.core.permissions import require_authenticated
+from backend.jumuiya.core.permissions import (
+    require_authenticated,
+)
 from backend.jumuiya.core.responses import ok
+
 from backend.jumuiya.biashara.intelligence.services import (
     economic_data_service,
 )
@@ -38,29 +45,82 @@ economic_bp = Blueprint(
 
 
 # =========================================================
+# CONSTANTS
+# =========================================================
+
+TRUE_VALUES = {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+
+FALSE_VALUES = {
+    "0",
+    "false",
+    "no",
+    "off",
+}
+
+
+# =========================================================
 # HELPERS
 # =========================================================
 
-def _truthy(value: Any) -> bool:
-    """Convert a query-string boolean into a real boolean."""
+def _truthy(
+    value: Any,
+) -> bool:
+    """
+    Convert a query-string boolean into a real boolean.
 
-    if isinstance(value, bool):
+    Accepted true values:
+        1
+        true
+        yes
+        on
+
+    Accepted false values:
+        0
+        false
+        no
+        off
+    """
+
+    if isinstance(
+        value,
+        bool,
+    ):
         return value
 
-    return str(value).strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }
+    normalized = (
+        str(value)
+        .strip()
+        .lower()
+    )
+
+    if normalized in TRUE_VALUES:
+        return True
+
+    if normalized in FALSE_VALUES:
+        return False
+
+    raise APIError(
+        "Boolean value expected.",
+        422,
+        "invalid_boolean",
+    )
 
 
-def _call_service(name: str, *args: Any, **kwargs: Any) -> Any:
+def _call_service(
+    name: str,
+    *args: Any,
+    **kwargs: Any,
+) -> Any:
     """
-    Resolve a service function safely.
+    Resolve and execute an economic service function safely.
 
-    Keeping this check here produces a useful API error instead of an
-    obscure AttributeError when the service contract is incomplete.
+    This keeps the route layer independent from source-specific
+    implementation details.
     """
 
     function = getattr(
@@ -69,7 +129,10 @@ def _call_service(name: str, *args: Any, **kwargs: Any) -> Any:
         None,
     )
 
-    if not callable(function):
+    if not callable(
+        function
+    ):
+
         raise APIError(
             f"Economic data service is missing {name}().",
             500,
@@ -77,10 +140,18 @@ def _call_service(name: str, *args: Any, **kwargs: Any) -> Any:
         )
 
     try:
-        return function(*args, **kwargs)
+
+        return function(
+            *args,
+            **kwargs,
+        )
+
     except APIError:
+
         raise
+
     except Exception as exc:
+
         raise APIError(
             f"Economic data service failed: {exc}",
             502,
@@ -92,13 +163,15 @@ def _call_service(name: str, *args: Any, **kwargs: Any) -> Any:
 # HEALTH
 # =========================================================
 
-@economic_bp.get("/health")
+@economic_bp.get(
+    "/health"
+)
 def health():
     """
-    Return live economic-provider/cache health.
+    Return economic-provider and cache health.
 
-    Kept public so deployment monitors can check the service without
-    requiring an authenticated Biashara session.
+    This remains public so monitoring systems can check
+    the economic service without authentication.
     """
 
     return ok(
@@ -112,31 +185,42 @@ def health():
 # CURRENT INDICATORS
 # =========================================================
 
-@economic_bp.get("/indicators")
+@economic_bp.get(
+    "/indicators"
+)
 @require_authenticated
 def indicators():
     """
-    Return the latest validated economic indicators.
+    Return the latest economic indicators.
 
     Query parameters:
-        refresh=true   Force an upstream refresh before returning data.
+
+        refresh=true
+            Force live source refresh.
+
+        refresh=false
+            Return the latest validated cache.
 
     Examples:
+
         GET /api/jumuiya/biashara/economic/indicators
+
         GET /api/jumuiya/biashara/economic/indicators?refresh=true
     """
 
+    raw_refresh = request.args.get(
+        "refresh",
+        "false",
+    )
+
     force_refresh = _truthy(
-        request.args.get(
-            "refresh",
-            "false",
-        )
+        raw_refresh
     )
 
     return ok(
         _call_service(
-            "get_live_economic_indicators",
-            force_refresh=force_refresh,
+            "get_economic_indicators",
+            refresh=force_refresh,
         )
     )
 
@@ -145,15 +229,20 @@ def indicators():
 # FORCE REFRESH
 # =========================================================
 
-@economic_bp.post("/refresh")
+@economic_bp.post(
+    "/refresh"
+)
 @require_authenticated
 def refresh():
     """
     Force an immediate refresh of economic data.
 
-    The service updates the local cache only after successful
-    validation, allowing the previous snapshot to remain available
-    when an upstream source fails.
+    The service:
+
+        1. Fetches configured live sources.
+        2. Validates the responses.
+        3. Writes a new cache snapshot.
+        4. Reports partial failures explicitly.
     """
 
     result = _call_service(
@@ -166,14 +255,16 @@ def refresh():
 
 
 # =========================================================
-# DATASET STATUS
+# STATUS
 # =========================================================
 
-@economic_bp.get("/status")
+@economic_bp.get(
+    "/status"
+)
 @require_authenticated
 def status():
     """
-    Return the live economic data provider/cache status.
+    Return the current economic-service status.
     """
 
     return ok(
