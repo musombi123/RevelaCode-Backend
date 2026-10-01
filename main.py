@@ -218,6 +218,30 @@ except Exception as e:
         e,
     )
 
+# =========================================================
+# REVELAAI AI GATEWAY
+# =========================================================
+
+try:
+
+    from backend.ai_gateway import (
+        register_ai_gateway
+    )
+
+    register_ai_gateway(
+        app
+    )
+
+    logger.info(
+        "✅ RevelaAI AI Gateway registered"
+    )
+
+except Exception as e:
+
+    logger.exception(
+        "❌ RevelaAI AI Gateway registration failed: %s",
+        e,
+    )
 
 # =========================================================
 # STUDY BLUEPRINT
