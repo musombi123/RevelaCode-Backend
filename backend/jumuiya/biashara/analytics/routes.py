@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from flask import Blueprint, request
 
-from backend.jumuiya.core.identity import current_user_id
+from backend.jumuiya.core.permissions import current_user_id
 from backend.jumuiya.core.responses import ok
 from backend.jumuiya.biashara.analytics import service
 

@@ -1,1049 +1,1407 @@
-# backend/jumuiya/biashara/analytics/service.py
+# backend/jumuiya/biashara/services.py
 
-from __future__ import annotations
+import re
+from datetime import datetime, timezone
 
-from datetime import datetime, timezone, timedelta
+from bson import ObjectId
+from bson.errors import InvalidId
+from pymongo import ReturnDocument
 
-from backend.jumuiya.biashara.services import (
-    _require_business,
-    businesses_collection,
-    products_collection,
-    customers_collection,
-    orders_collection,
-    sales_collection,
-    expenses_collection,
-    money,
-    safe_float,
-    serialise_many,
-    PRODUCT_ACTIVE_STATUS,
-    PRODUCT_DELETED_STATUS,
-    ORDER_STATUSES,
-    DEFAULT_CURRENCY,
+from backend.jumuiya.core.database import collection
+from backend.jumuiya.core.errors import APIError
+from backend.jumuiya.core.audit import log_action
+
+from backend.jumuiya.biashara.models import (
+    business_document,
+    product_document,
+    customer_document,
+    order_document,
+    expense_document,
+    sale_document,
+    inventory_movement_document,
 )
 
 
 # =========================================================
-# DATE HELPERS
+# HELPERS
 # =========================================================
-
-DEFAULT_DAYS = 30
-MAX_DAYS = 365
-
 
 def now_utc():
     return datetime.now(timezone.utc)
 
 
-def date_bounds(days=DEFAULT_DAYS):
-    try:
-        days = int(days)
-    except (TypeError, ValueError):
-        days = DEFAULT_DAYS
-
-    days = max(1, min(days, MAX_DAYS))
-
-    end = now_utc()
-    start = end - timedelta(days=days)
-
-    return start, end
-
-
-def previous_period_bounds(days=DEFAULT_DAYS):
+def clean_id(value):
     """
-    Return the immediately preceding period having the
-    same length as the requested period.
+    Convert a valid MongoDB ObjectId string to ObjectId.
+
+    If the value is not a valid ObjectId, return it unchanged
+    so the query simply won't accidentally match another object.
     """
 
     try:
-        days = int(days)
-    except (TypeError, ValueError):
-        days = DEFAULT_DAYS
+        return ObjectId(value)
 
-    days = max(1, min(days, MAX_DAYS))
-
-    end = now_utc()
-    current_start = end - timedelta(days=days)
-    previous_start = current_start - timedelta(days=days)
-
-    return previous_start, current_start
+    except (InvalidId, TypeError):
+        return value
 
 
-def percentage_change(current, previous):
-    current = safe_float(current)
-    previous = safe_float(previous)
+def serialise(doc):
+    """
+    Convert MongoDB documents into JSON-safe dictionaries.
+    """
 
-    if previous == 0:
-        if current == 0:
-            return 0.0
+    if not doc:
+        return None
 
-        return 100.0
+    out = dict(doc)
 
-    return round(
-        ((current - previous) / previous) * 100,
-        2,
+    if "_id" in out:
+        out["id"] = str(out.pop("_id"))
+
+    for key, value in list(out.items()):
+
+        if isinstance(value, ObjectId):
+            out[key] = str(value)
+
+        elif hasattr(value, "isoformat"):
+            out[key] = value.isoformat()
+
+    return out
+
+
+def serialise_many(docs):
+    return [
+        serialise(doc)
+        for doc in docs
+    ]
+
+
+# =========================================================
+# SLUGS
+# =========================================================
+
+def slugify(value):
+    value = re.sub(
+        r"[^a-zA-Z0-9\s-]",
+        "",
+        value.lower(),
+    )
+
+    value = re.sub(
+        r"[\s_-]+",
+        "-",
+        value,
+    )
+
+    return (
+        value.strip("-")
+        or "business"
+    )
+
+
+def unique_slug(
+    name,
+    current_id=None,
+):
+    """
+    Generate a unique business slug.
+    """
+
+    base = slugify(name)
+    slug = base
+    number = 2
+
+    businesses = collection(
+        "jumuiya_businesses"
+    )
+
+    while True:
+
+        query = {
+            "slug": slug
+        }
+
+        if current_id:
+            query["_id"] = {
+                "$ne": current_id
+            }
+
+        if not businesses.find_one(
+            query
+        ):
+            return slug
+
+        slug = f"{base}-{number}"
+        number += 1
+
+
+# =========================================================
+# BUSINESS
+# =========================================================
+
+def get_business_for_user(
+    user_id,
+):
+    return serialise(
+        collection(
+            "jumuiya_businesses"
+        ).find_one({
+            "owner_user_id": str(
+                user_id
+            )
+        })
+    )
+
+
+def _require_business(user_id):
+
+    business = get_business_for_user(
+        user_id
+    )
+
+    if not business:
+
+        raise APIError(
+            "Create your business profile first.",
+            409,
+            "business_required",
+        )
+
+    return business
+
+
+def create_or_update_business(
+    user_id,
+    payload,
+):
+
+    businesses = collection(
+        "jumuiya_businesses"
+    )
+
+    owner_id = str(user_id)
+
+    old = businesses.find_one({
+        "owner_user_id": owner_id
+    })
+
+    # -----------------------------------------------------
+    # UPDATE
+    # -----------------------------------------------------
+
+    if old:
+
+        fields = [
+            "name",
+            "description",
+            "phone",
+            "email",
+            "location",
+            "county",
+            "category",
+            "logo_url",
+        ]
+
+        update = {
+            key: payload.get(
+                key,
+                "",
+            )
+            for key in fields
+        }
+
+        update["slug"] = unique_slug(
+            payload["name"],
+            old["_id"],
+        )
+
+        update["updated_at"] = now_utc()
+
+        document = businesses.find_one_and_update(
+            {
+                "_id": old["_id"]
+            },
+            {
+                "$set": update
+            },
+            return_document=ReturnDocument.AFTER,
+        )
+
+        log_action(
+            user_id,
+            "business.updated",
+            "business",
+            document["_id"],
+        )
+
+        return serialise(
+            document
+        )
+
+    # -----------------------------------------------------
+    # CREATE
+    # -----------------------------------------------------
+
+    document = business_document(
+        owner_id,
+        payload,
+        unique_slug(
+            payload["name"]
+        ),
+    )
+
+    result = businesses.insert_one(
+        document
+    )
+
+    document["_id"] = result.inserted_id
+
+    log_action(
+        user_id,
+        "business.created",
+        "business",
+        result.inserted_id,
+    )
+
+    return serialise(
+        document
     )
 
 
 # =========================================================
-# COMMON AGGREGATION
+# PRODUCTS
 # =========================================================
 
-def aggregate_sum(
-    mongo_collection,
-    match,
-    field,
+def create_product(
+    user_id,
+    payload,
 ):
-    result = list(
-        mongo_collection.aggregate([
+
+    business = _require_business(
+        user_id
+    )
+
+    document = product_document(
+        business["id"],
+        payload,
+    )
+
+    result = collection(
+        "jumuiya_products"
+    ).insert_one(document)
+
+    document["_id"] = result.inserted_id
+
+    log_action(
+        user_id,
+        "product.created",
+        "product",
+        result.inserted_id,
+    )
+
+    return serialise(
+        document
+    )
+
+
+def list_products(
+    user_id,
+    status=None,
+    category=None,
+):
+
+    business = _require_business(
+        user_id
+    )
+
+    query = {
+        "business_id": business["id"]
+    }
+
+    if status:
+        query["status"] = status
+
+    if category:
+        query["category"] = category
+
+    documents = (
+        collection(
+            "jumuiya_products"
+        )
+        .find(query)
+        .sort(
+            "created_at",
+            -1,
+        )
+    )
+
+    return serialise_many(
+        documents
+    )
+
+
+def update_product(
+    user_id,
+    product_id,
+    payload,
+):
+
+    business = _require_business(
+        user_id
+    )
+
+    allowed = {
+        "name",
+        "description",
+        "category",
+        "sku",
+        "price",
+        "currency",
+        "stock_quantity",
+        "unit",
+        "image_url",
+        "status",
+    }
+
+    update = {
+        key: payload[key]
+        for key in allowed
+        if key in payload
+    }
+
+    if not update:
+
+        raise APIError(
+            "No product fields were provided.",
+            422,
+            "empty_update",
+        )
+
+    products = collection(
+        "jumuiya_products"
+    )
+
+    document = products.find_one_and_update(
+        {
+            "_id": clean_id(
+                product_id
+            ),
+            "business_id": business["id"],
+        },
+        {
+            "$set": {
+                **update,
+                "updated_at": now_utc(),
+            }
+        },
+        return_document=ReturnDocument.AFTER,
+    )
+
+    if not document:
+
+        raise APIError(
+            "Product not found.",
+            404,
+            "product_not_found",
+        )
+
+    log_action(
+        user_id,
+        "product.updated",
+        "product",
+        document["_id"],
+    )
+
+    return serialise(
+        document
+    )
+
+
+def delete_product(
+    user_id,
+    product_id,
+):
+
+    business = _require_business(
+        user_id
+    )
+
+    products = collection(
+        "jumuiya_products"
+    )
+
+    document = products.find_one_and_update(
+        {
+            "_id": clean_id(
+                product_id
+            ),
+            "business_id": business["id"],
+        },
+        {
+            "$set": {
+                "status": "deleted",
+                "updated_at": now_utc(),
+            }
+        },
+        return_document=ReturnDocument.AFTER,
+    )
+
+    if not document:
+
+        raise APIError(
+            "Product not found.",
+            404,
+            "product_not_found",
+        )
+
+    log_action(
+        user_id,
+        "product.deleted",
+        "product",
+        document["_id"],
+    )
+
+    return serialise(
+        document
+    )
+
+
+# =========================================================
+# INVENTORY
+# =========================================================
+
+def low_stock(
+    user_id,
+    threshold=5,
+):
+
+    business = _require_business(
+        user_id
+    )
+
+    try:
+        threshold = float(
+            threshold
+        )
+
+    except (
+        TypeError,
+        ValueError,
+    ):
+
+        raise APIError(
+            "threshold must be a number.",
+            422,
+            "invalid_threshold",
+        )
+
+    if threshold < 0:
+
+        raise APIError(
+            "threshold cannot be negative.",
+            422,
+            "invalid_threshold",
+        )
+
+    documents = collection(
+        "jumuiya_products"
+    ).find({
+        "business_id": business["id"],
+        "status": "active",
+        "stock_quantity": {
+            "$lte": threshold
+        },
+    }).sort(
+        "stock_quantity",
+        1,
+    )
+
+    return serialise_many(
+        documents
+    )
+
+
+def inventory_adjustment(
+    user_id,
+    product_id,
+    payload,
+):
+
+    business = _require_business(
+        user_id
+    )
+
+    products = collection(
+        "jumuiya_products"
+    )
+
+    product = products.find_one({
+        "_id": clean_id(
+            product_id
+        ),
+        "business_id": business["id"],
+    })
+
+    if not product:
+
+        raise APIError(
+            "Product not found.",
+            404,
+            "product_not_found",
+        )
+
+    previous_quantity = float(
+        product.get(
+            "stock_quantity",
+            0,
+        )
+    )
+
+    movement_type = payload[
+        "movement_type"
+    ]
+
+    quantity = float(
+        payload["quantity"]
+    )
+
+    if movement_type == "add":
+
+        new_quantity = (
+            previous_quantity
+            + quantity
+        )
+
+    elif movement_type == "remove":
+
+        new_quantity = (
+            previous_quantity
+            - quantity
+        )
+
+        if new_quantity < 0:
+
+            raise APIError(
+                "Insufficient stock.",
+                409,
+                "insufficient_stock",
+            )
+
+    elif movement_type == "set":
+
+        new_quantity = quantity
+
+    else:
+
+        raise APIError(
+            "Invalid inventory movement.",
+            422,
+            "invalid_movement",
+        )
+
+    updated = products.find_one_and_update(
+        {
+            "_id": product["_id"],
+            "business_id": business["id"],
+        },
+        {
+            "$set": {
+                "stock_quantity": new_quantity,
+                "updated_at": now_utc(),
+            }
+        },
+        return_document=ReturnDocument.AFTER,
+    )
+
+    movement = inventory_movement_document(
+        business["id"],
+        product["_id"],
+        payload,
+        previous_quantity,
+        new_quantity,
+    )
+
+    movement_result = collection(
+        "jumuiya_inventory_movements"
+    ).insert_one(
+        movement
+    )
+
+    movement["_id"] = (
+        movement_result.inserted_id
+    )
+
+    log_action(
+        user_id,
+        "inventory.adjusted",
+        "product",
+        product["_id"],
+    )
+
+    return {
+        "product": serialise(
+            updated
+        ),
+        "movement": serialise(
+            movement
+        ),
+    }
+
+
+# =========================================================
+# CUSTOMERS
+# =========================================================
+
+def create_customer(
+    user_id,
+    payload,
+):
+
+    business = _require_business(
+        user_id
+    )
+
+    document = customer_document(
+        business["id"],
+        payload,
+    )
+
+    result = collection(
+        "jumuiya_customers"
+    ).insert_one(document)
+
+    document["_id"] = (
+        result.inserted_id
+    )
+
+    log_action(
+        user_id,
+        "customer.created",
+        "customer",
+        result.inserted_id,
+    )
+
+    return serialise(
+        document
+    )
+
+
+def list_customers(
+    user_id,
+    search=None,
+):
+
+    business = _require_business(
+        user_id
+    )
+
+    query = {
+        "business_id": business["id"]
+    }
+
+    if search:
+
+        search = search.strip()
+
+        if search:
+
+            query["$or"] = [
+                {
+                    "name": {
+                        "$regex": re.escape(
+                            search
+                        ),
+                        "$options": "i",
+                    }
+                },
+                {
+                    "phone": {
+                        "$regex": re.escape(
+                            search
+                        ),
+                        "$options": "i",
+                    }
+                },
+                {
+                    "email": {
+                        "$regex": re.escape(
+                            search
+                        ),
+                        "$options": "i",
+                    }
+                },
+            ]
+
+    documents = (
+        collection(
+            "jumuiya_customers"
+        )
+        .find(query)
+        .sort(
+            "created_at",
+            -1,
+        )
+    )
+
+    return serialise_many(
+        documents
+    )
+
+
+# =========================================================
+# ORDERS
+# =========================================================
+
+def create_order(
+    user_id,
+    payload,
+):
+
+    business = _require_business(
+        user_id
+    )
+
+    # -----------------------------------------------------
+    # Validate customer ownership
+    # -----------------------------------------------------
+
+    customer_id = payload.get(
+        "customer_id"
+    )
+
+    if customer_id:
+
+        customer = collection(
+            "jumuiya_customers"
+        ).find_one({
+            "_id": clean_id(
+                customer_id
+            ),
+            "business_id": business["id"],
+        })
+
+        if not customer:
+
+            raise APIError(
+                "Customer does not belong to this business.",
+                422,
+                "invalid_customer",
+            )
+
+    # -----------------------------------------------------
+    # Validate products
+    # -----------------------------------------------------
+
+    for item in payload.get(
+        "items",
+        [],
+    ):
+
+        product = collection(
+            "jumuiya_products"
+        ).find_one({
+            "_id": clean_id(
+                item["product_id"]
+            ),
+            "business_id": business["id"],
+            "status": {
+                "$ne": "deleted"
+            },
+        })
+
+        if not product:
+
+            raise APIError(
+                f"Product {item['product_id']} was not found.",
+                422,
+                "invalid_product",
+            )
+
+    document = order_document(
+        business["id"],
+        payload,
+    )
+
+    result = collection(
+        "jumuiya_orders"
+    ).insert_one(
+        document
+    )
+
+    document["_id"] = (
+        result.inserted_id
+    )
+
+    log_action(
+        user_id,
+        "order.created",
+        "order",
+        result.inserted_id,
+    )
+
+    return serialise(
+        document
+    )
+
+
+def list_orders(
+    user_id,
+    status=None,
+):
+
+    business = _require_business(
+        user_id
+    )
+
+    query = {
+        "business_id": business["id"]
+    }
+
+    if status:
+        query["status"] = status
+
+    documents = (
+        collection(
+            "jumuiya_orders"
+        )
+        .find(query)
+        .sort(
+            "created_at",
+            -1,
+        )
+    )
+
+    return serialise_many(
+        documents
+    )
+
+
+def get_order(
+    user_id,
+    order_id,
+):
+
+    business = _require_business(
+        user_id
+    )
+
+    document = collection(
+        "jumuiya_orders"
+    ).find_one({
+        "_id": clean_id(
+            order_id
+        ),
+        "business_id": business["id"],
+    })
+
+    if not document:
+
+        raise APIError(
+            "Order not found.",
+            404,
+            "order_not_found",
+        )
+
+    return serialise(
+        document
+    )
+
+
+def update_order_status(
+    user_id,
+    order_id,
+    status,
+):
+
+    allowed = {
+        "pending",
+        "confirmed",
+        "processing",
+        "completed",
+        "cancelled",
+    }
+
+    if status not in allowed:
+
+        raise APIError(
+            "Invalid order status.",
+            422,
+            "invalid_order_status",
+        )
+
+    business = _require_business(
+        user_id
+    )
+
+    orders = collection(
+        "jumuiya_orders"
+    )
+
+    document = orders.find_one({
+        "_id": clean_id(
+            order_id
+        ),
+        "business_id": business["id"],
+    })
+
+    if not document:
+
+        raise APIError(
+            "Order not found.",
+            404,
+            "order_not_found",
+        )
+
+    previous_status = document.get(
+        "status",
+        "pending",
+    )
+
+    # Don't allow pointless changes.
+    if previous_status == status:
+
+        return serialise(
+            document
+        )
+
+    update = {
+        "status": status,
+        "updated_at": now_utc(),
+    }
+
+    # Completed orders get completed_at.
+    if status == "completed":
+
+        update["completed_at"] = now_utc()
+
+    updated = orders.find_one_and_update(
+        {
+            "_id": document["_id"],
+            "business_id": business["id"],
+        },
+        {
+            "$set": update
+        },
+        return_document=ReturnDocument.AFTER,
+    )
+
+    log_action(
+        user_id,
+        "order.status_updated",
+        "order",
+        document["_id"],
+    )
+
+    return serialise(
+        updated
+    )
+
+
+# =========================================================
+# SALES
+# =========================================================
+
+def record_sale(
+    user_id,
+    payload,
+):
+
+    business = _require_business(
+        user_id
+    )
+
+    # -----------------------------------------------------
+    # Validate customer
+    # -----------------------------------------------------
+
+    customer_id = payload.get(
+        "customer_id"
+    )
+
+    if customer_id:
+
+        customer = collection(
+            "jumuiya_customers"
+        ).find_one({
+            "_id": clean_id(
+                customer_id
+            ),
+            "business_id": business["id"],
+        })
+
+        if not customer:
+
+            raise APIError(
+                "Customer does not belong to this business.",
+                422,
+                "invalid_customer",
+            )
+
+    # -----------------------------------------------------
+    # Validate stock
+    # -----------------------------------------------------
+
+    for item in payload.get(
+        "items",
+        [],
+    ):
+
+        product = collection(
+            "jumuiya_products"
+        ).find_one({
+            "_id": clean_id(
+                item["product_id"]
+            ),
+            "business_id": business["id"],
+            "status": "active",
+        })
+
+        if not product:
+
+            raise APIError(
+                "One or more products were not found.",
+                422,
+                "invalid_product",
+            )
+
+        requested = float(
+            item["quantity"]
+        )
+
+        available = float(
+            product.get(
+                "stock_quantity",
+                0,
+            )
+        )
+
+        if requested > available:
+
+            raise APIError(
+                f"Insufficient stock for {product.get('name', 'product')}.",
+                409,
+                "insufficient_stock",
+            )
+
+    # -----------------------------------------------------
+    # Create sale
+    # -----------------------------------------------------
+
+    document = sale_document(
+        business["id"],
+        payload,
+    )
+
+    result = collection(
+        "jumuiya_sales"
+    ).insert_one(
+        document
+    )
+
+    document["_id"] = (
+        result.inserted_id
+    )
+
+    # -----------------------------------------------------
+    # Deduct inventory
+    # -----------------------------------------------------
+
+    for item in payload.get(
+        "items",
+        [],
+    ):
+
+        product_id = clean_id(
+            item["product_id"]
+        )
+
+        quantity = float(
+            item["quantity"]
+        )
+
+        product = collection(
+            "jumuiya_products"
+        ).find_one({
+            "_id": product_id,
+            "business_id": business["id"],
+        })
+
+        if not product:
+            continue
+
+        previous_quantity = float(
+            product.get(
+                "stock_quantity",
+                0,
+            )
+        )
+
+        new_quantity = (
+            previous_quantity
+            - quantity
+        )
+
+        collection(
+            "jumuiya_products"
+        ).update_one(
             {
-                "$match": match
+                "_id": product_id,
+                "business_id": business["id"],
+            },
+            {
+                "$set": {
+                    "stock_quantity": new_quantity,
+                    "updated_at": now_utc(),
+                }
+            },
+        )
+
+        movement = inventory_movement_document(
+            business["id"],
+            product_id,
+            {
+                "movement_type": "remove",
+                "quantity": quantity,
+                "reason": "sale",
+            },
+            previous_quantity,
+            new_quantity,
+        )
+
+        collection(
+            "jumuiya_inventory_movements"
+        ).insert_one(
+            movement
+        )
+
+    log_action(
+        user_id,
+        "sale.created",
+        "sale",
+        result.inserted_id,
+    )
+
+    return serialise(
+        document
+    )
+
+
+# =========================================================
+# EXPENSES
+# =========================================================
+
+def create_expense(
+    user_id,
+    payload,
+):
+
+    business = _require_business(
+        user_id
+    )
+
+    document = expense_document(
+        business["id"],
+        payload,
+    )
+
+    result = collection(
+        "jumuiya_expenses"
+    ).insert_one(
+        document
+    )
+
+    document["_id"] = (
+        result.inserted_id
+    )
+
+    log_action(
+        user_id,
+        "expense.created",
+        "expense",
+        result.inserted_id,
+    )
+
+    return serialise(
+        document
+    )
+
+
+def list_expenses(
+    user_id,
+):
+
+    business = _require_business(
+        user_id
+    )
+
+    documents = (
+        collection(
+            "jumuiya_expenses"
+        )
+        .find({
+            "business_id": business["id"]
+        })
+        .sort(
+            "spent_at",
+            -1,
+        )
+    )
+
+    return serialise_many(
+        documents
+    )
+
+
+# =========================================================
+# DASHBOARD
+# =========================================================
+
+def dashboard(
+    user_id,
+):
+
+    business = _require_business(
+        user_id
+    )
+
+    business_id = business["id"]
+
+    products = collection(
+        "jumuiya_products"
+    )
+
+    orders = collection(
+        "jumuiya_orders"
+    )
+
+    sales = collection(
+        "jumuiya_sales"
+    )
+
+    expenses = collection(
+        "jumuiya_expenses"
+    )
+
+    customers = collection(
+        "jumuiya_customers"
+    )
+
+    # -----------------------------------------------------
+    # SALES
+    # -----------------------------------------------------
+
+    sales_result = list(
+        sales.aggregate([
+            {
+                "$match": {
+                    "business_id": business_id
+                }
             },
             {
                 "$group": {
                     "_id": None,
                     "total": {
-                        "$sum": field
-                    },
-                }
-            },
-        ])
-    )
-
-    if not result:
-        return 0.0
-
-    return money(
-        result[0].get(
-            "total",
-            0,
-        )
-    )
-
-
-def aggregate_count(
-    mongo_collection,
-    match,
-):
-    return mongo_collection.count_documents(
-        match
-    )
-
-
-# =========================================================
-# OVERVIEW
-# =========================================================
-
-def overview(
-    user_id,
-    days=DEFAULT_DAYS,
-):
-    """
-    Main analytics overview.
-
-    Provides current-period financial and operational
-    performance together with comparison against the
-    previous period.
-    """
-
-    business = _require_business(
-        user_id
-    )
-
-    business_id = business["id"]
-
-    start, end = date_bounds(days)
-
-    previous_start, previous_end = (
-        previous_period_bounds(days)
-    )
-
-    sales = sales_collection()
-    orders = orders_collection()
-    customers = customers_collection()
-    expenses = expenses_collection()
-    products = products_collection()
-
-    current_sales = aggregate_sum(
-        sales,
-        {
-            "business_id": business_id,
-            "created_at": {
-                "$gte": start,
-                "$lt": end,
-            },
-        },
-        "$amount",
-    )
-
-    previous_sales = aggregate_sum(
-        sales,
-        {
-            "business_id": business_id,
-            "created_at": {
-                "$gte": previous_start,
-                "$lt": previous_end,
-            },
-        },
-        "$amount",
-    )
-
-    current_expenses = aggregate_sum(
-        expenses,
-        {
-            "business_id": business_id,
-            "created_at": {
-                "$gte": start,
-                "$lt": end,
-            },
-        },
-        "$amount",
-    )
-
-    previous_expenses = aggregate_sum(
-        expenses,
-        {
-            "business_id": business_id,
-            "created_at": {
-                "$gte": previous_start,
-                "$lt": previous_end,
-            },
-        },
-        "$amount",
-    )
-
-    current_orders = aggregate_count(
-        orders,
-        {
-            "business_id": business_id,
-            "created_at": {
-                "$gte": start,
-                "$lt": end,
-            },
-        },
-    )
-
-    previous_orders = aggregate_count(
-        orders,
-        {
-            "business_id": business_id,
-            "created_at": {
-                "$gte": previous_start,
-                "$lt": previous_end,
-            },
-        },
-    )
-
-    current_customers = aggregate_count(
-        customers,
-        {
-            "business_id": business_id,
-            "created_at": {
-                "$gte": start,
-                "$lt": end,
-            },
-        },
-    )
-
-    previous_customers = aggregate_count(
-        customers,
-        {
-            "business_id": business_id,
-            "created_at": {
-                "$gte": previous_start,
-                "$lt": previous_end,
-            },
-        },
-    )
-
-    current_profit = money(
-        current_sales - current_expenses
-    )
-
-    previous_profit = money(
-        previous_sales - previous_expenses
-    )
-
-    active_products = products.count_documents({
-        "business_id": business_id,
-        "status": PRODUCT_ACTIVE_STATUS,
-    })
-
-    low_stock = products.count_documents({
-        "business_id": business_id,
-        "status": PRODUCT_ACTIVE_STATUS,
-        "$expr": {
-            "$lte": [
-                "$stock_quantity",
-                {
-                    "$ifNull": [
-                        "$low_stock_threshold",
-                        5.0,
-                    ]
-                },
-            ]
-        },
-    })
-
-    return {
-        "period": {
-            "days": days,
-            "start": start.isoformat(),
-            "end": end.isoformat(),
-        },
-
-        "previous_period": {
-            "start": previous_start.isoformat(),
-            "end": previous_end.isoformat(),
-        },
-
-        "currency": business.get(
-            "currency",
-            DEFAULT_CURRENCY,
-        ),
-
-        "sales": {
-            "value": current_sales,
-            "previous": previous_sales,
-            "change_percent": percentage_change(
-                current_sales,
-                previous_sales,
-            ),
-        },
-
-        "expenses": {
-            "value": current_expenses,
-            "previous": previous_expenses,
-            "change_percent": percentage_change(
-                current_expenses,
-                previous_expenses,
-            ),
-        },
-
-        "profit": {
-            "value": current_profit,
-            "previous": previous_profit,
-            "change_percent": percentage_change(
-                current_profit,
-                previous_profit,
-            ),
-        },
-
-        "orders": {
-            "value": current_orders,
-            "previous": previous_orders,
-            "change_percent": percentage_change(
-                current_orders,
-                previous_orders,
-            ),
-        },
-
-        "customers": {
-            "value": current_customers,
-            "previous": previous_customers,
-            "change_percent": percentage_change(
-                current_customers,
-                previous_customers,
-            ),
-        },
-
-        "products": {
-            "active": active_products,
-            "low_stock": low_stock,
-        },
-    }
-
-
-# =========================================================
-# SALES ANALYTICS
-# =========================================================
-
-def sales_analytics(
-    user_id,
-    days=DEFAULT_DAYS,
-):
-    business = _require_business(
-        user_id
-    )
-
-    business_id = business["id"]
-
-    start, end = date_bounds(days)
-
-    result = list(
-        sales_collection().aggregate([
-            {
-                "$match": {
-                    "business_id": business_id,
-                    "created_at": {
-                        "$gte": start,
-                        "$lt": end,
-                    },
-                }
-            },
-            {
-                "$group": {
-                    "_id": {
-                        "$dateToString": {
-                            "format": "%Y-%m-%d",
-                            "date": "$created_at",
-                        }
-                    },
-                    "sales": {
                         "$sum": "$amount"
-                    },
-                    "transactions": {
-                        "$sum": 1
-                    },
-                }
-            },
-            {
-                "$sort": {
-                    "_id": 1
+                    }
                 }
             },
         ])
     )
 
-    values = {
-        item["_id"]: {
-            "sales": money(
-                item.get(
-                    "sales",
-                    0,
-                )
-            ),
-            "transactions": item.get(
-                "transactions",
-                0,
-            ),
-        }
-        for item in result
-    }
+    # -----------------------------------------------------
+    # EXPENSES
+    # -----------------------------------------------------
 
-    trend = []
-
-    for offset in range(days):
-
-        day = (
-            start
-            + timedelta(days=offset)
-        ).strftime("%Y-%m-%d")
-
-        item = values.get(
-            day,
-            {},
-        )
-
-        trend.append({
-            "date": day,
-            "sales": item.get(
-                "sales",
-                0.0,
-            ),
-            "transactions": item.get(
-                "transactions",
-                0,
-            ),
-        })
-
-    total_sales = sum(
-        item["sales"]
-        for item in trend
-    )
-
-    transactions = sum(
-        item["transactions"]
-        for item in trend
-    )
-
-    return {
-        "currency": business.get(
-            "currency",
-            DEFAULT_CURRENCY,
-        ),
-        "period_days": days,
-        "total_sales": money(
-            total_sales
-        ),
-        "transactions": transactions,
-        "average_sale": (
-            money(
-                total_sales / transactions
-            )
-            if transactions
-            else 0.0
-        ),
-        "trend": trend,
-    }
-
-
-# =========================================================
-# REVENUE ANALYTICS
-# =========================================================
-
-def revenue_analytics(
-    user_id,
-    days=DEFAULT_DAYS,
-):
-    business = _require_business(
-        user_id
-    )
-
-    business_id = business["id"]
-
-    start, end = date_bounds(days)
-
-    result = list(
-        sales_collection().aggregate([
+    expenses_result = list(
+        expenses.aggregate([
             {
                 "$match": {
-                    "business_id": business_id,
-                    "created_at": {
-                        "$gte": start,
-                        "$lt": end,
-                    },
-                }
-            },
-            {
-                "$unwind": "$items"
-            },
-            {
-                "$group": {
-                    "_id": "$items.product_id",
-                    "name": {
-                        "$first": "$items.name"
-                    },
-                    "revenue": {
-                        "$sum": "$items.line_total"
-                    },
-                    "units": {
-                        "$sum": "$items.quantity"
-                    },
-                }
-            },
-            {
-                "$sort": {
-                    "revenue": -1
-                }
-            },
-            {
-                "$limit": 20
-            },
-        ])
-    )
-
-    products = []
-
-    total_revenue = 0.0
-
-    for item in result:
-
-        revenue = money(
-            item.get(
-                "revenue",
-                0,
-            )
-        )
-
-        total_revenue += revenue
-
-        products.append({
-            "product_id": str(
-                item.get(
-                    "_id",
-                    "",
-                )
-            ),
-            "name": item.get(
-                "name",
-                "Product",
-            ),
-            "revenue": revenue,
-            "units": safe_float(
-                item.get(
-                    "units",
-                    0,
-                )
-            ),
-        })
-
-    return {
-        "currency": business.get(
-            "currency",
-            DEFAULT_CURRENCY,
-        ),
-        "period_days": days,
-        "total_revenue": money(
-            total_revenue
-        ),
-        "products": products,
-    }
-
-
-# =========================================================
-# ORDER ANALYTICS
-# =========================================================
-
-def orders_analytics(
-    user_id,
-    days=DEFAULT_DAYS,
-):
-    business = _require_business(
-        user_id
-    )
-
-    business_id = business["id"]
-
-    start, end = date_bounds(days)
-
-    result = list(
-        orders_collection().aggregate([
-            {
-                "$match": {
-                    "business_id": business_id,
-                    "created_at": {
-                        "$gte": start,
-                        "$lt": end,
-                    },
+                    "business_id": business_id
                 }
             },
             {
                 "$group": {
-                    "_id": "$status",
-                    "count": {
-                        "$sum": 1
-                    },
-                    "value": {
-                        "$sum": "$total_amount"
-                    },
-                }
-            },
-        ])
-    )
-
-    by_status = {}
-
-    total_orders = 0
-    total_value = 0.0
-
-    for item in result:
-
-        status = item.get(
-            "_id",
-            "unknown",
-        )
-
-        count = item.get(
-            "count",
-            0,
-        )
-
-        value = money(
-            item.get(
-                "value",
-                0,
-            )
-        )
-
-        by_status[status] = {
-            "count": count,
-            "value": value,
-        }
-
-        total_orders += count
-        total_value += value
-
-    return {
-        "currency": business.get(
-            "currency",
-            DEFAULT_CURRENCY,
-        ),
-        "period_days": days,
-        "total_orders": total_orders,
-        "total_value": money(
-            total_value
-        ),
-        "average_order_value": (
-            money(
-                total_value / total_orders
-            )
-            if total_orders
-            else 0.0
-        ),
-        "by_status": by_status,
-    }
-
-
-# =========================================================
-# CUSTOMER ANALYTICS
-# =========================================================
-
-def customers_analytics(
-    user_id,
-    days=DEFAULT_DAYS,
-):
-    business = _require_business(
-        user_id
-    )
-
-    business_id = business["id"]
-
-    start, end = date_bounds(days)
-
-    new_customers = customers_collection().count_documents({
-        "business_id": business_id,
-        "created_at": {
-            "$gte": start,
-            "$lt": end,
-        },
-    })
-
-    total_customers = customers_collection().count_documents({
-        "business_id": business_id
-    })
-
-    sales_customers = list(
-        sales_collection().aggregate([
-            {
-                "$match": {
-                    "business_id": business_id,
-                    "created_at": {
-                        "$gte": start,
-                        "$lt": end,
-                    },
-                    "customer_id": {
-                        "$exists": True,
-                        "$ne": None,
-                    },
-                }
-            },
-            {
-                "$group": {
-                    "_id": "$customer_id",
-                    "spent": {
+                    "_id": None,
+                    "total": {
                         "$sum": "$amount"
-                    },
-                    "transactions": {
-                        "$sum": 1
-                    },
-                }
-            },
-            {
-                "$sort": {
-                    "spent": -1
-                }
-            },
-            {
-                "$limit": 20
-            },
-        ])
-    )
-
-    top_customers = []
-
-    for item in sales_customers:
-
-        top_customers.append({
-            "customer_id": str(
-                item.get(
-                    "_id",
-                    "",
-                )
-            ),
-            "spent": money(
-                item.get(
-                    "spent",
-                    0,
-                )
-            ),
-            "transactions": item.get(
-                "transactions",
-                0,
-            ),
-        })
-
-    return {
-        "period_days": days,
-        "total_customers": total_customers,
-        "new_customers": new_customers,
-        "top_customers": top_customers,
-    }
-
-
-# =========================================================
-# PRODUCT ANALYTICS
-# =========================================================
-
-def products_analytics(
-    user_id,
-    days=DEFAULT_DAYS,
-):
-    business = _require_business(
-        user_id
-    )
-
-    business_id = business["id"]
-
-    start, end = date_bounds(days)
-
-    product_count = products_collection().count_documents({
-        "business_id": business_id,
-        "status": {
-            "$ne": PRODUCT_DELETED_STATUS
-        },
-    })
-
-    active_count = products_collection().count_documents({
-        "business_id": business_id,
-        "status": PRODUCT_ACTIVE_STATUS,
-    })
-
-    low_stock_count = products_collection().count_documents({
-        "business_id": business_id,
-        "status": PRODUCT_ACTIVE_STATUS,
-        "$expr": {
-            "$lte": [
-                "$stock_quantity",
-                {
-                    "$ifNull": [
-                        "$low_stock_threshold",
-                        5.0,
-                    ]
-                },
-            ]
-        },
-    })
-
-    top_products = list(
-        sales_collection().aggregate([
-            {
-                "$match": {
-                    "business_id": business_id,
-                    "created_at": {
-                        "$gte": start,
-                        "$lt": end,
-                    },
-                }
-            },
-            {
-                "$unwind": "$items"
-            },
-            {
-                "$group": {
-                    "_id": "$items.product_id",
-                    "name": {
-                        "$first": "$items.name"
-                    },
-                    "units": {
-                        "$sum": "$items.quantity"
-                    },
-                    "revenue": {
-                        "$sum": "$items.line_total"
-                    },
-                }
-            },
-            {
-                "$sort": {
-                    "units": -1,
-                    "revenue": -1,
-                }
-            },
-            {
-                "$limit": 20
-            },
-        ])
-    )
-
-    best_sellers = []
-
-    for item in top_products:
-
-        best_sellers.append({
-            "product_id": str(
-                item.get(
-                    "_id",
-                    "",
-                )
-            ),
-            "name": item.get(
-                "name",
-                "Product",
-            ),
-            "units": safe_float(
-                item.get(
-                    "units",
-                    0,
-                )
-            ),
-            "revenue": money(
-                item.get(
-                    "revenue",
-                    0,
-                )
-            ),
-        })
-
-    return {
-        "period_days": days,
-        "total_products": product_count,
-        "active_products": active_count,
-        "low_stock_products": low_stock_count,
-        "best_sellers": best_sellers,
-    }
-
-
-# =========================================================
-# EXPENSE ANALYTICS
-# =========================================================
-
-def expenses_analytics(
-    user_id,
-    days=DEFAULT_DAYS,
-):
-    business = _require_business(
-        user_id
-    )
-
-    business_id = business["id"]
-
-    start, end = date_bounds(days)
-
-    result = list(
-        expenses_collection().aggregate([
-            {
-                "$match": {
-                    "business_id": business_id,
-                    "created_at": {
-                        "$gte": start,
-                        "$lt": end,
-                    },
-                }
-            },
-            {
-                "$group": {
-                    "_id": {
-                        "$ifNull": [
-                            "$category",
-                            "Other",
-                        ]
-                    },
-                    "amount": {
-                        "$sum": "$amount"
-                    },
-                    "count": {
-                        "$sum": 1
-                    },
-                }
-            },
-            {
-                "$sort": {
-                    "amount": -1
+                    }
                 }
             },
         ])
     )
 
-    categories = []
-
-    total_expenses = 0.0
-
-    for item in result:
-
-        amount = money(
-            item.get(
-                "amount",
-                0,
-            )
+    total_sales = (
+        float(
+            sales_result[0]["total"]
         )
-
-        total_expenses += amount
-
-        categories.append({
-            "category": item.get(
-                "_id",
-                "Other",
-            ),
-            "amount": amount,
-            "count": item.get(
-                "count",
-                0,
-            ),
-        })
-
-    return {
-        "currency": business.get(
-            "currency",
-            DEFAULT_CURRENCY,
-        ),
-        "period_days": days,
-        "total_expenses": money(
-            total_expenses
-        ),
-        "categories": categories,
-    }
-
-
-# =========================================================
-# PROFIT ANALYTICS
-# =========================================================
-
-def profit_analytics(
-    user_id,
-    days=DEFAULT_DAYS,
-):
-    business = _require_business(
-        user_id
-    )
-
-    business_id = business["id"]
-
-    start, end = date_bounds(days)
-
-    revenue = aggregate_sum(
-        sales_collection(),
-        {
-            "business_id": business_id,
-            "created_at": {
-                "$gte": start,
-                "$lt": end,
-            },
-        },
-        "$amount",
-    )
-
-    expenses = aggregate_sum(
-        expenses_collection(),
-        {
-            "business_id": business_id,
-            "created_at": {
-                "$gte": start,
-                "$lt": end,
-            },
-        },
-        "$amount",
-    )
-
-    profit = money(
-        revenue - expenses
-    )
-
-    margin = (
-        round(
-            (profit / revenue) * 100,
-            2,
-        )
-        if revenue
+        if sales_result
         else 0.0
     )
 
+    total_expenses = (
+        float(
+            expenses_result[0]["total"]
+        )
+        if expenses_result
+        else 0.0
+    )
+
+    # -----------------------------------------------------
+    # COUNTS
+    # -----------------------------------------------------
+
+    product_count = products.count_documents({
+        "business_id": business_id,
+        "status": {
+            "$ne": "deleted"
+        },
+    })
+
+    low_stock_count = products.count_documents({
+        "business_id": business_id,
+        "status": "active",
+        "stock_quantity": {
+            "$lte": 5
+        },
+    })
+
+    customer_count = customers.count_documents({
+        "business_id": business_id
+    })
+
+    pending_orders = orders.count_documents({
+        "business_id": business_id,
+        "status": {
+            "$in": [
+                "pending",
+                "confirmed",
+                "processing",
+            ]
+        },
+    })
+
+    completed_orders = orders.count_documents({
+        "business_id": business_id,
+        "status": "completed",
+    })
+
     return {
-        "currency": business.get(
-            "currency",
-            DEFAULT_CURRENCY,
-        ),
-        "period_days": days,
-        "revenue": revenue,
-        "expenses": expenses,
-        "profit": profit,
-        "profit_margin": margin,
+        "business": business,
+
+        "metrics": {
+            "products": product_count,
+            "low_stock": low_stock_count,
+            "customers": customer_count,
+            "pending_orders": pending_orders,
+            "completed_orders": completed_orders,
+
+            "sales_total": total_sales,
+
+            "expenses_total": total_expenses,
+
+            "net_estimate": (
+                total_sales
+                - total_expenses
+            ),
+        },
     }

@@ -17,6 +17,7 @@ from backend.ai_gateway.context import get_ai_context
 from backend.ai_gateway.permissions import authorize_ai_request
 
 from backend.ai_gateway.biashara import run_biashara_operation
+from backend.jumuiya.core.errors import APIError
 
 ai_gateway_bp = Blueprint(
     "ai_gateway",
@@ -171,7 +172,7 @@ def ai_context():
         }
     ), 200
 
-@ai_gateway_bp.post("/biashara")
+@ai_gateway_bp.post("/biashara/intelligence")
 def biashara_intelligence():
     """
     Internal RevelaAI -> RevelaCode Biashara Intelligence gateway.
@@ -209,10 +210,17 @@ def biashara_intelligence():
     ).strip()
 
     # Existing service-to-service authorization.
-    authorize_ai_request(
-        request,
-        user_id,
-    )
+    
+    authorized, auth_error = authorize_ai_request(
+        request=request,
+        user_id=user_id,
+        )
+
+    if not authorized:
+        return jsonify({
+               "status": "error",
+               "message": auth_error or "Unauthorized",
+            }), 401
 
     operation = data.get(
         "operation"
