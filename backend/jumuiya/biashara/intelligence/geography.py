@@ -1,5 +1,3 @@
-# backend/jumuiya/biashara/intelligence/geography.py
-
 from __future__ import annotations
 
 import math
@@ -440,18 +438,15 @@ def normalize_area(
     """
     Normalize a configured market area.
 
-    Expected minimum structure:
+    The center is optional.
 
-        {
-            "id": "nyali",
-            "name": "Nyali",
-            "sub_county": "Nyali",
-            "county": "Mombasa",
-            "center": {
-                "latitude": ...,
-                "longitude": ...
-            }
-        }
+    Administrative datasets such as counties and
+    sub-counties may not contain coordinates. Such
+    records remain valid for explicit selection by
+    area ID/name.
+
+    A center is only required for geographic distance
+    calculations such as nearest-area lookup.
     """
 
     if not isinstance(
@@ -473,29 +468,6 @@ def normalize_area(
         raise ValueError(
             "Area name is required."
         )
-
-    center = area.get(
-        "center"
-    )
-
-    if not isinstance(
-        center,
-        dict,
-    ):
-        raise ValueError(
-            f"Area '{name}' requires a center object."
-        )
-
-    latitude, longitude = (
-        validate_coordinates(
-            center.get(
-                "latitude"
-            ),
-            center.get(
-                "longitude"
-            ),
-        )
-    )
 
     area_id = (
         str(
@@ -527,14 +499,46 @@ def normalize_area(
         name
     )
 
-    normalized[
+    center = area.get(
         "center"
-    ] = {
-        "latitude": latitude,
-        "longitude": longitude,
-    }
+    )
+
+    if center is None:
+        normalized[
+            "center"
+        ] = None
+
+    elif isinstance(
+        center,
+        dict,
+    ):
+
+        latitude, longitude = (
+            validate_coordinates(
+                center.get(
+                    "latitude"
+                ),
+                center.get(
+                    "longitude"
+                ),
+            )
+        )
+
+        normalized[
+            "center"
+        ] = {
+            "latitude": latitude,
+            "longitude": longitude,
+        }
+
+    else:
+
+        raise ValueError(
+            f"Area '{name}' has an invalid center object."
+        )
 
     if "sub_county" in normalized:
+
         normalized[
             "sub_county"
         ] = str(
@@ -544,11 +548,22 @@ def normalize_area(
         ).strip()
 
     if "county" in normalized:
+
         normalized[
             "county"
         ] = str(
             normalized[
                 "county"
+            ]
+        ).strip()
+
+    if "administrative_level" in normalized:
+
+        normalized[
+            "administrative_level"
+        ] = str(
+            normalized[
+                "administrative_level"
             ]
         ).strip()
 
@@ -564,7 +579,8 @@ def find_area(
     identifier: Any,
 ):
     """
-    Find an area by ID, name, or normalized name.
+    Find an area by ID, name, normalized name,
+    sub-county name, or county name.
     """
 
     if not isinstance(
@@ -590,9 +606,15 @@ def find_area(
         ):
             continue
 
-        area = normalize_area(
-            raw_area
-        )
+        try:
+
+            area = normalize_area(
+                raw_area
+            )
+
+        except ValueError:
+
+            continue
 
         candidates = {
             normalize_name(
@@ -610,7 +632,14 @@ def find_area(
                     "sub_county"
                 )
             ),
+            normalize_name(
+                area.get(
+                    "county"
+                )
+            ),
         }
+
+        candidates.discard("")
 
         if target in candidates:
             return area
@@ -630,6 +659,9 @@ def nearest_area(
     """
     Find the configured area closest to a geographic point.
 
+    Areas without a center are skipped because they cannot
+    participate in distance calculations.
+
     Returns the normalized area plus distance_km.
     """
 
@@ -648,24 +680,52 @@ def nearest_area(
 
     for raw_area in areas:
 
-        area = normalize_area(
-            raw_area
-        )
+        if not isinstance(
+            raw_area,
+            dict,
+        ):
+            continue
 
-        center = area[
+        try:
+
+            area = normalize_area(
+                raw_area
+            )
+
+        except ValueError:
+
+            continue
+
+        center = area.get(
             "center"
-        ]
-
-        distance = distance_km(
-            latitude,
-            longitude,
-            center[
-                "latitude"
-            ],
-            center[
-                "longitude"
-            ],
         )
+
+        if not isinstance(
+            center,
+            dict,
+        ):
+            continue
+
+        try:
+
+            distance = distance_km(
+                latitude,
+                longitude,
+                center[
+                    "latitude"
+                ],
+                center[
+                    "longitude"
+                ],
+            )
+
+        except (
+            KeyError,
+            TypeError,
+            ValueError,
+        ):
+
+            continue
 
         if (
             closest_distance is None
@@ -941,11 +1001,27 @@ def area_distance(
 ) -> float:
     """
     Calculate distance from an area center to a point.
+
+    This operation requires the area to have a center.
+    Administrative records without coordinates cannot be
+    used for distance calculations.
     """
 
     area = normalize_area(
         area
     )
+
+    center = area.get(
+        "center"
+    )
+
+    if not isinstance(
+        center,
+        dict,
+    ):
+        raise ValueError(
+            f"Area '{area.get('name', area.get('id', 'unknown'))}' has no geographic center."
+        )
 
     latitude, longitude = (
         validate_coordinates(
@@ -955,8 +1031,12 @@ def area_distance(
     )
 
     return distance_km(
-        area["center"]["latitude"],
-        area["center"]["longitude"],
+        center[
+            "latitude"
+        ],
+        center[
+            "longitude"
+        ],
         latitude,
         longitude,
     )

@@ -1,0 +1,69 @@
+{
+  "dataset": "kenya_market_signals",
+  "country": "Kenya",
+  "country_code": "KE",
+  "version": "2.0.0",
+  "source_status": "partial",
+  "generated_at": "2026-10-02T09:19:19.710008+00:00",
+  "refresh": {
+    "started_at": "2026-10-02T09:18:15.223806+00:00",
+    "completed_at": "2026-10-02T09:19:19.710008+00:00",
+    "status": "partial",
+    "successful_sources": [
+      "knbs_cpi"
+    ],
+    "failed_sources": [
+      "kamis",
+      "epra"
+    ],
+    "errors": {
+      "kamis": "HTTPSConnectionPool(host='kamis.kilimo.go.ke', port=443): Max retries exceeded with url: /site/market (Caused by ConnectTimeoutError(<HTTPSConnection(host='kamis.kilimo.go.ke', port=443) at 0x7d4206bc9160>, 'Connection to kamis.kilimo.go.ke timed out. (connect timeout=30)'))",
+      "epra": "HTTPSConnectionPool(host='www.epra.go.ke', port=443): Max retries exceeded with url: /EPRA%20Pump%20Prices (Caused by ConnectTimeoutError(<HTTPSConnection(host='www.epra.go.ke', port=443) at 0x7d4206d23ed0>, 'Connection to www.epra.go.ke timed out. (connect timeout=30)'))"
+    }
+  },
+  "sources": {
+    "kamis": {
+      "status": "unavailable",
+      "records": 0
+    },
+    "epra": {
+      "status": "unavailable",
+      "records": 0
+    },
+    "knbs_cpi": {
+      "status": "live",
+      "records": 1,
+      "fetched_at": "2026-10-02T09:19:19.709789+00:00",
+      "latest_observation_date": null,
+      "latest_period_end": null,
+      "reference_year": 2026,
+      "reference_month": "September",
+      "freshness": "fresh",
+      "source_url": "https://www.knbs.or.ke/reports/consumer-price-indices-and-inflation-rates-september-2026/"
+    }
+  },
+  "signals": {
+    "commodity_signals": [],
+    "fuel_signals": [],
+    "macro_price_signals": {
+      "reference_year": 2026,
+      "reference_month": "September",
+      "headline_inflation_percent": 6.8,
+      "food_non_alcoholic_beverages_percent": 9.5,
+      "transport_percent": 15.6,
+      "housing_water_electricity_gas_fuels_percent": 3.2
+    }
+  },
+  "raw": {
+    "kamis": [],
+    "epra": [],
+    "knbs_cpi": {
+      "reference_year": 2026,
+      "reference_month": "September",
+      "headline_inflation_percent": 6.8,
+      "food_non_alcoholic_beverages_percent": 9.5,
+      "transport_percent": 15.6,
+      "housing_water_electricity_gas_fuels_percent": 3.2
+    }
+  }
+}

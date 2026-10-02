@@ -15,6 +15,7 @@ from backend.jumuiya.biashara.intelligence.geography import (
     nearest_area,
     normalize_area,
     normalize_map_selection,
+    slugify_area,
 )
 
 from backend.jumuiya.biashara.intelligence.scoring import (
@@ -196,62 +197,244 @@ def _load_json_file(
 def load_areas() -> list[dict]:
     """
     Load configured geographic market areas.
+
+    Supported dataset structures:
+
+    1. ``{"areas": [...]}``
+    2. ``{"data": [...]}``
+    3. The Kenya administrative dataset using ``counties[]``
+       with nested ``sub_counties[]`` records.
+
+    Administrative records do not require coordinates. A center
+    is only required by operations that calculate geographic
+    distance, such as nearest-area resolution.
     """
 
     data = _load_json_file(
         AREAS_FILE,
-        [],
+        {},
     )
 
-    if isinstance(
+    if not isinstance(
         data,
         dict,
     ):
+        return []
 
-        areas = (
-            data.get(
-                "areas"
-            )
-            or data.get(
-                "data"
-            )
-            or []
-        )
+    # -----------------------------------------------------
+    # Generic configured areas
+    # -----------------------------------------------------
 
-    else:
+    configured_areas = data.get(
+        "areas"
+    )
 
-        areas = data
+    if isinstance(
+        configured_areas,
+        list,
+    ):
+
+        normalized = []
+
+        for item in configured_areas:
+
+            if not isinstance(
+                item,
+                dict,
+            ):
+                continue
+
+            try:
+                normalized.append(
+                    normalize_area(
+                        item
+                    )
+                )
+            except ValueError:
+                continue
+
+        return normalized
+
+    # -----------------------------------------------------
+    # Generic data[] structure
+    # -----------------------------------------------------
+
+    configured_data = data.get(
+        "data"
+    )
+
+    if isinstance(
+        configured_data,
+        list,
+    ):
+
+        normalized = []
+
+        for item in configured_data:
+
+            if not isinstance(
+                item,
+                dict,
+            ):
+                continue
+
+            try:
+                normalized.append(
+                    normalize_area(
+                        item
+                    )
+                )
+            except ValueError:
+                continue
+
+        return normalized
+
+    # -----------------------------------------------------
+    # Kenya counties / sub-counties structure
+    # -----------------------------------------------------
+
+    counties = data.get(
+        "counties"
+    )
 
     if not isinstance(
-        areas,
+        counties,
         list,
     ):
         return []
 
-    normalized = []
+    areas: list[dict] = []
 
-    for item in areas:
+    for county in counties:
 
         if not isinstance(
-            item,
+            county,
             dict,
         ):
             continue
 
-        try:
-
-            normalized.append(
-                normalize_area(
-                    item
-                )
+        county_name = as_string(
+            county.get(
+                "name"
             )
+        )
 
-        except ValueError:
-
+        if not county_name:
             continue
 
-    return normalized
+        county_id = (
+            as_string(
+                county.get(
+                    "id"
+                )
+            )
+            or as_string(
+                county.get(
+                    "code"
+                )
+            )
+            or slugify_area(
+                county_name
+            )
+        )
 
+        county_area = {
+            "id": county_id,
+            "name": county_name,
+            "county": county_name,
+            "capital": as_string(
+                county.get(
+                    "capital"
+                )
+            ),
+            "administrative_level": "county",
+        }
+
+        try:
+            areas.append(
+                normalize_area(
+                    county_area
+                )
+            )
+        except ValueError:
+            continue
+
+        # -------------------------------------------------
+        # Nested sub-counties
+        # -------------------------------------------------
+
+        sub_counties = county.get(
+            "sub_counties",
+            []
+        )
+
+        if not isinstance(
+            sub_counties,
+            list,
+        ):
+            continue
+
+        for sub_county in sub_counties:
+
+            if isinstance(
+                sub_county,
+                dict,
+            ):
+
+                sub_name = as_string(
+                    sub_county.get(
+                        "name"
+                    )
+                )
+
+                sub_id = (
+                    as_string(
+                        sub_county.get(
+                            "id"
+                        )
+                    )
+                    or as_string(
+                        sub_county.get(
+                            "code"
+                        )
+                    )
+                )
+
+            else:
+
+                sub_name = as_string(
+                    sub_county
+                )
+
+                sub_id = ""
+
+            if not sub_name:
+                continue
+
+            if not sub_id:
+                sub_id = (
+                    f"{county_id}-"
+                    f"{slugify_area(sub_name)}"
+                )
+
+            sub_area = {
+                "id": sub_id,
+                "name": sub_name,
+                "sub_county": sub_name,
+                "county": county_name,
+                "administrative_level": "sub_county",
+            }
+
+            try:
+                areas.append(
+                    normalize_area(
+                        sub_area
+                    )
+                )
+            except ValueError:
+                continue
+
+    return areas
 
 def load_demographics() -> dict:
     """
@@ -348,6 +531,11 @@ def _lookup_area_dataset(
 ) -> dict:
     """
     Find area-specific data using multiple identifiers.
+
+    Supports both dictionary-keyed datasets and list-based
+    administrative datasets such as ``counties[]``. For a
+    sub-county selection, the parent county is also considered
+    as a fallback because some public datasets are county-level.
     """
 
     if not isinstance(
@@ -374,11 +562,22 @@ def _lookup_area_dataset(
         )
     ).lower()
 
+    county = as_string(
+        area.get(
+            "county"
+        )
+    ).lower()
+
     candidates = [
         area_id,
         area_name,
         sub_county,
+        county,
     ]
+
+    # -----------------------------------------------------
+    # Direct dictionary lookup
+    # -----------------------------------------------------
 
     for candidate in candidates:
 
@@ -397,7 +596,10 @@ def _lookup_area_dataset(
             ):
                 return value
 
-    # Case-insensitive fallback.
+    # -----------------------------------------------------
+    # Case-insensitive dictionary lookup
+    # -----------------------------------------------------
+
     normalized_keys = {
         as_string(key).lower(): value
         for key, value in dataset.items()
@@ -418,8 +620,82 @@ def _lookup_area_dataset(
         ):
             return value
 
-    return {}
+    # -----------------------------------------------------
+    # List-based datasets
+    # -----------------------------------------------------
 
+    records = []
+
+    for key in (
+        "counties",
+        "areas",
+        "data",
+    ):
+
+        value = dataset.get(
+            key
+        )
+
+        if isinstance(
+            value,
+            list,
+        ):
+            records.extend(
+                value
+            )
+
+    for record in records:
+
+        if not isinstance(
+            record,
+            dict,
+        ):
+            continue
+
+        record_id = as_string(
+            record.get(
+                "id"
+            )
+        ).lower()
+
+        record_code = as_string(
+            record.get(
+                "code"
+            )
+        ).lower()
+
+        record_name = as_string(
+            record.get(
+                "name"
+            )
+        ).lower()
+
+        record_county = as_string(
+            record.get(
+                "county"
+            )
+        ).lower()
+
+        record_candidates = {
+            record_id,
+            record_code,
+            record_name,
+            record_county,
+        }
+
+        record_candidates.discard(
+            ""
+        )
+
+        for candidate in candidates:
+
+            if not candidate:
+                continue
+
+            if candidate.lower() in record_candidates:
+                return record
+
+    return {}
 
 def _lookup_category_dataset(
     dataset: dict,
@@ -870,10 +1146,18 @@ def resolve_economic_data(
     category: str = "",
 ) -> dict:
     """
-    Resolve current economic indicators.
+    Resolve current economic indicators from the configured
+    economic dataset.
 
-    Handles both direct indicators and category-specific
-    structures.
+    Supports:
+
+    - indicators: {...}
+    - direct scalar indicators
+    - sources: {...}
+    - categories: {...}
+
+    Source metadata is retained under ``sources`` so the
+    intelligence layer knows where the indicators came from.
     """
 
     if not isinstance(
@@ -882,7 +1166,11 @@ def resolve_economic_data(
     ):
         return {}
 
-    result = {}
+    result: dict = {}
+
+    # -----------------------------------------------------
+    # Direct indicators
+    # -----------------------------------------------------
 
     indicators = economic_dataset.get(
         "indicators"
@@ -892,27 +1180,74 @@ def resolve_economic_data(
         indicators,
         dict,
     ):
-
         result.update(
             indicators
         )
 
-    else:
+    # -----------------------------------------------------
+    # Direct scalar values
+    # -----------------------------------------------------
 
-        # Copy direct scalar indicators.
-        for key, value in economic_dataset.items():
+    for key, value in economic_dataset.items():
 
-            if isinstance(
-                value,
-                (
-                    int,
-                    float,
-                ),
+        if isinstance(
+            value,
+            (
+                int,
+                float,
+            ),
+        ):
+            result[key] = value
+
+    # -----------------------------------------------------
+    # Nested official source datasets
+    # -----------------------------------------------------
+
+    sources = economic_dataset.get(
+        "sources"
+    )
+
+    if isinstance(
+        sources,
+        dict,
+    ):
+
+        # Keep a normalized source map for transparency.
+        result["sources"] = {}
+
+        for source_name, source_data in sources.items():
+
+            if not isinstance(
+                source_data,
+                dict,
             ):
+                continue
 
-                result[
-                    key
-                ] = value
+            # Preserve complete source metadata.
+            result["sources"][
+                source_name
+            ] = dict(
+                source_data
+            )
+
+            # -------------------------------------------------
+            # Flatten known macroeconomic indicators
+            # -------------------------------------------------
+
+            for key, value in source_data.items():
+
+                if isinstance(
+                    value,
+                    (
+                        int,
+                        float,
+                    ),
+                ):
+                    result[key] = value
+
+    # -----------------------------------------------------
+    # Category-specific indicators
+    # -----------------------------------------------------
 
     categories = economic_dataset.get(
         "categories"
