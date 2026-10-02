@@ -13,8 +13,10 @@ Important:
 
 from flask import Blueprint, jsonify, request
 
-from .context import get_ai_context
-from .permissions import authorize_ai_request
+from backend.ai_gateway.context import get_ai_context
+from backend.ai_gateway.permissions import authorize_ai_request
+
+from backend.ai_gateway.biashara import run_biashara_operation
 
 ai_gateway_bp = Blueprint(
     "ai_gateway",
@@ -169,6 +171,71 @@ def ai_context():
         }
     ), 200
 
+@ai_gateway_bp.post("/biashara")
+def biashara_intelligence():
+    """
+    Internal RevelaAI -> RevelaCode Biashara Intelligence gateway.
+    """
+
+    data = request.get_json(
+        silent=True
+    )
+
+    if not isinstance(
+        data,
+        dict,
+    ):
+        raise APIError(
+            "JSON request body is required.",
+            400,
+            "invalid_json",
+        )
+
+    user_id = (
+        data.get("user_id")
+        or data.get("userId")
+        or data.get("user")
+    )
+
+    if not user_id:
+        raise APIError(
+            "user_id is required.",
+            422,
+            "missing_user_id",
+        )
+
+    user_id = str(
+        user_id
+    ).strip()
+
+    # Existing service-to-service authorization.
+    authorize_ai_request(
+        request,
+        user_id,
+    )
+
+    operation = data.get(
+        "operation"
+    )
+
+    payload = data.get(
+        "payload",
+        {},
+    )
+
+    result = run_biashara_operation(
+        user_id=user_id,
+        operation=operation,
+        payload=payload,
+    )
+
+    return jsonify({
+        "success": True,
+        "source": "revelacode_biashara_intelligence",
+        "domain": "biashara",
+        "user_id": user_id,
+        "data": result,
+    })
 
 @ai_gateway_bp.route("/<domain>", methods=["POST"])
 def domain_context(domain):
