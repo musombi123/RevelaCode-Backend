@@ -437,4 +437,35 @@ def ensure_indexes():
         ]
     )
 
+    db["jumuiya_community_posts"].create_index(
+        [
+            ("author_user_id", ASCENDING),
+            ("created_at", DESCENDING),
+        ]
+    )
+
+    db["jumuiya_community_posts"].create_index(
+        [
+            ("status", ASCENDING),
+            ("hub", ASCENDING),
+            ("created_at", DESCENDING),
+        ]
+    )
+
+    db["jumuiya_community_posts"].create_index(
+        [
+            ("status", ASCENDING),
+            ("type", ASCENDING),
+            ("created_at", DESCENDING),
+        ]
+    )
+
+    db["jumuiya_community_posts"].create_index(
+        [
+            ("status", ASCENDING),
+            ("location", ASCENDING),
+            ("created_at", DESCENDING),
+        ]
+    )
+
     return True
