@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
 from typing import Any, Iterable
 
@@ -20,7 +21,9 @@ from backend.jumuiya.community.models import (
     post_document,
 )
 
-from backend.jumuiya.notifications import services as notification_services
+from backend.jumuiya.notifications import (
+    services as notification_services,
+)
 
 
 # =========================================================
@@ -34,7 +37,7 @@ PROFILES = "jumuiya_profiles"
 
 
 # =========================================================
-# CONSTANTS
+# LIMITS
 # =========================================================
 
 DEFAULT_FEED_LIMIT = 30
@@ -43,6 +46,7 @@ MAX_FEED_LIMIT = 100
 DEFAULT_COMMENT_LIMIT = 100
 MAX_COMMENT_LIMIT = 200
 
+DEFAULT_SEARCH_LIMIT = 20
 MAX_SEARCH_LENGTH = 100
 
 DEFAULT_AUTHOR_NAME = "Community member"
@@ -62,11 +66,9 @@ def now_utc() -> datetime:
 
 def normalize_user_id(user_id: Any) -> str:
     """
-    Normalize the authenticated user identifier.
-
-    Community stores user references as strings because the same
-    identity bridge is used across Jumuiya.
+    Normalize the authenticated RevelaCode/Jumuiya user ID.
     """
+
     if user_id is None:
         raise APIError(
             "Authenticated user is required.",
@@ -88,11 +90,16 @@ def normalize_user_id(user_id: Any) -> str:
 
 def cid(value: Any) -> ObjectId:
     """
-    Convert an incoming resource ID to ObjectId.
+    Convert an incoming Mongo resource ID to ObjectId.
     """
+
     try:
         return ObjectId(str(value))
-    except (InvalidId, TypeError, ValueError):
+    except (
+        InvalidId,
+        TypeError,
+        ValueError,
+    ):
         raise APIError(
             "Invalid resource ID.",
             400,
@@ -106,8 +113,14 @@ def cid(value: Any) -> ObjectId:
 
 def _serialize_value(value: Any) -> Any:
     """
-    Recursively serialize Mongo/BSON values so nested structures
-    such as source/action/author are also API-safe.
+    Recursively serialize BSON/Mongo values.
+
+    This handles nested structures such as:
+
+        author
+        source
+        action
+        tags
     """
 
     if isinstance(value, ObjectId):
@@ -131,14 +144,18 @@ def _serialize_value(value: Any) -> Any:
     return value
 
 
-def serialize(doc: dict[str, Any] | None) -> dict[str, Any] | None:
+def serialize(
+    doc: dict[str, Any] | None,
+) -> dict[str, Any] | None:
     if not doc:
         return None
 
     output = dict(doc)
 
     if "_id" in output:
-        output["id"] = str(output.pop("_id"))
+        output["id"] = str(
+            output.pop("_id")
+        )
 
     return _serialize_value(output)
 
@@ -146,14 +163,15 @@ def serialize(doc: dict[str, Any] | None) -> dict[str, Any] | None:
 def serialize_many(
     docs: Iterable[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    return [
-        serialized
-        for serialized in (
-            serialize(doc)
-            for doc in docs
-        )
-        if serialized is not None
-    ]
+    output = []
+
+    for doc in docs:
+        serialized = serialize(doc)
+
+        if serialized is not None:
+            output.append(serialized)
+
+    return output
 
 
 # =========================================================
@@ -167,7 +185,10 @@ def _normalize_limit(
 ) -> int:
     try:
         value = int(value)
-    except (TypeError, ValueError):
+    except (
+        TypeError,
+        ValueError,
+    ):
         value = default
 
     return max(
@@ -183,6 +204,7 @@ def _normalize_text(
     required: bool = False,
     max_length: int | None = None,
 ) -> str | None:
+
     if value is None:
         if required:
             raise APIError(
@@ -190,6 +212,7 @@ def _normalize_text(
                 422,
                 "validation_error",
             )
+
         return None
 
     if not isinstance(value, str):
@@ -208,7 +231,10 @@ def _normalize_text(
             "validation_error",
         )
 
-    if max_length is not None and len(value) > max_length:
+    if (
+        max_length is not None
+        and len(value) > max_length
+    ):
         raise APIError(
             f"{field} is too long.",
             422,
@@ -218,85 +244,89 @@ def _normalize_text(
     return value
 
 
-def _normalize_hub(value: Any) -> str:
-    value = _normalize_text(
+def _normalize_search(
+    value: Any,
+) -> str | None:
+
+    if value is None:
+        return None
+
+    search = str(value).strip()
+
+    if not search:
+        return None
+
+    return search[:MAX_SEARCH_LENGTH]
+
+
+def _normalize_hub(
+    value: Any,
+) -> str:
+
+    hub = _normalize_text(
         value,
         "hub",
         required=True,
-        max_length=40,
+        max_length=30,
     )
 
-    value = value.lower()
+    if hub is None:
+        raise APIError(
+            "hub is required.",
+            422,
+            "validation_error",
+        )
 
-    if value not in COMMUNITY_HUBS:
+    hub = hub.lower()
+
+    if hub not in COMMUNITY_HUBS:
         raise APIError(
             "Invalid community hub.",
             422,
             "invalid_hub",
         )
 
-    return value
+    return hub
 
 
-def _normalize_post_type(value: Any) -> str:
-    value = _normalize_text(
+def _normalize_post_type(
+    value: Any,
+) -> str:
+
+    post_type = _normalize_text(
         value,
         "type",
         required=True,
-        max_length=50,
+        max_length=40,
     )
 
-    value = value.lower()
+    if post_type is None:
+        raise APIError(
+            "type is required.",
+            422,
+            "validation_error",
+        )
 
-    if value not in POST_TYPES:
+    post_type = post_type.lower()
+
+    if post_type not in POST_TYPES:
         raise APIError(
             "Invalid community post type.",
             422,
             "invalid_post_type",
         )
 
-    return value
-
-
-def _normalize_tags(value: Any) -> list[str]:
-    if value is None:
-        return []
-
-    if not isinstance(value, (list, tuple)):
-        raise APIError(
-            "tags must be an array.",
-            422,
-            "validation_error",
-        )
-
-    output: list[str] = []
-
-    for item in value:
-        if not isinstance(item, str):
-            continue
-
-        tag = item.strip().lower()
-
-        if not tag:
-            continue
-
-        if len(tag) > 40:
-            continue
-
-        if tag not in output:
-            output.append(tag)
-
-        if len(output) >= 10:
-            break
-
-    return output
+    return post_type
 
 
 # =========================================================
 # PUBLIC AUTHOR PROFILE
 # =========================================================
 
-def _fallback_author(user_id: str) -> dict[str, Any]:
+def _fallback_author(
+    user_id: str,
+) -> dict[str, Any]:
+
     return {
         "id": user_id,
         "name": DEFAULT_AUTHOR_NAME,
@@ -311,26 +341,34 @@ def _load_authors(
     user_ids: Iterable[str],
 ) -> dict[str, dict[str, Any]]:
     """
-    Batch-load public Jumuiya identity profiles.
+    Batch-load public Jumuiya profile information.
 
-    Private identity information such as phone/email is deliberately
-    excluded from Community responses.
+    Never exposes:
+        phone
+        email
+        credentials
+        private account fields
     """
 
     normalized_ids = {
         str(user_id).strip()
         for user_id in user_ids
-        if user_id is not None and str(user_id).strip()
+        if (
+            user_id is not None
+            and str(user_id).strip()
+        )
     }
 
     if not normalized_ids:
         return {}
 
-    documents = list(
+    profiles = list(
         collection(PROFILES).find(
             {
                 "user_id": {
-                    "$in": list(normalized_ids)
+                    "$in": list(
+                        normalized_ids
+                    )
                 }
             },
             {
@@ -345,14 +383,19 @@ def _load_authors(
         )
     )
 
-    output: dict[str, dict[str, Any]] = {
-        user_id: _fallback_author(user_id)
+    authors = {
+        user_id: _fallback_author(
+            user_id
+        )
         for user_id in normalized_ids
     }
 
-    for profile in documents:
+    for profile in profiles:
         user_id = str(
-            profile.get("user_id", "")
+            profile.get(
+                "user_id",
+                "",
+            )
         ).strip()
 
         if not user_id:
@@ -363,44 +406,68 @@ def _load_authors(
             or DEFAULT_AUTHOR_NAME
         )
 
-        output[user_id] = {
+        authors[user_id] = {
             "id": user_id,
-            "name": str(full_name).strip(),
-            "avatar_url": profile.get("avatar_url"),
-            "bio": profile.get("bio"),
-            "county": profile.get("county"),
-            "town": profile.get("town"),
+            "name": str(
+                full_name
+            ).strip(),
+            "avatar_url": profile.get(
+                "avatar_url"
+            ),
+            "bio": profile.get(
+                "bio"
+            ),
+            "county": profile.get(
+                "county"
+            ),
+            "town": profile.get(
+                "town"
+            ),
         }
 
-    return output
+    return authors
 
 
 def _attach_authors(
     documents: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
+
     if not documents:
         return documents
 
     author_ids = [
-        str(doc.get("author_user_id"))
-        for doc in documents
-        if doc.get("author_user_id") is not None
+        str(
+            document.get(
+                "author_user_id"
+            )
+        )
+        for document in documents
+        if document.get(
+            "author_user_id"
+        ) is not None
     ]
 
-    authors = _load_authors(author_ids)
+    authors = _load_authors(
+        author_ids
+    )
 
-    output: list[dict[str, Any]] = []
+    output = []
 
     for document in documents:
         item = dict(document)
 
         author_id = str(
-            item.get("author_user_id", "")
+            item.get(
+                "author_user_id",
+                "",
+            )
         ).strip()
 
         item["author"] = authors.get(
             author_id,
-            _fallback_author(author_id),
+            _fallback_author(
+                author_id
+            ),
         )
 
         output.append(item)
@@ -412,39 +479,31 @@ def _attach_authors(
 # POST HELPERS
 # =========================================================
 
-def _post_query(
-    *,
-    post_id: ObjectId,
-    user_id: str | None = None,
-) -> dict[str, Any] | None:
-    query: dict[str, Any] = {
-        "_id": post_id,
-        "status": "published",
-    }
-
-    if user_id is not None:
-        query["author_user_id"] = user_id
-
-    return collection(POSTS).find_one(query)
-
-
 def _ensure_post_type(
     data: dict[str, Any],
 ) -> dict[str, Any]:
     """
-    Keep backward compatibility with older clients that only send
-    category.
+    Backward compatibility for older clients.
 
-    Example:
-        category=question -> type=question
-        category=opportunity -> type=opportunity
+    Older clients may send:
+
+        category=question
+
+    without:
+
+        type=question
     """
 
     payload = dict(data)
 
     if not payload.get("type"):
+
         category = str(
-            payload.get("category", "general")
+            payload.get(
+                "category",
+                "discussion",
+            )
+            or "discussion"
         ).strip().lower()
 
         if category in POST_TYPES:
@@ -455,16 +514,16 @@ def _ensure_post_type(
     return payload
 
 
-def _validate_search(value: Any) -> str | None:
-    if value is None:
-        return None
+def _published_post(
+    post_id: ObjectId,
+) -> dict[str, Any] | None:
 
-    search = str(value).strip()
-
-    if not search:
-        return None
-
-    return search[:MAX_SEARCH_LENGTH]
+    return collection(POSTS).find_one(
+        {
+            "_id": post_id,
+            "status": "published",
+        }
+    )
 
 
 # =========================================================
@@ -475,25 +534,10 @@ def create_post(
     user_id: Any,
     data: dict[str, Any],
 ) -> dict[str, Any]:
-    """
-    Create a Community post.
 
-    Supports:
-        - title
-        - body
-        - category
-        - hub
-        - type
-        - tags
-        - location
-        - visibility
-        - source
-        - action
-
-    Validation remains centralized in community.models.
-    """
-
-    user_id = normalize_user_id(user_id)
+    user_id = normalize_user_id(
+        user_id
+    )
 
     if not isinstance(data, dict):
         raise APIError(
@@ -502,14 +546,15 @@ def create_post(
             "validation_error",
         )
 
-    payload = _ensure_post_type(data)
+    payload = _ensure_post_type(
+        data
+    )
 
     try:
         document = post_document(
             user_id,
             payload,
         )
-
     except ValueError as exc:
         raise APIError(
             str(exc),
@@ -517,11 +562,15 @@ def create_post(
             "validation_error",
         )
 
-    result = collection(POSTS).insert_one(
+    result = collection(
+        POSTS
+    ).insert_one(
         document
     )
 
-    document["_id"] = result.inserted_id
+    document["_id"] = (
+        result.inserted_id
+    )
 
     log_action(
         user_id,
@@ -529,9 +578,15 @@ def create_post(
         "community_post",
         result.inserted_id,
         {
-            "hub": document.get("hub"),
-            "category": document.get("category"),
-            "type": document.get("type"),
+            "hub": document.get(
+                "hub"
+            ),
+            "category": document.get(
+                "category"
+            ),
+            "type": document.get(
+                "type"
+            ),
         },
     )
 
@@ -539,7 +594,9 @@ def create_post(
         [document]
     )[0]
 
-    return serialize(hydrated)  # type: ignore[return-value]
+    return serialize(
+        hydrated
+    )  # type: ignore[return-value]
 
 
 # =========================================================
@@ -550,14 +607,17 @@ def get_post(
     user_id: Any,
     post_id: Any,
 ) -> dict[str, Any]:
-    """
-    Return a single published Community post.
-    """
 
-    user_id = normalize_user_id(user_id)
+    user_id = normalize_user_id(
+        user_id
+    )
 
-    document = _post_query(
-        post_id=cid(post_id)
+    post_object_id = cid(
+        post_id
+    )
+
+    document = _published_post(
+        post_object_id
     )
 
     if not document:
@@ -571,20 +631,27 @@ def get_post(
         [document]
     )[0]
 
-    reactions = collection(
+    reaction = collection(
         REACTIONS
     ).find_one(
         {
-            "post_id": str(document["_id"]),
+            "post_id": str(
+                post_object_id
+            ),
             "user_id": user_id,
-        }
+        },
+        {
+            "_id": 1,
+        },
     )
 
     hydrated["liked_by_me"] = bool(
-        reactions
+        reaction
     )
 
-    return serialize(hydrated)  # type: ignore[return-value]
+    return serialize(
+        hydrated
+    )  # type: ignore[return-value]
 
 
 # =========================================================
@@ -600,19 +667,19 @@ def feed(
     limit: int = DEFAULT_FEED_LIMIT,
 ) -> list[dict[str, Any]]:
     """
-    Return the published Community feed.
+    Canonical Community feed.
 
-    The return value intentionally remains a flat list.
+    Return value intentionally remains:
 
-    This preserves compatibility with:
-        - Web CommunityFeed
-        - CommunityDashboard
-        - Android clients
-        - Existing /feed API consumers
+        list[dict]
+
+    so existing Web and Android clients remain compatible.
     """
 
     normalized_user_id = (
-        normalize_user_id(user_id)
+        normalize_user_id(
+            user_id
+        )
         if user_id is not None
         else None
     )
@@ -624,50 +691,56 @@ def feed(
     )
 
     query: dict[str, Any] = {
-        "status": "published"
+        "status": "published",
+        "visibility": {
+            "$in": [
+                "public",
+                "community",
+            ]
+        },
     }
 
+    # -----------------------------------------------------
+    # CATEGORY
+    # -----------------------------------------------------
+
     if category:
-        query["category"] = str(
-            category
-        ).strip().lower()
+        query["category"] = (
+            str(category)
+            .strip()
+            .lower()
+        )
+
+    # -----------------------------------------------------
+    # HUB
+    # -----------------------------------------------------
 
     if hub:
-        hub = str(
+        query["hub"] = _normalize_hub(
             hub
-        ).strip().lower()
+        )
 
-        if hub not in COMMUNITY_HUBS:
-            raise APIError(
-                "Invalid community hub.",
-                422,
-                "invalid_hub",
-            )
-
-        query["hub"] = hub
+    # -----------------------------------------------------
+    # TYPE
+    # -----------------------------------------------------
 
     if post_type:
-        post_type = str(
+        query["type"] = _normalize_post_type(
             post_type
-        ).strip().lower()
+        )
 
-        if post_type not in POST_TYPES:
-            raise APIError(
-                "Invalid community post type.",
-                422,
-                "invalid_post_type",
-            )
+    # -----------------------------------------------------
+    # SEARCH
+    # -----------------------------------------------------
 
-        query["type"] = post_type
-
-    normalized_search = _validate_search(
+    normalized_search = _normalize_search(
         search
     )
 
     if normalized_search:
-        escaped = (
-            __import__("re")
-            .escape(normalized_search)
+
+        escaped = re.escape(
+            normalized_search
         )
 
         query["$or"] = [
@@ -697,6 +770,10 @@ def feed(
             },
         ]
 
+    # -----------------------------------------------------
+    # QUERY
+    # -----------------------------------------------------
+
     documents = list(
         collection(POSTS)
         .find(query)
@@ -712,6 +789,10 @@ def feed(
     if not documents:
         return []
 
+    # -----------------------------------------------------
+    # AUTHOR HYDRATION
+    # -----------------------------------------------------
+
     documents = _attach_authors(
         documents
     )
@@ -723,41 +804,53 @@ def feed(
     liked_post_ids: set[str] = set()
 
     if normalized_user_id:
+
         post_ids = [
-            str(doc["_id"])
-            for doc in documents
+            str(
+                document["_id"]
+            )
+            for document in documents
         ]
 
-        reaction_documents = collection(
-            REACTIONS
-        ).find(
-            {
-                "post_id": {
-                    "$in": post_ids
+        reaction_documents = (
+            collection(
+                REACTIONS
+            )
+            .find(
+                {
+                    "post_id": {
+                        "$in": post_ids
+                    },
+                    "user_id": normalized_user_id,
                 },
-                "user_id": normalized_user_id,
-            },
-            {
-                "post_id": 1
-            },
+                {
+                    "_id": 0,
+                    "post_id": 1,
+                },
+            )
         )
 
         liked_post_ids = {
-            str(reaction["post_id"])
+            str(
+                reaction["post_id"]
+            )
             for reaction in reaction_documents
         }
 
     # -----------------------------------------------------
-    # FINAL API SHAPE
+    # FINAL RESPONSE
     # -----------------------------------------------------
 
-    output: list[dict[str, Any]] = []
+    output = []
 
     for document in documents:
+
         item = dict(document)
 
         item["liked_by_me"] = (
-            str(item["_id"])
+            str(
+                item["_id"]
+            )
             in liked_post_ids
         )
 
@@ -781,16 +874,10 @@ def search(
     hub: str | None = None,
     category: str | None = None,
     post_type: str | None = None,
-    limit: int = DEFAULT_FEED_LIMIT,
+    limit: int = DEFAULT_SEARCH_LIMIT,
 ) -> list[dict[str, Any]]:
-    """
-    Dedicated Community search endpoint/service.
 
-    Internally reuses the same feed engine so ranking and response
-    shape remain consistent.
-    """
-
-    normalized_query = _validate_search(
+    normalized_query = _normalize_search(
         query
     )
 
@@ -798,7 +885,7 @@ def search(
         raise APIError(
             "Search query is required.",
             422,
-            "validation_error",
+            "search_query_required",
         )
 
     return feed(
@@ -807,7 +894,11 @@ def search(
         hub=hub,
         post_type=post_type,
         search=normalized_query,
-        limit=limit,
+        limit=_normalize_limit(
+            limit,
+            DEFAULT_SEARCH_LIMIT,
+            50,
+        ),
     )
 
 
@@ -820,13 +911,6 @@ def update_post(
     post_id: Any,
     data: dict[str, Any],
 ) -> dict[str, Any]:
-    """
-    Update an owned Community post.
-
-    Only public/editable post fields are accepted.
-    System fields such as counters, author, status and timestamps
-    are protected.
-    """
 
     user_id = normalize_user_id(
         user_id
@@ -862,11 +946,11 @@ def update_post(
             "post_not_found",
         )
 
-    allowed = {
+    allowed_fields = {
         "title",
         "body",
-        "category",
         "hub",
+        "category",
         "type",
         "tags",
         "location",
@@ -878,7 +962,7 @@ def update_post(
     update_payload = {
         key: value
         for key, value in data.items()
-        if key in allowed
+        if key in allowed_fields
     }
 
     if not update_payload:
@@ -889,39 +973,38 @@ def update_post(
         )
 
     # -----------------------------------------------------
-    # Merge old + new content and validate through model
+    # Build a complete candidate document and validate it
+    # through the canonical Community model.
     # -----------------------------------------------------
 
     merged = {
         "title": existing.get(
             "title",
-            ""
+            "",
         ),
         "body": existing.get(
             "body",
-            ""
-        ),
-        "category": existing.get(
-            "category",
-            "general",
+            "",
         ),
         "hub": existing.get(
             "hub",
             "community",
         ),
+        "category": existing.get(
+            "category",
+            "general",
+        ),
         "type": existing.get(
             "type",
-            existing.get(
-                "category",
-                "discussion",
-            ),
+            "discussion",
         ),
         "tags": existing.get(
             "tags",
             [],
         ),
         "location": existing.get(
-            "location"
+            "location",
+            "",
         ),
         "visibility": existing.get(
             "visibility",
@@ -950,7 +1033,6 @@ def update_post(
             user_id,
             merged,
         )
-
     except ValueError as exc:
         raise APIError(
             str(exc),
@@ -958,31 +1040,23 @@ def update_post(
             "validation_error",
         )
 
-    # Only use validated content fields.
-    content_fields = {
-        "title",
-        "body",
-        "category",
-        "hub",
-        "type",
-        "tags",
-        "location",
-        "visibility",
-        "source",
-        "action",
-    }
+    # -----------------------------------------------------
+    # Only update fields the caller requested.
+    # -----------------------------------------------------
 
-    safe_update = {
-        field: validated.get(field)
-        for field in content_fields
-        if field in update_payload or (
-            field == "type"
-            and "category" in update_payload
+    safe_update = {}
+
+    for field in update_payload:
+        safe_update[field] = validated.get(
+            field
         )
-    }
 
-    # Explicitly retain type when callers update both category/type.
-    if "type" in update_payload:
+    # If type is omitted but the existing document is a legacy
+    # post without a type, ensure it receives the canonical value.
+    if (
+        "type" not in safe_update
+        and not existing.get("type")
+    ):
         safe_update["type"] = validated.get(
             "type"
         )
@@ -1035,7 +1109,9 @@ def update_post(
         [document]
     )[0]
 
-    return serialize(hydrated)  # type: ignore[return-value]
+    return serialize(
+        hydrated
+    )  # type: ignore[return-value]
 
 
 # =========================================================
@@ -1046,11 +1122,6 @@ def delete_post(
     user_id: Any,
     post_id: Any,
 ) -> dict[str, Any]:
-    """
-    Soft-delete the post instead of physically removing it.
-
-    Moderation/audit history remains available.
-    """
 
     user_id = normalize_user_id(
         user_id
@@ -1095,32 +1166,53 @@ def delete_post(
 
     return {
         "deleted": True,
-        "id": str(post_object_id),
+        "id": str(
+            post_object_id
+        ),
     }
 
 
 # =========================================================
-# NOTIFICATION HELPERS
+# NOTIFICATIONS
 # =========================================================
 
 def _notify(
     recipient_user_id: Any,
-    data: dict[str, Any],
+    *,
+    title: str,
+    message: str,
+    notification_type: str,
+    data: dict[str, Any] | None = None,
 ) -> None:
     """
-    Notifications are secondary to the Community operation.
+    Send a Jumuiya notification.
 
-    A notification failure must never cause a successful comment
-    or reaction to become a 500 response.
+    IMPORTANT:
+    The current notification model only persists:
+
+        title
+        message
+        type
+        read
+        data
+        created_at
+
+    Therefore Community metadata must live inside `data`.
     """
 
     try:
         notification_services.notify(
             str(recipient_user_id),
-            data,
+            {
+                "title": title,
+                "message": message,
+                "type": notification_type,
+                "data": data or {},
+            },
         )
     except Exception:
-        # Notification infrastructure must not break Community.
+        # Community activity must not fail just because
+        # notification infrastructure is temporarily unavailable.
         pass
 
 
@@ -1131,37 +1223,49 @@ def _notify_post_author(
     notification_type: str,
     title: str,
     message: str,
+    extra_data: dict[str, Any] | None = None,
 ) -> None:
+
     author_user_id = str(
-        post.get("author_user_id", "")
+        post.get(
+            "author_user_id",
+            "",
+        )
     ).strip()
 
     if not author_user_id:
         return
 
-    # Never notify someone about their own activity.
+    # Never notify a user about their own activity.
     if author_user_id == actor_user_id:
         return
 
+    payload = {
+        "actor_user_id": actor_user_id,
+        "post_id": str(
+            post.get("_id")
+        ),
+        "hub": post.get(
+            "hub"
+        ),
+        "category": "community",
+        "link": (
+            f"/community/post/"
+            f"{post.get('_id')}"
+        ),
+    }
+
+    if extra_data:
+        payload.update(
+            extra_data
+        )
+
     _notify(
         author_user_id,
-        {
-            "type": notification_type,
-            "title": title,
-            "message": message,
-            "actor_user_id": actor_user_id,
-            "post_id": str(
-                post.get("_id")
-            ),
-            "hub": post.get("hub"),
-            "category": "community",
-            "link": (
-                f"/community/post/"
-                f"{post.get('_id')}"
-            ),
-            "read": False,
-            "created_at": now_utc(),
-        },
+        title=title,
+        message=message,
+        notification_type=notification_type,
+        data=payload,
     )
 
 
@@ -1174,9 +1278,6 @@ def add_comment(
     post_id: Any,
     body: str,
 ) -> dict[str, Any]:
-    """
-    Add a comment to a published post.
-    """
 
     user_id = normalize_user_id(
         user_id
@@ -1189,17 +1290,19 @@ def add_comment(
         max_length=5000,
     )
 
+    if body is None:
+        raise APIError(
+            "Comment cannot be empty.",
+            422,
+            "validation_error",
+        )
+
     post_object_id = cid(
         post_id
     )
 
-    post = collection(
-        POSTS
-    ).find_one(
-        {
-            "_id": post_object_id,
-            "status": "published",
-        }
+    post = _published_post(
+        post_object_id
     )
 
     if not post:
@@ -1233,7 +1336,7 @@ def add_comment(
     )
 
     # -----------------------------------------------------
-    # Update denormalized counter
+    # Increment comment counter only while post is published.
     # -----------------------------------------------------
 
     counter_update = collection(
@@ -1245,17 +1348,18 @@ def add_comment(
         },
         {
             "$inc": {
-                "comments_count": 1
+                "comments_count": 1,
             },
             "$set": {
-                "updated_at": timestamp
+                "updated_at": timestamp,
             },
         },
     )
 
-    # If the post became unavailable between the initial read
-    # and the counter update, roll back the inserted comment.
     if counter_update.matched_count != 1:
+
+        # Roll the comment back because its parent post
+        # is no longer available.
         collection(
             COMMENTS
         ).delete_one(
@@ -1283,7 +1387,7 @@ def add_comment(
     )
 
     # -----------------------------------------------------
-    # Notify post author
+    # Notify post owner
     # -----------------------------------------------------
 
     _notify_post_author(
@@ -1301,7 +1405,9 @@ def add_comment(
         [document]
     )[0]
 
-    return serialize(hydrated)  # type: ignore[return-value]
+    return serialize(
+        hydrated
+    )  # type: ignore[return-value]
 
 
 # =========================================================
@@ -1312,9 +1418,6 @@ def comments(
     post_id: Any,
     limit: int = DEFAULT_COMMENT_LIMIT,
 ) -> list[dict[str, Any]]:
-    """
-    Return published comments oldest-first.
-    """
 
     post_object_id = cid(
         post_id
@@ -1366,14 +1469,13 @@ def react(
     post_id: Any,
 ) -> dict[str, Any]:
     """
-    Toggle a user's like on a post.
+    Toggle a user's like.
 
-    Important:
-    - The reaction collection must have a unique compound index
-      on post_id + user_id.
-    - likes_count is changed only after a confirmed insert/delete.
-    - DuplicateKeyError is handled specifically rather than catching
-      every exception.
+    Requires the unique Mongo index:
+
+        post_id + user_id
+
+    on jumuiya_community_reactions.
     """
 
     user_id = normalize_user_id(
@@ -1392,11 +1494,8 @@ def react(
         REACTIONS
     )
 
-    post = posts.find_one(
-        {
-            "_id": post_object_id,
-            "status": "published",
-        }
+    post = _published_post(
+        post_object_id
     )
 
     if not post:
@@ -1417,20 +1516,27 @@ def react(
         reaction_filter
     )
 
+    # Used to distinguish a real insert from
+    # a concurrent duplicate request.
+    reaction_created = False
+    reaction_deleted = False
+
     # =====================================================
     # UNLIKE
     # =====================================================
 
     if existing:
+
         deletion = reactions.delete_one(
             {
                 "_id": existing["_id"]
             }
         )
 
-        # Only decrement if this request actually removed
-        # the reaction.
         if deletion.deleted_count == 1:
+
+            reaction_deleted = True
+
             posts.update_one(
                 {
                     "_id": post_object_id,
@@ -1455,6 +1561,7 @@ def react(
     # =====================================================
 
     else:
+
         reaction_document = {
             "post_id": str(
                 post_object_id
@@ -1464,11 +1571,13 @@ def react(
         }
 
         try:
+
             reactions.insert_one(
                 reaction_document
             )
 
-            # Increment only after a successful insert.
+            reaction_created = True
+
             posts.update_one(
                 {
                     "_id": post_object_id
@@ -1486,9 +1595,23 @@ def react(
             liked = True
 
         except DuplicateKeyError:
-            # Another concurrent request already inserted
-            # this user's reaction.
+
+            # Another concurrent request already created
+            # this exact user/post reaction.
+            concurrent_reaction = (
+                reactions.find_one(
+                    reaction_filter
+                )
+            )
+
+            if not concurrent_reaction:
+                raise
+
             liked = True
+
+    # =====================================================
+    # LATEST COUNTER
+    # =====================================================
 
     updated_post = posts.find_one(
         {
@@ -1501,22 +1624,36 @@ def react(
         },
     )
 
-    likes_count = (
-        max(
-            0,
-            int(
-                updated_post.get(
-                    "likes_count",
-                    0,
-                )
-            ),
-        )
-        if updated_post
-        else 0
-    )
+    likes_count = 0
 
-    # Notify only when the user actually liked the post.
-    if liked and existing is None and updated_post:
+    if updated_post:
+
+        try:
+            likes_count = max(
+                0,
+                int(
+                    updated_post.get(
+                        "likes_count",
+                        0,
+                    )
+                ),
+            )
+        except (
+            TypeError,
+            ValueError,
+        ):
+            likes_count = 0
+
+    # =====================================================
+    # NOTIFICATION
+    # =====================================================
+
+    if (
+        liked
+        and reaction_created
+        and updated_post
+    ):
+
         _notify_post_author(
             actor_user_id=user_id,
             post={
@@ -1546,7 +1683,8 @@ def react(
             },
         )
 
-    elif not liked and existing:
+    elif reaction_deleted:
+
         log_action(
             user_id,
             "community.post.unreacted",
@@ -1572,10 +1710,9 @@ def react(
 
 def stats() -> dict[str, Any]:
     """
-    Lightweight aggregate Community statistics.
+    Lightweight aggregate statistics.
 
-    Intended for dashboard/admin insight without exposing private
-    user information.
+    This service is intentionally separate from the public feed.
     """
 
     posts_collection = collection(
@@ -1586,26 +1723,33 @@ def stats() -> dict[str, Any]:
         COMMENTS
     )
 
-    published_posts = posts_collection.count_documents(
-        {
-            "status": "published"
-        }
+    published_posts = (
+        posts_collection.count_documents(
+            {
+                "status": "published"
+            }
+        )
     )
 
-    published_comments = comments_collection.count_documents(
-        {
-            "status": "published"
-        }
+    published_comments = (
+        comments_collection.count_documents(
+            {
+                "status": "published"
+            }
+        )
     )
 
-    hub_counts: dict[str, int] = {}
+    hub_counts = {}
 
     for hub in COMMUNITY_HUBS:
-        hub_counts[hub] = posts_collection.count_documents(
-            {
-                "status": "published",
-                "hub": hub,
-            }
+
+        hub_counts[hub] = (
+            posts_collection.count_documents(
+                {
+                    "status": "published",
+                    "hub": hub,
+                }
+            )
         )
 
     return {
