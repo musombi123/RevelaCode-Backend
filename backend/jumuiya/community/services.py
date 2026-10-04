@@ -35,6 +35,13 @@ COMMENTS = "jumuiya_community_comments"
 REACTIONS = "jumuiya_community_reactions"
 PROFILES = "jumuiya_profiles"
 
+BUSINESSES = "jumuiya_businesses"
+FARMERS = "jumuiya_farmers"
+FARMS = "jumuiya_farms"
+EDUCATION_PROFILES = "jumuiya_education_profiles"
+SCHOOLS = "jumuiya_schools"
+MARKETPLACE_LISTINGS = "jumuiya_marketplace_listings"
+
 
 # =========================================================
 # LIMITS
@@ -47,6 +54,8 @@ DEFAULT_COMMENT_LIMIT = 100
 MAX_COMMENT_LIMIT = 200
 
 DEFAULT_SEARCH_LIMIT = 20
+MAX_SEARCH_LIMIT = 50
+
 MAX_SEARCH_LENGTH = 100
 
 DEFAULT_AUTHOR_NAME = "Community member"
@@ -61,7 +70,7 @@ def now_utc() -> datetime:
 
 
 # =========================================================
-# IDS
+# IDS / USER
 # =========================================================
 
 def normalize_user_id(user_id: Any) -> str:
@@ -113,14 +122,7 @@ def cid(value: Any) -> ObjectId:
 
 def _serialize_value(value: Any) -> Any:
     """
-    Recursively serialize BSON/Mongo values.
-
-    This handles nested structures such as:
-
-        author
-        source
-        action
-        tags
+    Recursively serialize Mongo/BSON values.
     """
 
     if isinstance(value, ObjectId):
@@ -320,6 +322,542 @@ def _normalize_post_type(
 
 
 # =========================================================
+# HUB AUTHORIZATION
+# =========================================================
+
+def _ensure_hub_access(
+    user_id: str,
+    hub: str,
+) -> None:
+    """
+    Ensure a user is actually entitled to publish into a
+    hub-specific Community stream.
+
+    Community itself is available to every authenticated user.
+
+    Hub-specific streams require the matching profile:
+
+        biashara -> business
+        shamba   -> farmer/farm
+        elimu    -> education profile
+
+    This prevents false hub identity.
+    """
+
+    if hub == "community":
+        return
+
+    if hub == "biashara":
+        business = collection(
+            BUSINESSES
+        ).find_one(
+            {
+                "owner_user_id": user_id,
+                "status": "active",
+            },
+            {
+                "_id": 1,
+            },
+        )
+
+        if not business:
+            raise APIError(
+                "You need an active Biashara business profile "
+                "to publish in the Biashara community.",
+                403,
+                "hub_access_denied",
+            )
+
+        return
+
+    if hub == "shamba":
+        farmer = collection(
+            FARMERS
+        ).find_one(
+            {
+                "user_id": user_id,
+                "status": "active",
+            },
+            {
+                "_id": 1,
+            },
+        )
+
+        farm = collection(
+            FARMS
+        ).find_one(
+            {
+                "owner_user_id": user_id,
+                "status": "active",
+            },
+            {
+                "_id": 1,
+            },
+        )
+
+        if not farmer and not farm:
+            raise APIError(
+                "You need an active Shamba farmer or farm profile "
+                "to publish in the Shamba community.",
+                403,
+                "hub_access_denied",
+            )
+
+        return
+
+    if hub == "elimu":
+        education_profile = collection(
+            EDUCATION_PROFILES
+        ).find_one(
+            {
+                "user_id": user_id,
+                "status": "active",
+            },
+            {
+                "_id": 1,
+            },
+        )
+
+        school = collection(
+            SCHOOLS
+        ).find_one(
+            {
+                "owner_user_id": user_id,
+                "status": "active",
+            },
+            {
+                "_id": 1,
+            },
+        )
+
+        if not education_profile and not school:
+            raise APIError(
+                "You need an active Elimu profile or school account "
+                "to publish in the Elimu community.",
+                403,
+                "hub_access_denied",
+            )
+
+        return
+
+    raise APIError(
+        "Invalid community hub.",
+        422,
+        "invalid_hub",
+    )
+
+
+# =========================================================
+# SOURCE ENTITY AUTHORIZATION
+# =========================================================
+
+def _find_source_entity(
+    source_hub: str,
+    entity_type: str,
+    entity_id: str,
+    user_id: str,
+) -> dict[str, Any] | None:
+    """
+    Resolve an ecosystem source entity and verify ownership.
+
+    Supported source mappings:
+
+        biashara
+            business
+            product
+
+        shamba
+            farmer
+            farm
+            crop
+            harvest
+
+        elimu
+            education_profile
+            school
+            lesson
+            assignment
+            cbc_project
+
+        community
+            community_post
+
+        marketplace
+            listing
+    """
+
+    if not entity_id:
+        return None
+
+    # -----------------------------------------------------
+    # BIASHARA
+    # -----------------------------------------------------
+
+    if source_hub == "biashara":
+
+        if entity_type == "business":
+            return collection(
+                BUSINESSES
+            ).find_one(
+                {
+                    "_id": cid(entity_id),
+                    "owner_user_id": user_id,
+                }
+            )
+
+        if entity_type == "product":
+            product = collection(
+                "jumuiya_products"
+            ).find_one(
+                {
+                    "_id": cid(entity_id),
+                }
+            )
+
+            if not product:
+                return None
+
+            business = collection(
+                BUSINESSES
+            ).find_one(
+                {
+                    "_id": cid(
+                        product.get(
+                            "business_id"
+                        )
+                    ),
+                    "owner_user_id": user_id,
+                },
+                {
+                    "_id": 1,
+                },
+            )
+
+            return product if business else None
+
+    # -----------------------------------------------------
+    # SHAMBA
+    # -----------------------------------------------------
+
+    if source_hub == "shamba":
+
+        if entity_type == "farmer":
+            return collection(
+                FARMERS
+            ).find_one(
+                {
+                    "_id": cid(entity_id),
+                    "user_id": user_id,
+                }
+            )
+
+        if entity_type == "farm":
+            return collection(
+                FARMS
+            ).find_one(
+                {
+                    "_id": cid(entity_id),
+                    "owner_user_id": user_id,
+                }
+            )
+
+        if entity_type == "crop":
+            return collection(
+                "jumuiya_crops"
+            ).find_one(
+                {
+                    "_id": cid(entity_id),
+                    "owner_user_id": user_id,
+                }
+            )
+
+        if entity_type == "harvest":
+            return collection(
+                "jumuiya_harvests"
+            ).find_one(
+                {
+                    "_id": cid(entity_id),
+                    "owner_user_id": user_id,
+                }
+            )
+
+    # -----------------------------------------------------
+    # ELIMU
+    # -----------------------------------------------------
+
+    if source_hub == "elimu":
+
+        if entity_type == "education_profile":
+            return collection(
+                EDUCATION_PROFILES
+            ).find_one(
+                {
+                    "_id": cid(entity_id),
+                    "user_id": user_id,
+                }
+            )
+
+        if entity_type == "school":
+            return collection(
+                SCHOOLS
+            ).find_one(
+                {
+                    "_id": cid(entity_id),
+                    "owner_user_id": user_id,
+                }
+            )
+
+        if entity_type == "lesson":
+            return collection(
+                "jumuiya_lessons"
+            ).find_one(
+                {
+                    "_id": cid(entity_id),
+                    "author_user_id": user_id,
+                }
+            )
+
+        if entity_type == "assignment":
+            return collection(
+                "jumuiya_assignments"
+            ).find_one(
+                {
+                    "_id": cid(entity_id),
+                    "teacher_user_id": user_id,
+                }
+            )
+
+        if entity_type == "cbc_project":
+            return collection(
+                "jumuiya_cbc_projects"
+            ).find_one(
+                {
+                    "_id": cid(entity_id),
+                    "teacher_user_id": user_id,
+                }
+            )
+
+    # -----------------------------------------------------
+    # COMMUNITY
+    # -----------------------------------------------------
+
+    if source_hub == "community":
+
+        if entity_type == "community_post":
+            return collection(
+                POSTS
+            ).find_one(
+                {
+                    "_id": cid(entity_id),
+                    "author_user_id": user_id,
+                }
+            )
+
+    # -----------------------------------------------------
+    # MARKETPLACE
+    # -----------------------------------------------------
+
+    if source_hub == "marketplace":
+
+        if entity_type == "listing":
+            return collection(
+                MARKETPLACE_LISTINGS
+            ).find_one(
+                {
+                    "_id": cid(entity_id),
+                    "seller_user_id": user_id,
+                }
+            )
+
+    return None
+
+
+def _validate_source(
+    user_id: str,
+    source: Any,
+) -> dict[str, Any]:
+
+    if source is None:
+        return {}
+
+    if not isinstance(source, dict):
+        raise APIError(
+            "source must be an object.",
+            422,
+            "validation_error",
+        )
+
+    source_hub = str(
+        source.get(
+            "hub",
+            "",
+        )
+        or ""
+    ).strip().lower()
+
+    entity_type = str(
+        source.get(
+            "entity_type",
+            "",
+        )
+        or ""
+    ).strip().lower()
+
+    entity_id = str(
+        source.get(
+            "entity_id",
+            "",
+        )
+        or ""
+    ).strip()
+
+    if not (
+        source_hub
+        or entity_type
+        or entity_id
+    ):
+        return {}
+
+    if source_hub not in {
+        "community",
+        "biashara",
+        "shamba",
+        "elimu",
+        "marketplace",
+    }:
+        raise APIError(
+            "Invalid source hub.",
+            422,
+            "invalid_source",
+        )
+
+    if not entity_type:
+        raise APIError(
+            "source.entity_type is required.",
+            422,
+            "invalid_source",
+        )
+
+    if not entity_id:
+        raise APIError(
+            "source.entity_id is required.",
+            422,
+            "invalid_source",
+        )
+
+    try:
+        entity = _find_source_entity(
+            source_hub,
+            entity_type,
+            entity_id,
+            user_id,
+        )
+    except APIError:
+        raise
+    except (
+        InvalidId,
+        TypeError,
+        ValueError,
+    ):
+        raise APIError(
+            "Invalid source entity ID.",
+            422,
+            "invalid_source",
+        )
+
+    if not entity:
+        raise APIError(
+            "The referenced source entity was not found "
+            "or does not belong to you.",
+            403,
+            "source_access_denied",
+        )
+
+    return {
+        "hub": source_hub,
+        "entity_type": entity_type,
+        "entity_id": entity_id,
+    }
+
+
+# =========================================================
+# CTA / ACTION VALIDATION
+# =========================================================
+
+def _validate_action(
+    action: Any,
+) -> dict[str, Any]:
+
+    if action is None:
+        return {}
+
+    if not isinstance(action, dict):
+        raise APIError(
+            "action must be an object.",
+            422,
+            "validation_error",
+        )
+
+    action_type = str(
+        action.get(
+            "type",
+            "",
+        )
+        or ""
+    ).strip().lower()
+
+    action_label = str(
+        action.get(
+            "label",
+            "",
+        )
+        or ""
+    ).strip()
+
+    action_target = str(
+        action.get(
+            "target",
+            "",
+        )
+        or ""
+    ).strip()
+
+    if not (
+        action_type
+        or action_label
+        or action_target
+    ):
+        return {}
+
+    if len(action_type) > 50:
+        raise APIError(
+            "action.type is too long.",
+            422,
+            "validation_error",
+        )
+
+    if len(action_label) > 80:
+        raise APIError(
+            "action.label is too long.",
+            422,
+            "validation_error",
+        )
+
+    if len(action_target) > 300:
+        raise APIError(
+            "action.target is too long.",
+            422,
+            "validation_error",
+        )
+
+    return {
+        "type": action_type,
+        "label": action_label,
+        "target": action_target,
+    }
+
+
+# =========================================================
 # PUBLIC AUTHOR PROFILE
 # =========================================================
 
@@ -340,15 +878,6 @@ def _fallback_author(
 def _load_authors(
     user_ids: Iterable[str],
 ) -> dict[str, dict[str, Any]]:
-    """
-    Batch-load public Jumuiya profile information.
-
-    Never exposes:
-        phone
-        email
-        credentials
-        private account fields
-    """
 
     normalized_ids = {
         str(user_id).strip()
@@ -391,6 +920,7 @@ def _load_authors(
     }
 
     for profile in profiles:
+
         user_id = str(
             profile.get(
                 "user_id",
@@ -402,7 +932,9 @@ def _load_authors(
             continue
 
         full_name = (
-            profile.get("full_name")
+            profile.get(
+                "full_name"
+            )
             or DEFAULT_AUTHOR_NAME
         )
 
@@ -454,6 +986,7 @@ def _attach_authors(
     output = []
 
     for document in documents:
+
         item = dict(document)
 
         author_id = str(
@@ -470,7 +1003,9 @@ def _attach_authors(
             ),
         )
 
-        output.append(item)
+        output.append(
+            item
+        )
 
     return output
 
@@ -482,17 +1017,6 @@ def _attach_authors(
 def _ensure_post_type(
     data: dict[str, Any],
 ) -> dict[str, Any]:
-    """
-    Backward compatibility for older clients.
-
-    Older clients may send:
-
-        category=question
-
-    without:
-
-        type=question
-    """
 
     payload = dict(data)
 
@@ -518,7 +1042,9 @@ def _published_post(
     post_id: ObjectId,
 ) -> dict[str, Any] | None:
 
-    return collection(POSTS).find_one(
+    return collection(
+        POSTS
+    ).find_one(
         {
             "_id": post_id,
             "status": "published",
@@ -550,11 +1076,50 @@ def create_post(
         data
     )
 
+    hub = str(
+        payload.get(
+            "hub",
+            "community",
+        )
+        or "community"
+    ).strip().lower()
+
+    hub = _normalize_hub(
+        hub
+    )
+
+    _ensure_hub_access(
+        user_id,
+        hub,
+    )
+
+    # -----------------------------------------------------
+    # Source reference
+    # -----------------------------------------------------
+
+    if payload.get("source"):
+        payload["source"] = _validate_source(
+            user_id,
+            payload.get("source"),
+        )
+
+    # -----------------------------------------------------
+    # Action / CTA
+    # -----------------------------------------------------
+
+    if payload.get("action"):
+        payload["action"] = _validate_action(
+            payload.get("action")
+        )
+
+    payload["hub"] = hub
+
     try:
         document = post_document(
             user_id,
             payload,
         )
+
     except ValueError as exc:
         raise APIError(
             str(exc),
@@ -586,6 +1151,16 @@ def create_post(
             ),
             "type": document.get(
                 "type"
+            ),
+            "has_source": bool(
+                document.get(
+                    "source"
+                )
+            ),
+            "has_action": bool(
+                document.get(
+                    "action"
+                )
             ),
         },
     )
@@ -666,15 +1241,6 @@ def feed(
     search: str | None = None,
     limit: int = DEFAULT_FEED_LIMIT,
 ) -> list[dict[str, Any]]:
-    """
-    Canonical Community feed.
-
-    Return value intentionally remains:
-
-        list[dict]
-
-    so existing Web and Android clients remain compatible.
-    """
 
     normalized_user_id = (
         normalize_user_id(
@@ -705,11 +1271,14 @@ def feed(
     # -----------------------------------------------------
 
     if category:
-        query["category"] = (
-            str(category)
-            .strip()
-            .lower()
-        )
+        normalized_category = str(
+            category
+        ).strip().lower()
+
+        if normalized_category:
+            query["category"] = (
+                normalized_category
+            )
 
     # -----------------------------------------------------
     # HUB
@@ -771,7 +1340,7 @@ def feed(
         ]
 
     # -----------------------------------------------------
-    # QUERY
+    # FETCH
     # -----------------------------------------------------
 
     documents = list(
@@ -790,7 +1359,7 @@ def feed(
         return []
 
     # -----------------------------------------------------
-    # AUTHOR HYDRATION
+    # AUTHORS
     # -----------------------------------------------------
 
     documents = _attach_authors(
@@ -798,7 +1367,7 @@ def feed(
     )
 
     # -----------------------------------------------------
-    # PERSONAL REACTION STATE
+    # PERSONAL REACTIONS
     # -----------------------------------------------------
 
     liked_post_ids: set[str] = set()
@@ -838,7 +1407,7 @@ def feed(
         }
 
     # -----------------------------------------------------
-    # FINAL RESPONSE
+    # RESPONSE
     # -----------------------------------------------------
 
     output = []
@@ -897,7 +1466,7 @@ def search(
         limit=_normalize_limit(
             limit,
             DEFAULT_SEARCH_LIMIT,
-            50,
+            MAX_SEARCH_LIMIT,
         ),
     )
 
@@ -973,8 +1542,33 @@ def update_post(
         )
 
     # -----------------------------------------------------
-    # Build a complete candidate document and validate it
-    # through the canonical Community model.
+    # Hub authorization
+    # -----------------------------------------------------
+
+    target_hub = str(
+        update_payload.get(
+            "hub",
+            existing.get(
+                "hub",
+                "community",
+            ),
+        )
+        or "community"
+    ).strip().lower()
+
+    target_hub = _normalize_hub(
+        target_hub
+    )
+
+    _ensure_hub_access(
+        user_id,
+        target_hub,
+    )
+
+    update_payload["hub"] = target_hub
+
+    # -----------------------------------------------------
+    # Build complete candidate
     # -----------------------------------------------------
 
     merged = {
@@ -1028,11 +1622,41 @@ def update_post(
         merged
     )
 
+    # -----------------------------------------------------
+    # Validate source if changed
+    # -----------------------------------------------------
+
+    if "source" in update_payload:
+
+        merged["source"] = _validate_source(
+            user_id,
+            update_payload.get(
+                "source"
+            ),
+        )
+
+    # -----------------------------------------------------
+    # Validate action if changed
+    # -----------------------------------------------------
+
+    if "action" in update_payload:
+
+        merged["action"] = _validate_action(
+            update_payload.get(
+                "action"
+            )
+        )
+
+    # -----------------------------------------------------
+    # Model validation
+    # -----------------------------------------------------
+
     try:
         validated = post_document(
             user_id,
             merged,
         )
+
     except ValueError as exc:
         raise APIError(
             str(exc),
@@ -1041,7 +1665,7 @@ def update_post(
         )
 
     # -----------------------------------------------------
-    # Only update fields the caller requested.
+    # Keep only requested fields
     # -----------------------------------------------------
 
     safe_update = {}
@@ -1051,8 +1675,6 @@ def update_post(
             field
         )
 
-    # If type is omitted but the existing document is a legacy
-    # post without a type, ensure it receives the canonical value.
     if (
         "type" not in safe_update
         and not existing.get("type")
@@ -1185,19 +1807,8 @@ def _notify(
     data: dict[str, Any] | None = None,
 ) -> None:
     """
-    Send a Jumuiya notification.
-
-    IMPORTANT:
-    The current notification model only persists:
-
-        title
-        message
-        type
-        read
-        data
-        created_at
-
-    Therefore Community metadata must live inside `data`.
+    Current Jumuiya notification model stores metadata
+    inside `data`.
     """
 
     try:
@@ -1211,8 +1822,8 @@ def _notify(
             },
         )
     except Exception:
-        # Community activity must not fail just because
-        # notification infrastructure is temporarily unavailable.
+        # Notification infrastructure must never turn a successful
+        # Community action into a server error.
         pass
 
 
@@ -1236,7 +1847,6 @@ def _notify_post_author(
     if not author_user_id:
         return
 
-    # Never notify a user about their own activity.
     if author_user_id == actor_user_id:
         return
 
@@ -1335,10 +1945,6 @@ def add_comment(
         result.inserted_id
     )
 
-    # -----------------------------------------------------
-    # Increment comment counter only while post is published.
-    # -----------------------------------------------------
-
     counter_update = collection(
         POSTS
     ).update_one(
@@ -1358,8 +1964,6 @@ def add_comment(
 
     if counter_update.matched_count != 1:
 
-        # Roll the comment back because its parent post
-        # is no longer available.
         collection(
             COMMENTS
         ).delete_one(
@@ -1385,10 +1989,6 @@ def add_comment(
             )
         },
     )
-
-    # -----------------------------------------------------
-    # Notify post owner
-    # -----------------------------------------------------
 
     _notify_post_author(
         actor_user_id=user_id,
@@ -1468,15 +2068,6 @@ def react(
     user_id: Any,
     post_id: Any,
 ) -> dict[str, Any]:
-    """
-    Toggle a user's like.
-
-    Requires the unique Mongo index:
-
-        post_id + user_id
-
-    on jumuiya_community_reactions.
-    """
 
     user_id = normalize_user_id(
         user_id
@@ -1516,8 +2107,6 @@ def react(
         reaction_filter
     )
 
-    # Used to distinguish a real insert from
-    # a concurrent duplicate request.
     reaction_created = False
     reaction_deleted = False
 
@@ -1596,12 +2185,12 @@ def react(
 
         except DuplicateKeyError:
 
-            # Another concurrent request already created
-            # this exact user/post reaction.
-            concurrent_reaction = (
-                reactions.find_one(
-                    reaction_filter
-                )
+            # Another request already created the reaction.
+            concurrent_reaction = reactions.find_one(
+                reaction_filter,
+                {
+                    "_id": 1,
+                },
             )
 
             if not concurrent_reaction:
@@ -1610,7 +2199,7 @@ def react(
             liked = True
 
     # =====================================================
-    # LATEST COUNTER
+    # CURRENT COUNTER
     # =====================================================
 
     updated_post = posts.find_one(
@@ -1629,6 +2218,7 @@ def react(
     if updated_post:
 
         try:
+
             likes_count = max(
                 0,
                 int(
@@ -1638,10 +2228,12 @@ def react(
                     )
                 ),
             )
+
         except (
             TypeError,
             ValueError,
         ):
+
             likes_count = 0
 
     # =====================================================
@@ -1710,9 +2302,7 @@ def react(
 
 def stats() -> dict[str, Any]:
     """
-    Lightweight aggregate statistics.
-
-    This service is intentionally separate from the public feed.
+    Lightweight Community statistics.
     """
 
     posts_collection = collection(
