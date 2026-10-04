@@ -170,18 +170,150 @@ def update_scripture():
         "message": "Scripture updated successfully.",
         "modified": result.modified_count
     }), 200
-# ----------------------------
-# Study Material Upload
-# ----------------------------
+# =========================================================
+# STUDY MATERIAL — TEXT / FILE UPLOAD
+# =========================================================
 
 @admin_bp.route(
     "/admin/study/upload",
-    methods=["POST"]
+    methods=["POST"],
 )
 @require_role("admin")
 def upload_study_material():
 
-    db = get_db()
+    # -----------------------------------------------------
+    # FILE UPLOAD
+    # -----------------------------------------------------
+
+    if "file" in request.files:
+
+        file = request.files.get(
+            "file"
+        )
+
+        title = (
+            request.form.get(
+                "title"
+            )
+            or ""
+        ).strip()
+
+        category = (
+            request.form.get(
+                "category"
+            )
+            or ""
+        ).strip()
+
+        subcategory = (
+            request.form.get(
+                "subcategory"
+            )
+            or ""
+        ).strip()
+
+        year = (
+            request.form.get(
+                "year"
+            )
+            or ""
+        ).strip()
+
+        raw_tags = (
+            request.form.get(
+                "tags",
+                "[]",
+            )
+        )
+
+        try:
+            import json
+
+            tags = json.loads(
+                raw_tags
+            )
+
+            if not isinstance(
+                tags,
+                list,
+            ):
+                tags = []
+
+        except Exception:
+            tags = []
+
+        if not title:
+            return jsonify({
+                "success": False,
+                "message": (
+                    "Title is required."
+                ),
+            }), 400
+
+        if not category:
+            return jsonify({
+                "success": False,
+                "message": (
+                    "Category is required."
+                ),
+            }), 400
+
+        if not subcategory:
+            return jsonify({
+                "success": False,
+                "message": (
+                    "Subcategory is required."
+                ),
+            }), 400
+
+        if not file.filename:
+            return jsonify({
+                "success": False,
+                "message": (
+                    "No file selected."
+                ),
+            }), 400
+
+        result = (
+            LessonProcessor
+            .process_uploaded_file(
+                file,
+                title=title,
+                category=category,
+                subcategory=subcategory,
+                year=year,
+                tags=tags,
+            )
+        )
+
+        status_code = (
+            201
+            if result.get("success")
+            else 422
+        )
+
+        log_admin_action(
+            get_db(),
+            action="upload_study_document",
+            resource=title,
+            actor="admin",
+            metadata={
+                "category":
+                    category,
+                "subcategory":
+                    subcategory,
+                "filename":
+                    file.filename,
+            },
+        )
+
+        return jsonify(
+            result
+        ), status_code
+
+    # -----------------------------------------------------
+    # TEXT MATERIAL
+    # -----------------------------------------------------
 
     data = request.get_json(
         silent=True
@@ -209,62 +341,85 @@ def upload_study_material():
 
     tags = data.get(
         "tags",
-        []
+        [],
     )
 
-    if not all([
-        title,
-        category,
-        subcategory,
-        content
-    ]):
+    if not isinstance(
+        tags,
+        list,
+    ):
+        tags = []
 
+    if not title:
         return jsonify({
+            "success": False,
+            "message": (
+                "title is required."
+            ),
+        }), 400
 
-            "message":
-            "title, category, subcategory and content required"
+    if not category:
+        return jsonify({
+            "success": False,
+            "message": (
+                "category is required."
+            ),
+        }), 400
 
-        }),400
+    if not subcategory:
+        return jsonify({
+            "success": False,
+            "message": (
+                "subcategory is required."
+            ),
+        }), 400
 
+    if not content or not str(
+        content
+    ).strip():
+        return jsonify({
+            "success": False,
+            "message": (
+                "content is required."
+            ),
+        }), 400
 
     result = (
         LessonProcessor
         .process_text_material(
-
             title=title,
             category=category,
             subcategory=subcategory,
             content=content,
             year=year,
-            tags=tags
+            tags=tags,
         )
     )
 
+    status_code = (
+        201
+        if result.get("success")
+        else 409
+        if result.get("material")
+        else 422
+    )
+
     log_admin_action(
-
-        db,
-
+        get_db(),
         action="upload_study_material",
-
         resource=title,
-
         actor="admin",
-
         metadata={
-
             "category":
-            category,
-
+                category,
             "subcategory":
-            subcategory
-        }
+                subcategory,
+        },
     )
 
     return jsonify(
         result
-    ),201
-
-
+    ), status_code
 
 # ----------------------------
 # Study Materials List
