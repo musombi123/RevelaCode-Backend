@@ -34,2015 +34,2506 @@ from backend.jumuiya.shamba.farm_insights import (
 )
 
 
-# =========================================================
-# CONSTANTS
-# =========================================================
+# ============================================================
+# COLLECTIONS
+# ============================================================
 
 FARMERS = "jumuiya_farmers"
 FARMS = "jumuiya_farms"
 CROPS = "jumuiya_crops"
 ACTIVITIES = "jumuiya_farm_activities"
 HARVESTS = "jumuiya_harvests"
+
 INSIGHTS = "jumuiya_farm_insights"
 RECOMMENDATIONS = "jumuiya_farm_recommendations"
 ALERTS = "jumuiya_farm_alerts"
 
-ACTIVE_FARM_STATUSES = {
-    "active",
-    "operational",
-    "growing",
-    "planned",
-}
 
-DELETED_STATUS = "deleted"
+# ============================================================
+# GENERAL HELPERS
+# ============================================================
 
-
-# =========================================================
-# HELPERS
-# =========================================================
-
-def now_utc():
+def now_utc() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def clean_id(value):
+def clean_id(value: Any) -> str:
     """
-    Convert a MongoDB id string into ObjectId when possible.
+    Safely convert Mongo/ObjectId values into strings.
+    """
+    if isinstance(value, ObjectId):
+        return str(value)
 
-    Invalid ids are returned unchanged so Mongo queries can safely
-    fail without crashing the application.
+    if value is None:
+        return ""
+
+    return str(value)
+
+
+def object_id(value: Any) -> ObjectId:
+    """
+    Convert a value into ObjectId or raise a clean API error.
     """
     try:
-        return ObjectId(value)
-    except (InvalidId, TypeError):
-        return value
+        return ObjectId(str(value))
+    except (InvalidId, TypeError, ValueError):
+        raise APIError(
+            "Invalid resource identifier.",
+            400,
+            "invalid_id",
+        )
 
 
-def serialise(doc):
+def serialise(document: dict | None) -> dict | None:
     """
-    Convert MongoDB documents into JSON-safe dictionaries.
+    Convert Mongo document into frontend-safe JSON data.
     """
-
-    if not doc:
+    if not document:
         return None
 
-    out = dict(doc)
+    result = dict(document)
 
-    if "_id" in out:
-        out["id"] = str(out.pop("_id"))
+    if "_id" in result:
+        result["id"] = clean_id(result.pop("_id"))
 
-    for key, value in list(out.items()):
+    for key, value in list(result.items()):
         if isinstance(value, ObjectId):
-            out[key] = str(value)
+            result[key] = str(value)
 
-        elif isinstance(value, datetime):
-            out[key] = value.isoformat()
-
-        elif hasattr(value, "isoformat"):
-            try:
-                out[key] = value.isoformat()
-            except Exception:
-                pass
-
-    return out
+    return result
 
 
-def serialise_many(docs):
-    return [serialise(doc) for doc in docs]
+def serialise_many(documents: list[dict]) -> list[dict]:
+    return [
+        serialise(document)
+        for document in documents
+        if document
+    ]
 
 
-def _safe_float(value, default=0.0):
+def _collection(name: str):
+    return collection(name)
+
+
+def _owner_filter(user_id: str) -> dict:
+    return {
+        "owner_user_id": str(user_id),
+    }
+
+
+def _farm_filter(user_id: str, farm_id: str) -> dict:
+    return {
+        "owner_user_id": str(user_id),
+        "_id": object_id(farm_id),
+        "status": {"$ne": "deleted"},
+    }
+
+
+def _crop_filter(
+    user_id: str,
+    farm_id: str,
+    crop_id: str | None = None,
+) -> dict:
+    query = {
+        "owner_user_id": str(user_id),
+        "farm_id": str(farm_id),
+    }
+
+    if crop_id:
+        query["_id"] = object_id(crop_id)
+
+    return query
+
+
+def _safe_float(value: Any, default: float = 0.0) -> float:
     try:
-        if value is None:
+        if value in (None, ""):
             return default
-
         return float(value)
     except (TypeError, ValueError):
         return default
 
 
-def _safe_int(value, default=0):
+def _safe_int(value: Any, default: int = 0) -> int:
     try:
-        if value is None:
+        if value in (None, ""):
             return default
-
         return int(value)
     except (TypeError, ValueError):
         return default
 
 
-def _safe_list(value):
+def _list(value: Any) -> list:
+    if value is None:
+        return []
+
     if isinstance(value, list):
         return value
 
-    if value is None:
-        return []
+    if isinstance(value, tuple):
+        return list(value)
 
     return [value]
 
 
-def _percentage(value):
-    return round(_safe_float(value), 2)
+def _status_value(document: dict, default: str = "") -> str:
+    value = document.get("status", default)
 
-
-def _normalise_id(value):
     if value is None:
-        return None
+        return default
 
-    return str(value)
-
-
-def _get_farm_raw(user_id, farm_id):
-    """
-    Internal farm lookup.
-
-    Unlike get_farm(), this returns the raw MongoDB document.
-    """
-
-    return collection(FARMS).find_one(
-        {
-            "_id": clean_id(farm_id),
-            "owner_user_id": str(user_id),
-            "status": {"$ne": DELETED_STATUS},
-        }
-    )
+    return str(value).strip().lower()
 
 
-def _require_farm(user_id, farm_id):
-    """
-    Return a serialised farm or raise a consistent API error.
-    """
-
-    doc = _get_farm_raw(user_id, farm_id)
-
-    if not doc:
-        raise APIError(
-            "Farm not found.",
-            404,
-            "farm_not_found",
-        )
-
-    return serialise(doc)
-
-
-def _farm_exists(user_id, farm_id):
-    return _get_farm_raw(user_id, farm_id) is not None
-
-
-def _get_farm_crops(user_id, farm_id):
-    docs = collection(CROPS).find(
-        {
-            "owner_user_id": str(user_id),
-            "farm_id": str(farm_id),
-            "status": {"$ne": DELETED_STATUS},
-        }
-    ).sort(
-        "created_at",
-        -1,
-    )
-
-    return list(docs)
-
-
-def _get_farm_activities(user_id, farm_id):
-    docs = collection(ACTIVITIES).find(
-        {
-            "owner_user_id": str(user_id),
-            "farm_id": str(farm_id),
-        }
-    ).sort(
-        "activity_date",
-        -1,
-    )
-
-    return list(docs)
-
-
-def _get_farm_harvests(user_id, farm_id):
-    docs = collection(HARVESTS).find(
-        {
-            "owner_user_id": str(user_id),
-            "farm_id": str(farm_id),
-        }
-    ).sort(
-        "harvest_date",
-        -1,
-    )
-
-    return list(docs)
-
-
-def _get_weather_document(farm):
-    """
-    Weather data is intentionally read from the farm record first.
-
-    A future weather integration can populate:
-        weather
-        weather_snapshot
-        current_weather
-
-    without changing this service contract.
-    """
-
-    return (
-        farm.get("weather_snapshot")
-        or farm.get("weather")
-        or farm.get("current_weather")
-        or {}
-    )
-
-
-def _get_market_document(farm):
-    """
-    Market data can be populated by a future market integration.
-    """
-
-    return (
-        farm.get("market_snapshot")
-        or farm.get("market")
-        or {}
-    )
-
-
-def _build_farm_intelligence_payload(
-    user_id,
-    farm_id,
-):
-    """
-    Collect the complete farm intelligence dataset.
-    """
-
-    farm = _require_farm(
-        user_id,
-        farm_id,
-    )
-
-    farmer = get_farmer(user_id)
-
-    raw_crops = _get_farm_crops(
-        user_id,
-        farm_id,
-    )
-
-    raw_activities = _get_farm_activities(
-        user_id,
-        farm_id,
-    )
-
-    raw_harvests = _get_farm_harvests(
-        user_id,
-        farm_id,
-    )
-
-    crops = serialise_many(raw_crops)
-    activities = serialise_many(raw_activities)
-    harvests = serialise_many(raw_harvests)
-
-    weather = weather_snapshot(
-        _get_weather_document(farm)
-    )
-
-    market = market_snapshot(
-        _get_market_document(farm)
-    )
-
-    return {
-        "farmer": farmer,
-        "farm": farm,
-        "crops": crops,
-        "activities": activities,
-        "harvests": harvests,
-        "weather": weather,
-        "market": market,
-    }
-
-
-# =========================================================
+# ============================================================
 # FARMER PROFILE
-# =========================================================
+# ============================================================
 
-def get_farmer(user_id):
-    doc = collection(FARMERS).find_one(
+def get_farmer(user_id: str) -> dict | None:
+    document = _collection(FARMERS).find_one(
         {
-            "user_id": str(user_id)
+            "owner_user_id": str(user_id),
+            "status": {"$ne": "deleted"},
         }
     )
 
-    return serialise(doc)
+    return serialise(document)
 
 
-def create_or_update_farmer(user_id, data):
-    user_id = str(user_id)
+def create_or_update_farmer(
+    user_id: str,
+    payload: dict,
+) -> dict:
+    """
+    Create or update the farmer profile.
+    """
 
-    collection_ref = collection(FARMERS)
+    now = now_utc()
 
-    existing = collection_ref.find_one(
+    existing = _collection(FARMERS).find_one(
         {
-            "user_id": user_id
+            "owner_user_id": str(user_id),
+            "status": {"$ne": "deleted"},
         }
     )
 
     if existing:
-        allowed = [
-            "farm_name",
-            "farmer_name",
-            "phone",
-            "county",
-            "town",
-            "location",
-            "farm_size",
-            "farm_size_unit",
-            "farming_type",
-            "description",
-        ]
-
         update = {
-            key: data.get(
-                key,
-                existing.get(key, ""),
-            )
-            for key in allowed
+            **payload,
+            "owner_user_id": str(user_id),
+            "updated_at": now,
         }
 
-        update["updated_at"] = now_utc()
-
-        doc = collection_ref.find_one_and_update(
+        result = _collection(FARMERS).find_one_and_update(
             {
-                "_id": existing["_id"]
+                "_id": existing["_id"],
+                "owner_user_id": str(user_id),
             },
             {
-                "$set": update
+                "$set": update,
             },
             return_document=ReturnDocument.AFTER,
         )
 
         log_action(
             user_id,
-            "farmer.profile.updated",
-            "farmer",
-            doc["_id"],
+            "shamba_farmer_updated",
+            {
+                "farmer_id": clean_id(existing["_id"]),
+            },
         )
 
-        return serialise(doc)
+        return serialise(result)
 
-    doc = farmer_document(
-        user_id,
-        data,
+    document = farmer_document(
+        owner_user_id=str(user_id),
+        **payload,
     )
 
-    result = collection_ref.insert_one(doc)
+    document.setdefault("created_at", now)
+    document.setdefault("updated_at", now)
+    document.setdefault("status", "active")
 
-    doc["_id"] = result.inserted_id
+    result = _collection(FARMERS).insert_one(document)
+
+    created = _collection(FARMERS).find_one(
+        {"_id": result.inserted_id}
+    )
 
     log_action(
         user_id,
-        "farmer.profile.created",
-        "farmer",
-        result.inserted_id,
-    )
-
-    return serialise(doc)
-
-
-# =========================================================
-# FARM
-# =========================================================
-
-def create_farm(user_id, data):
-    user_id = str(user_id)
-
-    doc = farm_document(
-        user_id,
-        data,
-    )
-
-    result = collection(FARMS).insert_one(doc)
-
-    doc["_id"] = result.inserted_id
-
-    log_action(
-        user_id,
-        "farm.created",
-        "farm",
-        result.inserted_id,
-    )
-
-    return serialise(doc)
-
-
-def list_farms(user_id):
-    docs = collection(FARMS).find(
+        "shamba_farmer_created",
         {
-            "owner_user_id": str(user_id),
-            "status": {
-                "$ne": DELETED_STATUS
-            },
-        }
-    ).sort(
-        "created_at",
-        -1,
+            "farmer_id": clean_id(result.inserted_id),
+        },
     )
 
-    return serialise_many(docs)
+    return serialise(created)
 
 
-def get_farm(user_id, farm_id):
-    return _require_farm(
+# ============================================================
+# FARMS
+# ============================================================
+
+def create_farm(
+    user_id: str,
+    payload: dict,
+) -> dict:
+    document = farm_document(
+        owner_user_id=str(user_id),
+        **payload,
+    )
+
+    now = now_utc()
+
+    document.setdefault("created_at", now)
+    document.setdefault("updated_at", now)
+    document.setdefault("status", "active")
+
+    result = _collection(FARMS).insert_one(document)
+
+    farm = _collection(FARMS).find_one(
+        {"_id": result.inserted_id}
+    )
+
+    log_action(
         user_id,
-        farm_id,
+        "shamba_farm_created",
+        {
+            "farm_id": clean_id(result.inserted_id),
+        },
     )
 
+    return serialise(farm)
 
-def update_farm(user_id, farm_id, data):
-    allowed = [
-        "name",
-        "county",
-        "town",
-        "location",
-        "size",
-        "size_unit",
-        "soil_type",
-        "irrigation",
-        "description",
-    ]
+
+def list_farms(user_id: str) -> list[dict]:
+    farms = list(
+        _collection(FARMS)
+        .find(
+            {
+                "owner_user_id": str(user_id),
+                "status": {"$ne": "deleted"},
+            }
+        )
+        .sort("created_at", -1)
+    )
+
+    return serialise_many(farms)
+
+
+def get_farm(
+    user_id: str,
+    farm_id: str,
+) -> dict:
+    farm = _collection(FARMS).find_one(
+        _farm_filter(user_id, farm_id)
+    )
+
+    if not farm:
+        raise APIError(
+            "Farm not found.",
+            404,
+            "farm_not_found",
+        )
+
+    return serialise(farm)
+
+
+def update_farm(
+    user_id: str,
+    farm_id: str,
+    payload: dict,
+) -> dict:
+    farm = _collection(FARMS).find_one(
+        _farm_filter(user_id, farm_id)
+    )
+
+    if not farm:
+        raise APIError(
+            "Farm not found.",
+            404,
+            "farm_not_found",
+        )
 
     update = {
-        key: data[key]
-        for key in allowed
-        if key in data
+        **payload,
+        "updated_at": now_utc(),
     }
 
-    update["updated_at"] = now_utc()
-
-    doc = collection(FARMS).find_one_and_update(
+    result = _collection(FARMS).find_one_and_update(
+        _farm_filter(user_id, farm_id),
         {
-            "_id": clean_id(farm_id),
-            "owner_user_id": str(user_id),
-            "status": {
-                "$ne": DELETED_STATUS
-            },
-        },
-        {
-            "$set": update
+            "$set": update,
         },
         return_document=ReturnDocument.AFTER,
     )
 
-    if not doc:
+    log_action(
+        user_id,
+        "shamba_farm_updated",
+        {
+            "farm_id": str(farm_id),
+        },
+    )
+
+    return serialise(result)
+
+
+def delete_farm(
+    user_id: str,
+    farm_id: str,
+) -> dict:
+    farm = _collection(FARMS).find_one(
+        _farm_filter(user_id, farm_id)
+    )
+
+    if not farm:
         raise APIError(
-            "Farm not found or not owned by you.",
+            "Farm not found.",
             404,
             "farm_not_found",
         )
 
-    log_action(
-        user_id,
-        "farm.updated",
-        "farm",
-        doc["_id"],
-    )
-
-    return serialise(doc)
-
-
-def delete_farm(user_id, farm_id):
-    result = collection(FARMS).update_one(
-        {
-            "_id": clean_id(farm_id),
-            "owner_user_id": str(user_id),
-            "status": {
-                "$ne": DELETED_STATUS
-            },
-        },
+    result = _collection(FARMS).find_one_and_update(
+        _farm_filter(user_id, farm_id),
         {
             "$set": {
-                "status": DELETED_STATUS,
+                "status": "deleted",
                 "updated_at": now_utc(),
             }
         },
+        return_document=ReturnDocument.AFTER,
     )
-
-    if result.modified_count != 1:
-        raise APIError(
-            "Farm not found or not owned by you.",
-            404,
-            "farm_not_found",
-        )
 
     log_action(
         user_id,
-        "farm.deleted",
-        "farm",
-        farm_id,
+        "shamba_farm_deleted",
+        {
+            "farm_id": str(farm_id),
+        },
     )
 
-    return {
-        "deleted": True,
-        "id": str(farm_id),
-    }
+    return serialise(result)
 
 
-# =========================================================
+# ============================================================
 # FARM LOCATION
-# =========================================================
+# ============================================================
 
 def update_farm_location(
-    user_id,
-    farm_id,
-    latitude,
-    longitude,
-    accuracy=None,
-    source="gps",
-    county=None,
-    town=None,
-    location=None,
-):
+    user_id: str,
+    farm_id: str,
+    *,
+    latitude: Any,
+    longitude: Any,
+    accuracy: Any = None,
+    source: str = "browser_gps",
+    county: str | None = None,
+    town: str | None = None,
+    location: str | None = None,
+) -> dict:
     """
-    Persist the best available farm GPS location.
+    Persist the farmer's best available GPS position.
 
-    This is intentionally separate from farm_payload() so the
-    existing frontend does not have to change immediately.
+    This is a coordinate fix, not a farm-boundary measurement.
     """
 
-    latitude = _safe_float(latitude)
-    longitude = _safe_float(longitude)
+    lat = _safe_float(latitude)
+    lng = _safe_float(longitude)
 
-    if not -90 <= latitude <= 90:
+    if lat < -90 or lat > 90:
         raise APIError(
-            "Invalid latitude.",
+            "Latitude must be between -90 and 90.",
             422,
             "invalid_latitude",
         )
 
-    if not -180 <= longitude <= 180:
+    if lng < -180 or lng > 180:
         raise APIError(
-            "Invalid longitude.",
+            "Longitude must be between -180 and 180.",
             422,
             "invalid_longitude",
         )
 
     update = {
-        "latitude": latitude,
-        "longitude": longitude,
-        "location_source": source or "gps",
+        "latitude": lat,
+        "longitude": lng,
+        "location_accuracy": (
+            _safe_float(accuracy)
+            if accuracy is not None
+            else None
+        ),
+        "location_source": source or "browser_gps",
         "updated_at": now_utc(),
     }
 
-    if accuracy is not None:
-        update["location_accuracy"] = _safe_float(
-            accuracy
-        )
+    if county is not None:
+        update["county"] = county
 
-    if county:
-        update["county"] = str(county).strip()
+    if town is not None:
+        update["town"] = town
 
-    if town:
-        update["town"] = str(town).strip()
+    if location is not None:
+        update["location"] = location
 
-    if location:
-        update["location"] = str(location).strip()
-
-    doc = collection(FARMS).find_one_and_update(
+    result = _collection(FARMS).find_one_and_update(
+        _farm_filter(user_id, farm_id),
         {
-            "_id": clean_id(farm_id),
-            "owner_user_id": str(user_id),
-            "status": {
-                "$ne": DELETED_STATUS
-            },
-        },
-        {
-            "$set": update
+            "$set": update,
         },
         return_document=ReturnDocument.AFTER,
     )
 
-    if not doc:
+    if not result:
         raise APIError(
-            "Farm not found or not owned by you.",
+            "Farm not found.",
             404,
             "farm_not_found",
         )
 
     log_action(
         user_id,
-        "farm.location.updated",
-        "farm",
-        doc["_id"],
+        "shamba_farm_location_updated",
         {
-            "source": source or "gps"
+            "farm_id": str(farm_id),
+            "location_source": source,
         },
     )
 
-    return serialise(doc)
+    return serialise(result)
 
 
-# =========================================================
+# ============================================================
 # CROPS
-# =========================================================
+# ============================================================
 
-def create_crop(user_id, farm_id, data):
-    farm = _require_farm(
-        user_id,
-        farm_id,
+def create_crop(
+    user_id: str,
+    farm_id: str,
+    payload: dict,
+) -> dict:
+    farm = _collection(FARMS).find_one(
+        _farm_filter(user_id, farm_id)
     )
 
-    doc = crop_document(
-        str(user_id),
-        farm["id"],
-        data,
+    if not farm:
+        raise APIError(
+            "Farm not found.",
+            404,
+            "farm_not_found",
+        )
+
+    document = crop_document(
+        owner_user_id=str(user_id),
+        farm_id=str(farm_id),
+        **payload,
     )
 
-    result = collection(CROPS).insert_one(doc)
+    now = now_utc()
 
-    doc["_id"] = result.inserted_id
+    document.setdefault("created_at", now)
+    document.setdefault("updated_at", now)
+    document.setdefault("status", "growing")
+
+    result = _collection(CROPS).insert_one(document)
+
+    crop = _collection(CROPS).find_one(
+        {"_id": result.inserted_id}
+    )
 
     log_action(
         user_id,
-        "crop.created",
-        "crop",
-        result.inserted_id,
+        "shamba_crop_created",
         {
-            "farm_id": farm["id"]
+            "farm_id": str(farm_id),
+            "crop_id": clean_id(result.inserted_id),
         },
     )
 
-    return serialise(doc)
+    return serialise(crop)
 
 
-def list_crops(user_id, farm_id, status=None):
-    _require_farm(
-        user_id,
-        farm_id,
-    )
-
-    query = {
-        "owner_user_id": str(user_id),
-        "farm_id": str(farm_id),
-        "status": {
-            "$ne": DELETED_STATUS
-        },
-    }
+def list_crops(
+    user_id: str,
+    farm_id: str,
+    status: str | None = None,
+) -> list[dict]:
+    query = _crop_filter(user_id, farm_id)
 
     if status:
         query["status"] = status
 
-    docs = collection(CROPS).find(
-        query
-    ).sort(
-        "created_at",
-        -1,
+    crops = list(
+        _collection(CROPS)
+        .find(query)
+        .sort("created_at", -1)
     )
 
-    return serialise_many(docs)
+    return serialise_many(crops)
 
 
-def get_crop(user_id, farm_id, crop_id):
-    _require_farm(
-        user_id,
-        farm_id,
+def get_crop(
+    user_id: str,
+    farm_id: str,
+    crop_id: str,
+) -> dict:
+    crop = _collection(CROPS).find_one(
+        _crop_filter(
+            user_id,
+            farm_id,
+            crop_id,
+        )
     )
 
-    doc = collection(CROPS).find_one(
-        {
-            "_id": clean_id(crop_id),
-            "owner_user_id": str(user_id),
-            "farm_id": str(farm_id),
-            "status": {
-                "$ne": DELETED_STATUS
-            },
-        }
-    )
-
-    if not doc:
+    if not crop:
         raise APIError(
             "Crop not found.",
             404,
             "crop_not_found",
         )
 
-    return serialise(doc)
+    return serialise(crop)
 
 
-# =========================================================
-# CROP ANALYSIS
-# =========================================================
+# ============================================================
+# FARM ACTIVITIES
+# ============================================================
 
-def crop_analysis(
-    user_id,
-    farm_id,
-    crop_id,
-):
-    farm = _require_farm(
-        user_id,
-        farm_id,
+def create_activity(
+    user_id: str,
+    farm_id: str,
+    payload: dict,
+) -> dict:
+    farm = _collection(FARMS).find_one(
+        _farm_filter(user_id, farm_id)
     )
 
-    crop = get_crop(
-        user_id,
-        farm_id,
-        crop_id,
-    )
-
-    raw_activities = _get_farm_activities(
-        user_id,
-        farm_id,
-    )
-
-    raw_harvests = _get_farm_harvests(
-        user_id,
-        farm_id,
-    )
-
-    crop_harvests = [
-        item
-        for item in raw_harvests
-        if (
-            not crop.get("id")
-            or str(item.get("crop_id")) == str(crop["id"])
+    if not farm:
+        raise APIError(
+            "Farm not found.",
+            404,
+            "farm_not_found",
         )
-    ]
+
+    document = farm_activity_document(
+        owner_user_id=str(user_id),
+        farm_id=str(farm_id),
+        **payload,
+    )
+
+    now = now_utc()
+
+    document.setdefault("created_at", now)
+    document.setdefault("updated_at", now)
+
+    result = _collection(ACTIVITIES).insert_one(document)
+
+    activity = _collection(ACTIVITIES).find_one(
+        {"_id": result.inserted_id}
+    )
+
+    log_action(
+        user_id,
+        "shamba_activity_created",
+        {
+            "farm_id": str(farm_id),
+            "activity_id": clean_id(result.inserted_id),
+        },
+    )
+
+    return serialise(activity)
+
+
+def list_activities(
+    user_id: str,
+    farm_id: str,
+) -> list[dict]:
+    activities = list(
+        _collection(ACTIVITIES)
+        .find(
+            {
+                "owner_user_id": str(user_id),
+                "farm_id": str(farm_id),
+            }
+        )
+        .sort("activity_date", -1)
+    )
+
+    return serialise_many(activities)
+
+
+# ============================================================
+# HARVESTS
+# ============================================================
+
+def create_harvest(
+    user_id: str,
+    farm_id: str,
+    payload: dict,
+) -> dict:
+    farm = _collection(FARMS).find_one(
+        _farm_filter(user_id, farm_id)
+    )
+
+    if not farm:
+        raise APIError(
+            "Farm not found.",
+            404,
+            "farm_not_found",
+        )
+
+    document = harvest_document(
+        owner_user_id=str(user_id),
+        farm_id=str(farm_id),
+        **payload,
+    )
+
+    now = now_utc()
+
+    document.setdefault("created_at", now)
+    document.setdefault("updated_at", now)
+
+    # Keep sold inventory internally consistent.
+    quantity = _safe_float(document.get("quantity"))
+    document.setdefault("sold_quantity", 0)
+    document.setdefault(
+        "remaining_quantity",
+        quantity,
+    )
+
+    result = _collection(HARVESTS).insert_one(document)
+
+    harvest = _collection(HARVESTS).find_one(
+        {"_id": result.inserted_id}
+    )
+
+    log_action(
+        user_id,
+        "shamba_harvest_created",
+        {
+            "farm_id": str(farm_id),
+            "harvest_id": clean_id(result.inserted_id),
+        },
+    )
+
+    return serialise(harvest)
+
+
+def list_harvests(
+    user_id: str,
+    farm_id: str,
+) -> list[dict]:
+    harvests = list(
+        _collection(HARVESTS)
+        .find(
+            {
+                "owner_user_id": str(user_id),
+                "farm_id": str(farm_id),
+            }
+        )
+        .sort("harvest_date", -1)
+    )
+
+    return serialise_many(harvests)
+
+
+# ============================================================
+# WEATHER
+# ============================================================
+
+def _normalise_weather(
+    farm: dict,
+) -> dict:
+    raw = (
+        farm.get("weather_snapshot")
+        or farm.get("weather")
+        or farm.get("current_weather")
+        or {}
+    )
+
+    if not isinstance(raw, dict):
+        raw = {}
+
+    return weather_snapshot(
+        temperature=raw.get("temperature"),
+        humidity=raw.get("humidity"),
+        rainfall=raw.get("rainfall"),
+        rainfall_probability=raw.get(
+            "rainfall_probability"
+        ),
+        wind_speed=raw.get("wind_speed"),
+        condition=raw.get("condition", ""),
+        forecast_date=raw.get("forecast_date"),
+    )
+
+
+def _weather_available(
+    weather: dict,
+) -> bool:
+    fields = (
+        "temperature",
+        "humidity",
+        "rainfall",
+        "rainfall_probability",
+        "wind_speed",
+        "condition",
+    )
+
+    return any(
+        weather.get(field) not in (None, "")
+        for field in fields
+    )
+
+
+def get_weather(
+    user_id: str,
+    farm_id: str,
+) -> dict:
+    farm = _collection(FARMS).find_one(
+        _farm_filter(user_id, farm_id)
+    )
+
+    if not farm:
+        raise APIError(
+            "Farm not found.",
+            404,
+            "farm_not_found",
+        )
+
+    weather = _normalise_weather(farm)
+
+    return {
+        "farm_id": str(farm["_id"]),
+        "location": {
+            "county": farm.get("county", ""),
+            "town": farm.get("town", ""),
+            "location": farm.get("location", ""),
+            "latitude": farm.get("latitude"),
+            "longitude": farm.get("longitude"),
+            "accuracy": farm.get("location_accuracy"),
+        },
+        "available": _weather_available(weather),
+        "weather": serialise(weather),
+        "last_synced": farm.get("last_weather_sync"),
+    }
+
+
+# ============================================================
+# MARKET
+# ============================================================
+
+def _normalise_market(
+    farm: dict,
+) -> list[dict]:
+    raw = (
+        farm.get("market_snapshot")
+        or farm.get("market")
+        or []
+    )
+
+    if isinstance(raw, dict):
+        raw = [raw]
+
+    if not isinstance(raw, list):
+        return []
+
+    results = []
+
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+
+        crop_name = str(
+            item.get("crop_name")
+            or item.get("crop")
+            or ""
+        ).strip()
+
+        if not crop_name:
+            continue
+
+        results.append(
+            market_snapshot(
+                crop_name=crop_name,
+                price=item.get("price", 0),
+                previous_price=item.get(
+                    "previous_price",
+                    0,
+                ),
+                unit=item.get("unit", "kg"),
+                market=item.get("market", ""),
+                currency=item.get(
+                    "currency",
+                    "KES",
+                ),
+                demand_score=item.get(
+                    "demand_score",
+                    50,
+                ),
+            )
+        )
+
+    return results
+
+
+def get_market(
+    user_id: str,
+    farm_id: str,
+) -> dict:
+    farm = _collection(FARMS).find_one(
+        _farm_filter(user_id, farm_id)
+    )
+
+    if not farm:
+        raise APIError(
+            "Farm not found.",
+            404,
+            "farm_not_found",
+        )
+
+    market = _normalise_market(farm)
+
+    return {
+        "farm_id": str(farm["_id"]),
+        "market": serialise_many(market),
+        "available": bool(market),
+        "last_synced": farm.get("last_market_sync"),
+    }
+
+
+# ============================================================
+# FARM HEALTH SCORING
+# ============================================================
+
+def _soil_score(
+    farm: dict,
+) -> int:
+    explicit = farm.get("soil_score")
+
+    if explicit is not None:
+        return max(
+            0,
+            min(
+                100,
+                _safe_int(explicit, 50),
+            ),
+        )
+
+    fertility = str(
+        farm.get("soil_fertility", "")
+    ).lower()
+
+    if fertility in {
+        "excellent",
+        "very_high",
+    }:
+        return 90
+
+    if fertility in {
+        "good",
+        "high",
+    }:
+        return 75
+
+    if fertility in {
+        "poor",
+        "low",
+    }:
+        return 35
+
+    if farm.get("soil_type"):
+        return 65
+
+    return 50
+
+
+def _water_score(
+    farm: dict,
+) -> int:
+    explicit = farm.get("water_score")
+
+    if explicit is not None:
+        return max(
+            0,
+            min(
+                100,
+                _safe_int(explicit, 50),
+            ),
+        )
+
+    irrigation = bool(
+        farm.get("irrigation")
+        or farm.get("irrigation_available")
+    )
+
+    water_source = bool(
+        farm.get("water_source")
+    )
+
+    reliability = str(
+        farm.get("water_reliability", "")
+    ).lower()
+
+    if irrigation and reliability in {
+        "excellent",
+        "reliable",
+        "high",
+    }:
+        return 95
+
+    if irrigation and water_source:
+        return 85
+
+    if water_source:
+        return 65
+
+    if irrigation:
+        return 70
+
+    return 35
+
+
+def _crop_health_score(
+    crops: list[dict],
+) -> int:
+    if not crops:
+        return 50
+
+    values = []
+
+    mapping = {
+        "excellent": 95,
+        "healthy": 85,
+        "good": 80,
+        "moderate": 60,
+        "stressed": 40,
+        "poor": 30,
+        "critical": 15,
+        "diseased": 20,
+    }
+
+    for crop in crops:
+        explicit = crop.get("health_score")
+
+        if explicit is not None:
+            values.append(
+                max(
+                    0,
+                    min(
+                        100,
+                        _safe_int(
+                            explicit,
+                            50,
+                        ),
+                    ),
+                )
+            )
+            continue
+
+        status = str(
+            crop.get("health_status", "")
+        ).lower()
+
+        values.append(
+            mapping.get(status, 65)
+        )
+
+    return round(sum(values) / len(values))
+
+
+def _productivity_score(
+    farm: dict,
+    crops: list[dict],
+) -> int:
+    explicit = farm.get("productivity_score")
+
+    if explicit is not None:
+        return max(
+            0,
+            min(
+                100,
+                _safe_int(explicit, 50),
+            ),
+        )
+
+    performances = []
+
+    for crop in crops:
+        expected = _safe_float(
+            crop.get("expected_yield")
+        )
+
+        actual = _safe_float(
+            crop.get("actual_yield")
+        )
+
+        if expected > 0:
+            performances.append(
+                max(
+                    0,
+                    min(
+                        100,
+                        (actual / expected) * 100,
+                    ),
+                )
+            )
+
+    if performances:
+        return round(
+            sum(performances)
+            / len(performances)
+        )
+
+    return 50
+
+
+def _financial_score(
+    farm: dict,
+    crops: list[dict],
+) -> int:
+    explicit = farm.get("financial_score")
+
+    if explicit is not None:
+        return max(
+            0,
+            min(
+                100,
+                _safe_int(explicit, 50),
+            ),
+        )
+
+    total_cost = 0.0
+    total_revenue = 0.0
+
+    for crop in crops:
+        total_cost += _safe_float(
+            crop.get("actual_cost")
+            or crop.get("estimated_cost")
+        )
+
+        total_revenue += _safe_float(
+            crop.get("actual_revenue")
+            or crop.get("expected_revenue")
+        )
+
+    if total_revenue <= 0:
+        return 50
+
+    margin = (
+        (total_revenue - total_cost)
+        / total_revenue
+    ) * 100
+
+    return max(
+        0,
+        min(
+            100,
+            round(50 + margin),
+        ),
+    )
+
+
+def _risk_score(
+    farm: dict,
+    crops: list[dict],
+) -> int:
+    explicit = farm.get("risk_score")
+
+    if explicit is not None:
+        return max(
+            0,
+            min(
+                100,
+                _safe_int(explicit, 50),
+            ),
+        )
+
+    if not crops:
+        return 20
+
+    risks = []
+
+    for crop in crops:
+        analysis = calculate_crop_risk(
+            pest_risk=crop.get(
+                "pest_risk",
+                0,
+            ),
+            disease_risk=crop.get(
+                "disease_risk",
+                0,
+            ),
+            water_stress=crop.get(
+                "water_stress",
+                0,
+            ),
+            weather_risk=crop.get(
+                "weather_risk",
+                0,
+            ),
+            market_risk=crop.get(
+                "market_risk",
+                0,
+            ),
+        )
+
+        risks.append(
+            analysis["score"]
+        )
+
+    return round(
+        sum(risks) / len(risks)
+    )
+
+
+# ============================================================
+# CROP INTELLIGENCE
+# ============================================================
+
+def analyze_crop(
+    user_id: str,
+    farm_id: str,
+    crop_id: str,
+) -> dict:
+    crop = _collection(CROPS).find_one(
+        _crop_filter(
+            user_id,
+            farm_id,
+            crop_id,
+        )
+    )
+
+    if not crop:
+        raise APIError(
+            "Crop not found.",
+            404,
+            "crop_not_found",
+        )
+
+    risk = calculate_crop_risk(
+        pest_risk=crop.get(
+            "pest_risk",
+            0,
+        ),
+        disease_risk=crop.get(
+            "disease_risk",
+            0,
+        ),
+        water_stress=crop.get(
+            "water_stress",
+            0,
+        ),
+        weather_risk=crop.get(
+            "weather_risk",
+            0,
+        ),
+        market_risk=crop.get(
+            "market_risk",
+            0,
+        ),
+    )
 
     yield_analysis = calculate_yield_analysis(
-        crop,
-        crop_harvests,
+        expected_yield=crop.get(
+            "expected_yield",
+            0,
+        ),
+        actual_yield=crop.get(
+            "actual_yield",
+            0,
+        ),
+        area=crop.get(
+            "area",
+            0,
+        ),
+        area_unit=crop.get(
+            "area_unit",
+            "acres",
+        ),
+        yield_unit=crop.get(
+            "expected_yield_unit",
+            "kg",
+        ),
     )
 
     financials = calculate_crop_financials(
-        crop,
-        raw_activities,
-        crop_harvests,
-    )
-
-    risk = calculate_crop_risk(
-        crop,
-        farm,
-        weather_snapshot(
-            _get_weather_document(farm)
+        estimated_cost=crop.get(
+            "estimated_cost",
+            0,
         ),
-        market_snapshot(
-            _get_market_document(farm)
+        actual_cost=crop.get(
+            "actual_cost",
+            0,
+        ),
+        expected_revenue=crop.get(
+            "expected_revenue",
+            0,
+        ),
+        actual_revenue=crop.get(
+            "actual_revenue",
+            0,
+        ),
+        currency=crop.get(
+            "currency",
+            "KES",
         ),
     )
 
     return {
-        "farm": farm,
-        "crop": crop,
-        "yield": yield_analysis,
-        "financial": financials,
+        "crop": serialise(crop),
         "risk": risk,
-        "generated_at": now_utc().isoformat(),
+        "yield": yield_analysis,
+        "financials": financials,
+        "generated_at": now_utc(),
     }
 
 
-# =========================================================
-# FARM ACTIVITIES
-# =========================================================
-
-def create_activity(user_id, farm_id, data):
-    farm = _require_farm(
-        user_id,
-        farm_id,
-    )
-
-    doc = farm_activity_document(
-        str(user_id),
-        farm["id"],
-        data,
-    )
-
-    result = collection(ACTIVITIES).insert_one(doc)
-
-    doc["_id"] = result.inserted_id
-
-    log_action(
-        user_id,
-        "farm.activity.created",
-        "farm_activity",
-        result.inserted_id,
-        {
-            "farm_id": farm["id"]
-        },
-    )
-
-    return serialise(doc)
-
-
-def list_activities(user_id, farm_id):
-    farm = _require_farm(
-        user_id,
-        farm_id,
-    )
-
-    docs = collection(ACTIVITIES).find(
-        {
-            "owner_user_id": str(user_id),
-            "farm_id": farm["id"],
-        }
-    ).sort(
-        "created_at",
-        -1,
-    )
-
-    return serialise_many(docs)
-
-
-# =========================================================
-# HARVESTS
-# =========================================================
-
-def create_harvest(user_id, farm_id, data):
-    farm = _require_farm(
-        user_id,
-        farm_id,
-    )
-
-    doc = harvest_document(
-        str(user_id),
-        farm["id"],
-        data,
-    )
-
-    result = collection(HARVESTS).insert_one(doc)
-
-    doc["_id"] = result.inserted_id
-
-    log_action(
-        user_id,
-        "harvest.created",
-        "harvest",
-        result.inserted_id,
-        {
-            "farm_id": farm["id"]
-        },
-    )
-
-    return serialise(doc)
-
-
-def list_harvests(user_id, farm_id):
-    farm = _require_farm(
-        user_id,
-        farm_id,
-    )
-
-    docs = collection(HARVESTS).find(
-        {
-            "owner_user_id": str(user_id),
-            "farm_id": farm["id"],
-        }
-    ).sort(
-        "created_at",
-        -1,
-    )
-
-    return serialise_many(docs)
-
-
-# =========================================================
-# FARM HEALTH
-# =========================================================
-
-def farm_health(
-    user_id,
-    farm_id,
-):
-    payload = _build_farm_intelligence_payload(
-        user_id,
-        farm_id,
-    )
-
-    result = calculate_farm_health(
-        payload["farm"],
-        payload["crops"],
-        payload["activities"],
-        payload["harvests"],
-        payload["weather"],
-        payload["market"],
-    )
-
-    return {
-        "farm_id": str(farm_id),
-        "health": result,
-        "generated_at": now_utc().isoformat(),
-    }
-
-
-# =========================================================
+# ============================================================
 # FARM INSIGHTS
-# =========================================================
+# ============================================================
 
-def farm_insights(
-    user_id,
-    farm_id,
-):
-    payload = _build_farm_intelligence_payload(
-        user_id,
-        farm_id,
-    )
+def _generate_farm_recommendations(
+    *,
+    user_id: str,
+    farm: dict,
+    crops: list[dict],
+    health: dict,
+) -> list[dict]:
+    farm_id = clean_id(farm["_id"])
 
-    health = calculate_farm_health(
-        payload["farm"],
-        payload["crops"],
-        payload["activities"],
-        payload["harvests"],
-        payload["weather"],
-        payload["market"],
-    )
-
-    crop_analysis_items = []
-
-    for crop in payload["crops"]:
-        crop_harvests = [
-            harvest
-            for harvest in payload["harvests"]
-            if str(
-                harvest.get("crop_id")
-            ) == str(
-                crop.get("id")
-            )
-        ]
-
-        crop_risk = calculate_crop_risk(
-            crop,
-            payload["farm"],
-            payload["weather"],
-            payload["market"],
-        )
-
-        crop_yield = calculate_yield_analysis(
-            crop,
-            crop_harvests,
-        )
-
-        crop_financials = calculate_crop_financials(
-            crop,
-            payload["activities"],
-            crop_harvests,
-        )
-
-        crop_analysis_items.append(
-            {
-                "crop": crop,
-                "risk": crop_risk,
-                "yield": crop_yield,
-                "financial": crop_financials,
-            }
-        )
-
-    recommendations = _generate_recommendations(
-        payload,
-        health,
-        crop_analysis_items,
-    )
-
-    alerts = _generate_alerts(
-        payload,
-        health,
-        crop_analysis_items,
-    )
-
-    insight = farm_insight_document(
-        user_id=str(user_id),
-        farm=payload["farm"],
-        health=health,
-        crops=crop_analysis_items,
-        recommendations=recommendations,
-        alerts=alerts,
-    )
-
-    insight["generated_at"] = now_utc()
-
-    collection(INSIGHTS).update_one(
-        {
-            "owner_user_id": str(user_id),
-            "farm_id": str(farm_id),
-        },
-        {
-            "$set": insight
-        },
-        upsert=True,
-    )
-
-    stored = collection(INSIGHTS).find_one(
-        {
-            "owner_user_id": str(user_id),
-            "farm_id": str(farm_id),
-        }
-    )
-
-    return serialise(stored)
-
-
-# =========================================================
-# RECOMMENDATIONS
-# =========================================================
-
-def _generate_recommendations(
-    payload,
-    health,
-    crop_analysis_items,
-):
     recommendations = []
 
-    farm = payload["farm"]
-    weather = payload["weather"]
-    market = payload["market"]
-
-    health_score = _safe_float(
-        health.get("score")
-    )
-
-    if health_score < 50:
+    if health["components"]["water"] < 50:
         recommendations.append(
             recommendation_document(
-                category="farm_health",
-                priority="high",
-                title="Improve overall farm health",
-                message=(
-                    "Your farm health score indicates that "
-                    "one or more production factors need attention."
+                owner_user_id=str(user_id),
+                farm_id=farm_id,
+                title="Improve water security",
+                recommendation=(
+                    "Your farm currently has limited water "
+                    "security. Assess reliable water sources "
+                    "and consider irrigation where practical."
                 ),
-                action=(
-                    "Review soil, water availability, crop condition "
-                    "and recent farm activities before increasing production."
-                ),
-                confidence=0.82,
-                source="shamba_intelligence",
-            )
-        )
-
-    elif health_score >= 80:
-        recommendations.append(
-            recommendation_document(
-                category="farm_health",
-                priority="low",
-                title="Maintain current farm performance",
-                message=(
-                    "Your farm is currently showing strong operational indicators."
-                ),
-                action=(
-                    "Maintain your current practices and continue monitoring "
-                    "soil, water, crops and market conditions."
-                ),
-                confidence=0.84,
-                source="shamba_intelligence",
-            )
-        )
-
-    if not farm.get("irrigation"):
-        recommendations.append(
-            recommendation_document(
                 category="water",
-                priority="medium",
-                title="Strengthen water planning",
-                message=(
-                    "The farm does not currently indicate an irrigation system."
-                ),
-                action=(
-                    "Track rainfall and plan water availability before "
-                    "starting water-sensitive crops."
-                ),
-                confidence=0.78,
-                source="farm_profile",
-            )
-        )
-
-    rainfall = _safe_float(
-        weather.get("rainfall")
-        or weather.get("rainfall_mm")
-    )
-
-    if rainfall > 0:
-        recommendations.append(
-            recommendation_document(
-                category="weather",
-                priority="medium",
-                title="Monitor rainfall conditions",
-                message=(
-                    f"Recent rainfall data indicates approximately "
-                    f"{rainfall:.1f} mm."
-                ),
-                action=(
-                    "Adjust irrigation and field activities according "
-                    "to actual soil moisture and crop requirements."
-                ),
-                confidence=0.72,
-                source="weather_snapshot",
-            )
-        )
-
-    for item in crop_analysis_items:
-        crop = item.get("crop", {})
-        risk = item.get("risk", {})
-
-        risk_score = _safe_float(
-            risk.get("score")
-        )
-
-        crop_name = crop.get(
-            "name",
-            "Crop",
-        )
-
-        if risk_score >= 70:
-            recommendations.append(
-                recommendation_document(
-                    category="crop_risk",
-                    priority="high",
-                    title=f"Inspect {crop_name}",
-                    message=(
-                        f"{crop_name} is showing elevated production risk."
-                    ),
-                    action=(
-                        "Inspect the crop for pest, disease, water or "
-                        "weather stress and record the observation."
-                    ),
-                    confidence=0.80,
-                    source="crop_intelligence",
-                    crop_id=crop.get("id"),
-                )
-            )
-
-        yield_data = item.get(
-            "yield",
-            {},
-        )
-
-        performance = _safe_float(
-            yield_data.get("performance")
-        )
-
-        if performance and performance < 70:
-            recommendations.append(
-                recommendation_document(
-                    category="yield",
-                    priority="medium",
-                    title=f"Review {crop_name} productivity",
-                    message=(
-                        f"{crop_name} is currently performing below "
-                        "its expected yield."
-                    ),
-                    action=(
-                        "Review planting conditions, soil fertility, "
-                        "water, pests, disease and farm activities."
-                    ),
-                    confidence=0.76,
-                    source="yield_analysis",
-                    crop_id=crop.get("id"),
-                )
-            )
-
-    market_change = _safe_float(
-        market.get("change_percent")
-    )
-
-    if market_change >= 10:
-        recommendations.append(
-            recommendation_document(
-                category="market",
                 priority="high",
-                title="Market opportunity detected",
-                message=(
-                    "The available market data indicates a positive "
-                    "price movement."
-                ),
-                action=(
-                    "Compare current prices with nearby buyers before "
-                    "committing harvested produce."
-                ),
-                confidence=0.70,
-                source="market_snapshot",
+                confidence=88,
+                source="shamba_intelligence",
             )
         )
+
+    if health["components"]["soil"] < 50:
+        recommendations.append(
+            recommendation_document(
+                owner_user_id=str(user_id),
+                farm_id=farm_id,
+                title="Improve soil management",
+                recommendation=(
+                    "Your soil profile indicates that soil "
+                    "management deserves attention. Consider "
+                    "soil testing and an appropriate fertility plan."
+                ),
+                category="soil",
+                priority="high",
+                confidence=82,
+                source="shamba_intelligence",
+            )
+        )
+
+    if not crops:
+        recommendations.append(
+            recommendation_document(
+                owner_user_id=str(user_id),
+                farm_id=farm_id,
+                title="Add your first crop",
+                recommendation=(
+                    "Add the crops currently growing on this farm "
+                    "so Shamba can calculate yield, risk, financial "
+                    "and seasonal intelligence."
+                ),
+                category="farm_setup",
+                priority="normal",
+                confidence=98,
+                source="shamba_intelligence",
+            )
+        )
+
+    for crop in crops:
+        risk = calculate_crop_risk(
+            pest_risk=crop.get(
+                "pest_risk",
+                0,
+            ),
+            disease_risk=crop.get(
+                "disease_risk",
+                0,
+            ),
+            water_stress=crop.get(
+                "water_stress",
+                0,
+            ),
+            weather_risk=crop.get(
+                "weather_risk",
+                0,
+            ),
+            market_risk=crop.get(
+                "market_risk",
+                0,
+            ),
+        )
+
+        if risk["score"] >= 60:
+            recommendations.append(
+                recommendation_document(
+                    owner_user_id=str(user_id),
+                    farm_id=farm_id,
+                    crop_id=clean_id(
+                        crop["_id"]
+                    ),
+                    title=(
+                        f"Review {crop.get('name', 'crop')} risk"
+                    ),
+                    recommendation=(
+                        f"{crop.get('name', 'This crop')} "
+                        f"currently has a {risk['level']} risk "
+                        "profile. Review water, pest, disease, "
+                        "weather and market conditions before "
+                        "the next major farm decision."
+                    ),
+                    category="crop_risk",
+                    priority=(
+                        "high"
+                        if risk["score"] >= 80
+                        else "normal"
+                    ),
+                    confidence=85,
+                    source="crop_intelligence",
+                )
+            )
+
+        expected = _safe_float(
+            crop.get("expected_yield")
+        )
+        actual = _safe_float(
+            crop.get("actual_yield")
+        )
+
+        if expected > 0 and actual > 0:
+            performance = (
+                actual / expected
+            ) * 100
+
+            if performance < 70:
+                recommendations.append(
+                    recommendation_document(
+                        owner_user_id=str(user_id),
+                        farm_id=farm_id,
+                        crop_id=clean_id(
+                            crop["_id"]
+                        ),
+                        title=(
+                            f"Investigate {crop.get('name', 'crop')} yield"
+                        ),
+                        recommendation=(
+                            f"{crop.get('name', 'This crop')} "
+                            f"is currently performing at "
+                            f"{performance:.0f}% of expected yield. "
+                            "Review planting conditions, nutrition, "
+                            "water availability, pests and disease."
+                        ),
+                        category="yield",
+                        priority="high",
+                        confidence=90,
+                        source="yield_analysis",
+                    )
+                )
 
     return recommendations
 
 
-# =========================================================
-# ALERTS
-# =========================================================
+def _generate_farm_alerts(
+    *,
+    user_id: str,
+    farm: dict,
+    crops: list[dict],
+    health: dict,
+) -> list[dict]:
+    farm_id = clean_id(farm["_id"])
 
-def _generate_alerts(
-    payload,
-    health,
-    crop_analysis_items,
-):
     alerts = []
 
-    farm = payload["farm"]
-    weather = payload["weather"]
-
-    health_score = _safe_float(
-        health.get("score")
-    )
-
-    if health_score < 40:
+    if health["score"] < 40:
         alerts.append(
             alert_document(
-                category="farm_health",
-                severity="critical",
+                owner_user_id=str(user_id),
+                farm_id=farm_id,
                 title="Farm health requires attention",
                 message=(
-                    "Several farm indicators are currently weak."
+                    "The current farm health score is low. "
+                    "Review soil, water, crop health, "
+                    "productivity and financial indicators."
                 ),
-                action=(
-                    "Review soil, water, crop and financial conditions "
-                    "before making major production decisions."
-                ),
+                alert_type="farm_health",
+                severity="critical",
+                action="Open Farm Health",
                 source="shamba_intelligence",
             )
         )
 
-    elif health_score < 60:
+    elif health["score"] < 60:
         alerts.append(
             alert_document(
-                category="farm_health",
-                severity="warning",
+                owner_user_id=str(user_id),
+                farm_id=farm_id,
                 title="Farm health needs monitoring",
                 message=(
-                    "Your farm health score is below the preferred range."
+                    "Your farm health is moderate. "
+                    "Review the recommended actions before "
+                    "the situation becomes more serious."
                 ),
-                action=(
-                    "Review the health recommendations and address "
-                    "the weakest indicators."
-                ),
+                alert_type="farm_health",
+                severity="warning",
+                action="Review recommendations",
                 source="shamba_intelligence",
             )
         )
 
-    if not farm.get("water_source") and not farm.get("irrigation"):
-        alerts.append(
-            alert_document(
-                category="water",
-                severity="warning",
-                title="Water source not recorded",
-                message=(
-                    "No reliable farm water source is currently recorded."
-                ),
-                action=(
-                    "Add your water source and plan water availability "
-                    "before the next production cycle."
-                ),
-                source="farm_profile",
-            )
+    for crop in crops:
+        risk = calculate_crop_risk(
+            pest_risk=crop.get(
+                "pest_risk",
+                0,
+            ),
+            disease_risk=crop.get(
+                "disease_risk",
+                0,
+            ),
+            water_stress=crop.get(
+                "water_stress",
+                0,
+            ),
+            weather_risk=crop.get(
+                "weather_risk",
+                0,
+            ),
+            market_risk=crop.get(
+                "market_risk",
+                0,
+            ),
         )
 
-    temperature = _safe_float(
-        weather.get("temperature")
-    )
-
-    if temperature >= 35:
-        alerts.append(
-            alert_document(
-                category="weather",
-                severity="warning",
-                title="High temperature conditions",
-                message=(
-                    f"Recorded temperature is approximately "
-                    f"{temperature:.1f}°C."
-                ),
-                action=(
-                    "Monitor crops for heat stress and review water "
-                    "availability."
-                ),
-                source="weather_snapshot",
-            )
-        )
-
-    for item in crop_analysis_items:
-        crop = item.get(
-            "crop",
-            {},
-        )
-
-        risk = item.get(
-            "risk",
-            {},
-        )
-
-        score = _safe_float(
-            risk.get("score")
-        )
-
-        if score >= 80:
+        if risk["score"] >= 80:
             alerts.append(
                 alert_document(
-                    category="crop_risk",
+                    owner_user_id=str(user_id),
+                    farm_id=farm_id,
+                    crop_id=clean_id(
+                        crop["_id"]
+                    ),
+                    title=(
+                        f"Critical crop risk: "
+                        f"{crop.get('name', 'Crop')}"
+                    ),
+                    message=(
+                        f"{crop.get('name', 'This crop')} "
+                        "has reached a critical risk level. "
+                        "Immediate assessment is recommended."
+                    ),
+                    alert_type="crop_risk",
                     severity="critical",
-                    title=(
-                        f"{crop.get('name', 'Crop')} "
-                        "has critical risk"
-                    ),
-                    message=(
-                        "The crop intelligence engine has detected "
-                        "a high-risk condition."
-                    ),
-                    action=(
-                        "Inspect the crop immediately and record "
-                        "any visible symptoms."
-                    ),
+                    action="Analyze crop",
                     source="crop_intelligence",
-                    crop_id=crop.get("id"),
-                )
-            )
-
-        elif score >= 65:
-            alerts.append(
-                alert_document(
-                    category="crop_risk",
-                    severity="warning",
-                    title=(
-                        f"{crop.get('name', 'Crop')} "
-                        "needs monitoring"
-                    ),
-                    message=(
-                        "The crop currently has elevated production risk."
-                    ),
-                    action=(
-                        "Inspect the crop and monitor environmental conditions."
-                    ),
-                    source="crop_intelligence",
-                    crop_id=crop.get("id"),
                 )
             )
 
     return alerts
 
 
-def list_recommendations(
-    user_id,
-    farm_id,
-):
-    _require_farm(
-        user_id,
-        farm_id,
-    )
+def _replace_generated_recommendations(
+    user_id: str,
+    farm_id: str,
+    documents: list[dict],
+) -> None:
+    """
+    Replace only automatically generated recommendations.
 
-    docs = collection(RECOMMENDATIONS).find(
-        {
-            "owner_user_id": str(user_id),
-            "farm_id": str(farm_id),
-            "status": {
-                "$ne": DELETED_STATUS
-            },
-        }
-    ).sort(
-        "created_at",
-        -1,
-    ).limit(50)
+    Manual/user-created recommendations remain untouched.
+    """
 
-    return serialise_many(docs)
-
-
-def create_recommendation(
-    user_id,
-    farm_id,
-    data,
-):
-    _require_farm(
-        user_id,
-        farm_id,
-    )
-
-    if not isinstance(data, dict):
-        raise APIError(
-            "Recommendation data must be an object.",
-            422,
-            "invalid_recommendation",
-        )
-
-    document = recommendation_document(
-        category=data.get(
-            "category",
-            "general",
-        ),
-        priority=data.get(
-            "priority",
-            "medium",
-        ),
-        title=data.get(
-            "title",
-            "Farm recommendation",
-        ),
-        message=data.get(
-            "message",
-            "",
-        ),
-        action=data.get(
-            "action",
-            "",
-        ),
-        confidence=_safe_float(
-            data.get(
-                "confidence",
-                0.5,
-            )
-        ),
-        source=data.get(
-            "source",
-            "manual",
-        ),
-        crop_id=data.get(
-            "crop_id"
-        ),
-    )
-
-    document["owner_user_id"] = str(user_id)
-    document["farm_id"] = str(farm_id)
-    document["created_at"] = now_utc()
-    document["updated_at"] = now_utc()
-    document["status"] = "active"
-
-    result = collection(
-        RECOMMENDATIONS
-    ).insert_one(document)
-
-    document["_id"] = result.inserted_id
-
-    log_action(
-        user_id,
-        "farm.recommendation.created",
-        "farm_recommendation",
-        result.inserted_id,
-        {
-            "farm_id": str(farm_id)
-        },
-    )
-
-    return serialise(document)
-
-
-# =========================================================
-# ALERTS
-# =========================================================
-
-def list_alerts(
-    user_id,
-    farm_id,
-):
-    _require_farm(
-        user_id,
-        farm_id,
-    )
-
-    docs = collection(ALERTS).find(
-        {
-            "owner_user_id": str(user_id),
-            "farm_id": str(farm_id),
-            "status": {
-                "$ne": "resolved"
-            },
-        }
-    ).sort(
-        "created_at",
-        -1,
-    ).limit(50)
-
-    return serialise_many(docs)
-
-
-def create_alert(
-    user_id,
-    farm_id,
-    data,
-):
-    _require_farm(
-        user_id,
-        farm_id,
-    )
-
-    if not isinstance(data, dict):
-        raise APIError(
-            "Alert data must be an object.",
-            422,
-            "invalid_alert",
-        )
-
-    document = alert_document(
-        category=data.get(
-            "category",
-            "general",
-        ),
-        severity=data.get(
-            "severity",
-            "info",
-        ),
-        title=data.get(
-            "title",
-            "Farm alert",
-        ),
-        message=data.get(
-            "message",
-            "",
-        ),
-        action=data.get(
-            "action",
-            "",
-        ),
-        source=data.get(
-            "source",
-            "manual",
-        ),
-        crop_id=data.get(
-            "crop_id"
-        ),
-    )
-
-    document["owner_user_id"] = str(user_id)
-    document["farm_id"] = str(farm_id)
-    document["created_at"] = now_utc()
-    document["updated_at"] = now_utc()
-    document["status"] = "active"
-
-    result = collection(ALERTS).insert_one(
-        document
-    )
-
-    document["_id"] = result.inserted_id
-
-    log_action(
-        user_id,
-        "farm.alert.created",
-        "farm_alert",
-        result.inserted_id,
-        {
-            "farm_id": str(farm_id)
-        },
-    )
-
-    return serialise(document)
-
-
-# =========================================================
-# WEATHER
-# =========================================================
-
-def farm_weather(
-    user_id,
-    farm_id,
-):
-    farm = _require_farm(
-        user_id,
-        farm_id,
-    )
-
-    snapshot = weather_snapshot(
-        _get_weather_document(farm)
-    )
-
-    return {
+    query = {
+        "owner_user_id": str(user_id),
         "farm_id": str(farm_id),
-        "location": {
-            "latitude": farm.get("latitude"),
-            "longitude": farm.get("longitude"),
-            "accuracy": farm.get(
-                "location_accuracy"
-            ),
-            "county": farm.get(
-                "county"
-            ),
-            "town": farm.get(
-                "town"
-            ),
-        },
-        "weather": snapshot,
-        "available": bool(snapshot),
-        "generated_at": now_utc().isoformat(),
-    }
-
-
-# =========================================================
-# MARKET
-# =========================================================
-
-def farm_market(
-    user_id,
-    farm_id,
-):
-    farm = _require_farm(
-        user_id,
-        farm_id,
-    )
-
-    snapshot = market_snapshot(
-        _get_market_document(farm)
-    )
-
-    return {
-        "farm_id": str(farm_id),
-        "market": snapshot,
-        "available": bool(snapshot),
-        "generated_at": now_utc().isoformat(),
-    }
-
-
-# =========================================================
-# AI CONTEXT
-# =========================================================
-
-def build_ai_context(
-    user_id,
-    farm_id=None,
-):
-    """
-    Build structured context for RevelaAI.
-
-    This does NOT generate the AI response.
-
-    The RevelaAI orchestrator should consume this structure and
-    decide what agricultural intelligence, weather, market or
-    general reasoning is required.
-    """
-
-    user_id = str(user_id)
-
-    if farm_id:
-        payload = _build_farm_intelligence_payload(
-            user_id,
-            farm_id,
-        )
-
-        health = calculate_farm_health(
-            payload["farm"],
-            payload["crops"],
-            payload["activities"],
-            payload["harvests"],
-            payload["weather"],
-            payload["market"],
-        )
-
-        intelligence = {
-            "health": health,
-        }
-
-        return build_ai_farm_context(
-            farmer=payload["farmer"],
-            farm=payload["farm"],
-            crops=payload["crops"],
-            activities=payload["activities"],
-            harvests=payload["harvests"],
-            weather=payload["weather"],
-            market=payload["market"],
-            intelligence=intelligence,
-        )
-
-    farmer = get_farmer(user_id)
-
-    farms = list_farms(user_id)
-
-    all_context = []
-
-    for farm in farms:
-        current_farm_id = farm.get("id")
-
-        if not current_farm_id:
-            continue
-
-        payload = _build_farm_intelligence_payload(
-            user_id,
-            current_farm_id,
-        )
-
-        health = calculate_farm_health(
-            payload["farm"],
-            payload["crops"],
-            payload["activities"],
-            payload["harvests"],
-            payload["weather"],
-            payload["market"],
-        )
-
-        all_context.append(
-            {
-                "farm": payload["farm"],
-                "crops": payload["crops"],
-                "activities": payload["activities"],
-                "harvests": payload["harvests"],
-                "weather": payload["weather"],
-                "market": payload["market"],
-                "health": health,
-            }
-        )
-
-    return {
-        "domain": "shamba",
-        "farmer": farmer,
-        "farms": all_context,
-        "farm_count": len(all_context),
-        "generated_at": now_utc().isoformat(),
-    }
-
-
-# =========================================================
-# DASHBOARD
-# =========================================================
-
-def dashboard(user_id):
-    """
-    Shamba Farm Command Center.
-
-    Keeps the original dashboard contract while adding intelligence.
-    """
-
-    user_id = str(user_id)
-
-    farms_collection = collection(FARMS)
-    crops_collection = collection(CROPS)
-    activities_collection = collection(ACTIVITIES)
-    harvests_collection = collection(HARVESTS)
-
-    farmer = get_farmer(user_id)
-
-    farm_count = farms_collection.count_documents(
-        {
-            "owner_user_id": user_id,
-            "status": {
-                "$ne": DELETED_STATUS
-            },
-        }
-    )
-
-    crop_count = crops_collection.count_documents(
-        {
-            "owner_user_id": user_id,
-            "status": {
-                "$nin": [
-                    "harvested",
-                    DELETED_STATUS,
-                ]
-            },
-        }
-    )
-
-    harvest_count = harvests_collection.count_documents(
-        {
-            "owner_user_id": user_id
-        }
-    )
-
-    activity_count = activities_collection.count_documents(
-        {
-            "owner_user_id": user_id
-        }
-    )
-
-    activity_cost = list(
-        activities_collection.aggregate(
-            [
-                {
-                    "$match": {
-                        "owner_user_id": user_id
-                    }
-                },
-                {
-                    "$group": {
-                        "_id": None,
-                        "total": {
-                            "$sum": {
-                                "$ifNull": [
-                                    "$cost",
-                                    0,
-                                ]
-                            }
-                        },
-                    }
-                },
+        "source": {
+            "$in": [
+                "shamba_intelligence",
+                "crop_intelligence",
+                "yield_analysis",
+                "farm_profile",
             ]
-        )
-    )
-
-    total_cost = (
-        _safe_float(
-            activity_cost[0]["total"]
-        )
-        if activity_cost
-        else 0.0
-    )
-
-    farms = list_farms(user_id)
-
-    farm_summaries = []
-
-    for farm in farms:
-        farm_id = farm.get("id")
-
-        if not farm_id:
-            continue
-
-        try:
-            payload = _build_farm_intelligence_payload(
-                user_id,
-                farm_id,
-            )
-
-            health = calculate_farm_health(
-                payload["farm"],
-                payload["crops"],
-                payload["activities"],
-                payload["harvests"],
-                payload["weather"],
-                payload["market"],
-            )
-
-            farm_summaries.append(
-                {
-                    "farm": farm,
-                    "health": health,
-                    "weather": payload["weather"],
-                    "market": payload["market"],
-                    "active_crops": len(
-                        [
-                            crop
-                            for crop in payload["crops"]
-                            if crop.get("status")
-                            not in {
-                                "harvested",
-                                "deleted",
-                            }
-                        ]
-                    ),
-                }
-            )
-
-        except Exception:
-            # Dashboard intelligence must never make the
-            # basic Shamba dashboard unavailable.
-            continue
-
-    overall_health_scores = [
-        _safe_float(
-            item.get("health", {}).get("score")
-        )
-        for item in farm_summaries
-        if item.get("health")
-    ]
-
-    overall_health = (
-        round(
-            sum(overall_health_scores)
-            / len(overall_health_scores),
-            2,
-        )
-        if overall_health_scores
-        else 0.0
-    )
-
-    base_dashboard = {
-        "farmer": farmer,
-        "metrics": {
-            "farms": farm_count,
-            "active_crops": crop_count,
-            "harvests": harvest_count,
-            "farm_activities": activity_count,
-            "total_activity_cost": total_cost,
         },
+        "status": "active",
     }
 
-    intelligence_dashboard = {
-        "overall_health": overall_health,
-        "farm_summaries": farm_summaries,
-        "generated_at": now_utc().isoformat(),
-    }
-
-    return {
-        **base_dashboard,
-        "intelligence": intelligence_dashboard,
-    }
-
-
-# =========================================================
-# FARM COMMAND CENTER
-# =========================================================
-
-def farm_command_center(
-    user_id,
-    farm_id,
-):
-    """
-    Rich single-farm dashboard payload for the Shamba frontend.
-    """
-
-    payload = _build_farm_intelligence_payload(
-        user_id,
-        farm_id,
-    )
-
-    health = calculate_farm_health(
-        payload["farm"],
-        payload["crops"],
-        payload["activities"],
-        payload["harvests"],
-        payload["weather"],
-        payload["market"],
-    )
-
-    crop_items = []
-
-    for crop in payload["crops"]:
-        crop_harvests = [
-            harvest
-            for harvest in payload["harvests"]
-            if str(
-                harvest.get("crop_id")
-            ) == str(
-                crop.get("id")
-            )
-        ]
-
-        crop_items.append(
-            {
-                "crop": crop,
-                "risk": calculate_crop_risk(
-                    crop,
-                    payload["farm"],
-                    payload["weather"],
-                    payload["market"],
-                ),
-                "yield": calculate_yield_analysis(
-                    crop,
-                    crop_harvests,
-                ),
-                "financial": calculate_crop_financials(
-                    crop,
-                    payload["activities"],
-                    crop_harvests,
-                ),
-            }
-        )
-
-    recommendations = _generate_recommendations(
-        payload,
-        health,
-        crop_items,
-    )
-
-    alerts = _generate_alerts(
-        payload,
-        health,
-        crop_items,
-    )
-
-    summary = build_dashboard_summary(
-        farm=payload["farm"],
-        crops=payload["crops"],
-        activities=payload["activities"],
-        harvests=payload["harvests"],
-        weather=payload["weather"],
-        market=payload["market"],
-        health=health,
-        recommendations=recommendations,
-        alerts=alerts,
-    )
-
-    return {
-        "farm": payload["farm"],
-        "farmer": payload["farmer"],
-        "summary": summary,
-        "health": health,
-        "crops": crop_items,
-        "weather": payload["weather"],
-        "market": payload["market"],
-        "recommendations": recommendations,
-        "alerts": alerts,
-        "generated_at": now_utc().isoformat(),
-    }
-
-
-# =========================================================
-# INSIGHT REFRESH
-# =========================================================
-
-def refresh_farm_intelligence(
-    user_id,
-    farm_id,
-):
-    """
-    Explicitly regenerate and persist the farm intelligence snapshot.
-    """
-
-    result = farm_insights(
-        user_id,
-        farm_id,
-    )
-
-    collection(FARMS).update_one(
-        {
-            "_id": clean_id(farm_id),
-            "owner_user_id": str(user_id),
-        },
+    _collection(RECOMMENDATIONS).update_many(
+        query,
         {
             "$set": {
-                "last_ai_analysis": now_utc(),
+                "status": "replaced",
                 "updated_at": now_utc(),
             }
         },
     )
 
+    if documents:
+        _collection(RECOMMENDATIONS).insert_many(
+            documents
+        )
+
+
+def _replace_generated_alerts(
+    user_id: str,
+    farm_id: str,
+    documents: list[dict],
+) -> None:
+    query = {
+        "owner_user_id": str(user_id),
+        "farm_id": str(farm_id),
+        "source": {
+            "$in": [
+                "shamba_intelligence",
+                "crop_intelligence",
+            ]
+        },
+        "status": "active",
+    }
+
+    _collection(ALERTS).update_many(
+        query,
+        {
+            "$set": {
+                "status": "replaced",
+                "updated_at": now_utc(),
+            }
+        },
+    )
+
+    if documents:
+        _collection(ALERTS).insert_many(
+            documents
+        )
+
+
+def generate_farm_insight(
+    user_id: str,
+    farm_id: str,
+    *,
+    persist: bool = True,
+) -> dict:
+    """
+    Generate the current farm intelligence snapshot.
+
+    This function is the central Shamba intelligence engine.
+    """
+
+    farm = _collection(FARMS).find_one(
+        _farm_filter(user_id, farm_id)
+    )
+
+    if not farm:
+        raise APIError(
+            "Farm not found.",
+            404,
+            "farm_not_found",
+        )
+
+    farm_id_string = clean_id(
+        farm["_id"]
+    )
+
+    crops_raw = list(
+        _collection(CROPS)
+        .find(
+            {
+                "owner_user_id": str(user_id),
+                "farm_id": farm_id_string,
+            }
+        )
+    )
+
+    activities_raw = list(
+        _collection(ACTIVITIES)
+        .find(
+            {
+                "owner_user_id": str(user_id),
+                "farm_id": farm_id_string,
+            }
+        )
+        .sort(
+            "activity_date",
+            -1,
+        )
+        .limit(50)
+    )
+
+    harvests_raw = list(
+        _collection(HARVESTS)
+        .find(
+            {
+                "owner_user_id": str(user_id),
+                "farm_id": farm_id_string,
+            }
+        )
+        .sort(
+            "harvest_date",
+            -1,
+        )
+    )
+
+    crops = serialise_many(crops_raw)
+    activities = serialise_many(
+        activities_raw
+    )
+    harvests = serialise_many(
+        harvests_raw
+    )
+
+    soil_score = _soil_score(farm)
+    water_score = _water_score(farm)
+    crop_score = _crop_health_score(crops)
+    productivity_score = _productivity_score(
+        farm,
+        crops,
+    )
+    financial_score = _financial_score(
+        farm,
+        crops,
+    )
+    risk_score = _risk_score(
+        farm,
+        crops,
+    )
+
+    health = calculate_farm_health(
+        soil_score=soil_score,
+        water_score=water_score,
+        crop_score=crop_score,
+        productivity_score=productivity_score,
+        financial_score=financial_score,
+        risk_score=risk_score,
+    )
+
+    recommendations = _generate_farm_recommendations(
+        user_id=str(user_id),
+        farm=farm,
+        crops=crops_raw,
+        health=health,
+    )
+
+    alerts = _generate_farm_alerts(
+        user_id=str(user_id),
+        farm=farm,
+        crops=crops_raw,
+        health=health,
+    )
+
+    recommendation_text = [
+        item.get(
+            "recommendation",
+            "",
+        )
+        for item in recommendations
+    ]
+
+    risk_text = [
+        item.get(
+            "message",
+            "",
+        )
+        for item in alerts
+    ]
+
+    strengths = []
+
+    if soil_score >= 70:
+        strengths.append(
+            "Soil conditions are currently favorable."
+        )
+
+    if water_score >= 70:
+        strengths.append(
+            "Water availability is relatively strong."
+        )
+
+    if crop_score >= 70:
+        strengths.append(
+            "Current crop health is generally good."
+        )
+
+    if productivity_score >= 70:
+        strengths.append(
+            "Farm productivity is performing well."
+        )
+
+    if financial_score >= 70:
+        strengths.append(
+            "The farm has a positive financial outlook."
+        )
+
+    summary = (
+        f"Farm health is {health['score']}/100 "
+        f"({health['status']}). "
+        f"Productivity is {productivity_score}/100 "
+        f"and current operational risk is "
+        f"{risk_score}/100."
+    )
+
+    insight_document = farm_insight_document(
+        owner_user_id=str(user_id),
+        farm_id=farm_id_string,
+        health_score=health["score"],
+        productivity_score=productivity_score,
+        risk_score=risk_score,
+        soil_score=soil_score,
+        water_score=water_score,
+        crop_score=crop_score,
+        financial_score=financial_score,
+        summary=summary,
+        strengths=strengths,
+        risks=risk_text,
+        recommendations=recommendation_text,
+        ai_summary="",
+        model="",
+    )
+
+    if persist:
+        _collection(INSIGHTS).update_one(
+            {
+                "owner_user_id": str(user_id),
+                "farm_id": farm_id_string,
+                "status": "active",
+            },
+            {
+                "$set": insight_document,
+            },
+            upsert=True,
+        )
+
+        _replace_generated_recommendations(
+            str(user_id),
+            farm_id_string,
+            recommendations,
+        )
+
+        _replace_generated_alerts(
+            str(user_id),
+            farm_id_string,
+            alerts,
+        )
+
+        _collection(FARMS).update_one(
+            {
+                "_id": farm["_id"],
+            },
+            {
+                "$set": {
+                    "health_score": health["score"],
+                    "productivity_score": productivity_score,
+                    "risk_level": health["status"],
+                    "last_ai_analysis": now_utc(),
+                    "updated_at": now_utc(),
+                }
+            },
+        )
+
+    return {
+        "farm": serialise(farm),
+        "health": health,
+        "insight": serialise(
+            insight_document
+        ),
+        "recommendations": serialise_many(
+            recommendations
+        ),
+        "alerts": serialise_many(
+            alerts
+        ),
+        "generated_at": now_utc(),
+    }
+
+
+# ============================================================
+# STORED INSIGHT
+# ============================================================
+
+def get_latest_insight(
+    user_id: str,
+    farm_id: str,
+) -> dict | None:
+    insight = _collection(INSIGHTS).find_one(
+        {
+            "owner_user_id": str(user_id),
+            "farm_id": str(farm_id),
+            "status": "active",
+        },
+        sort=[
+            ("updated_at", -1),
+            ("generated_at", -1),
+        ],
+    )
+
+    return serialise(insight)
+
+
+# ============================================================
+# RECOMMENDATIONS
+# ============================================================
+
+def list_recommendations(
+    user_id: str,
+    farm_id: str,
+) -> list[dict]:
+    recommendations = list(
+        _collection(RECOMMENDATIONS)
+        .find(
+            {
+                "owner_user_id": str(user_id),
+                "farm_id": str(farm_id),
+                "status": "active",
+            }
+        )
+        .sort(
+            [
+                ("priority", -1),
+                ("created_at", -1),
+            ]
+        )
+    )
+
+    return serialise_many(
+        recommendations
+    )
+
+
+def create_recommendation(
+    user_id: str,
+    farm_id: str,
+    *,
+    title: str,
+    recommendation: str,
+    category: str = "general",
+    priority: str = "normal",
+    confidence: Any = 50,
+    crop_id: str | None = None,
+) -> dict:
+    farm = _collection(FARMS).find_one(
+        _farm_filter(user_id, farm_id)
+    )
+
+    if not farm:
+        raise APIError(
+            "Farm not found.",
+            404,
+            "farm_not_found",
+        )
+
+    document = recommendation_document(
+        owner_user_id=str(user_id),
+        farm_id=str(farm_id),
+        title=title,
+        recommendation=recommendation,
+        category=category,
+        priority=priority,
+        confidence=confidence,
+        source="manual",
+        crop_id=crop_id,
+    )
+
+    result = _collection(
+        RECOMMENDATIONS
+    ).insert_one(document)
+
+    created_document = (
+        _collection(RECOMMENDATIONS).find_one(
+            {
+                "_id": result.inserted_id,
+            }
+        )
+    )
+
+    return serialise(
+        created_document
+    )
+
+
+# ============================================================
+# ALERTS
+# ============================================================
+
+def list_alerts(
+    user_id: str,
+    farm_id: str,
+) -> list[dict]:
+    alerts = list(
+        _collection(ALERTS)
+        .find(
+            {
+                "owner_user_id": str(user_id),
+                "farm_id": str(farm_id),
+                "status": "active",
+            }
+        )
+        .sort(
+            [
+                ("read", 1),
+                ("created_at", -1),
+            ]
+        )
+    )
+
+    return serialise_many(alerts)
+
+
+def mark_alert_read(
+    user_id: str,
+    farm_id: str,
+    alert_id: str,
+) -> dict:
+    result = _collection(
+        ALERTS
+    ).find_one_and_update(
+        {
+            "owner_user_id": str(user_id),
+            "farm_id": str(farm_id),
+            "_id": object_id(alert_id),
+        },
+        {
+            "$set": {
+                "read": True,
+                "updated_at": now_utc(),
+            }
+        },
+        return_document=ReturnDocument.AFTER,
+    )
+
+    if not result:
+        raise APIError(
+            "Alert not found.",
+            404,
+            "alert_not_found",
+        )
+
+    return serialise(result)
+
+
+# ============================================================
+# AI CONTEXT
+# ============================================================
+
+def get_ai_context(
+    user_id: str,
+    farm_id: str,
+) -> dict:
+    """
+    Build structured Shamba context for RevelaAI.
+
+    No raw LTM text is generated here.
+    """
+
+    farm = _collection(FARMS).find_one(
+        _farm_filter(user_id, farm_id)
+    )
+
+    if not farm:
+        raise APIError(
+            "Farm not found.",
+            404,
+            "farm_not_found",
+        )
+
+    farmer = _collection(FARMERS).find_one(
+        {
+            "owner_user_id": str(user_id),
+            "status": {"$ne": "deleted"},
+        }
+    )
+
+    farm_id_string = clean_id(
+        farm["_id"]
+    )
+
+    crops = serialise_many(
+        list(
+            _collection(CROPS).find(
+                {
+                    "owner_user_id": str(user_id),
+                    "farm_id": farm_id_string,
+                }
+            )
+        )
+    )
+
+    activities = serialise_many(
+        list(
+            _collection(ACTIVITIES)
+            .find(
+                {
+                    "owner_user_id": str(user_id),
+                    "farm_id": farm_id_string,
+                }
+            )
+            .sort(
+                "activity_date",
+                -1,
+            )
+            .limit(50)
+        )
+    )
+
+    harvests = serialise_many(
+        list(
+            _collection(HARVESTS)
+            .find(
+                {
+                    "owner_user_id": str(user_id),
+                    "farm_id": farm_id_string,
+                }
+            )
+            .sort(
+                "harvest_date",
+                -1,
+            )
+        )
+    )
+
+    insight = get_latest_insight(
+        str(user_id),
+        farm_id_string,
+    )
+
+    if not insight:
+        generated = generate_farm_insight(
+            str(user_id),
+            farm_id_string,
+            persist=True,
+        )
+
+        insight = generated.get(
+            "insight"
+        ) or {}
+
+    weather = _normalise_weather(
+        farm
+    )
+
+    market = _normalise_market(
+        farm
+    )
+
+    farmer_context = (
+        serialise(farmer)
+        if farmer
+        else {}
+    )
+
+    farm_context = dict(farm)
+    farm_context["_id"] = farm_id_string
+
+    return build_ai_farm_context(
+        farmer=farmer_context,
+        farm=farm_context,
+        crops=crops,
+        activities=activities,
+        harvests=harvests,
+        weather=weather
+        if _weather_available(weather)
+        else {},
+        market=market,
+        insights=insight or {},
+    )
+
+
+# ============================================================
+# FARM COMMAND CENTER
+# ============================================================
+
+def farm_command_center(
+    user_id: str,
+    farm_id: str,
+) -> dict:
+    """
+    Full Farm Operating System command-center payload.
+    """
+
+    farm = _collection(FARMS).find_one(
+        _farm_filter(user_id, farm_id)
+    )
+
+    if not farm:
+        raise APIError(
+            "Farm not found.",
+            404,
+            "farm_not_found",
+        )
+
+    farm_id_string = clean_id(
+        farm["_id"]
+    )
+
+    crops_raw = list(
+        _collection(CROPS)
+        .find(
+            {
+                "owner_user_id": str(user_id),
+                "farm_id": farm_id_string,
+            }
+        )
+    )
+
+    activities_raw = list(
+        _collection(ACTIVITIES)
+        .find(
+            {
+                "owner_user_id": str(user_id),
+                "farm_id": farm_id_string,
+            }
+        )
+        .sort(
+            "activity_date",
+            -1,
+        )
+        .limit(20)
+    )
+
+    harvests_raw = list(
+        _collection(HARVESTS)
+        .find(
+            {
+                "owner_user_id": str(user_id),
+                "farm_id": farm_id_string,
+            }
+        )
+        .sort(
+            "harvest_date",
+            -1,
+        )
+    )
+
+    insight = get_latest_insight(
+        str(user_id),
+        farm_id_string,
+    )
+
+    if not insight:
+        generated = generate_farm_insight(
+            str(user_id),
+            farm_id_string,
+            persist=True,
+        )
+
+        insight = generated.get(
+            "insight"
+        ) or {}
+
+    crops = serialise_many(
+        crops_raw
+    )
+
+    activities = serialise_many(
+        activities_raw
+    )
+
+    harvests = serialise_many(
+        harvests_raw
+    )
+
+    summary = build_dashboard_summary(
+        farm=farm,
+        crops=crops,
+        activities=activities,
+        harvests=harvests,
+        insight=insight,
+    )
+
+    weather = _normalise_weather(
+        farm
+    )
+
+    market = _normalise_market(
+        farm
+    )
+
+    recommendations = list_recommendations(
+        str(user_id),
+        farm_id_string,
+    )
+
+    alerts = list_alerts(
+        str(user_id),
+        farm_id_string,
+    )
+
+    return {
+        "summary": summary,
+        "farm": serialise(farm),
+        "health": {
+            "score": insight.get(
+                "health_score"
+            ),
+            "status": insight.get(
+                "health_status"
+            ),
+            "risk_level": insight.get(
+                "risk_level"
+            ),
+            "components": insight.get(
+                "health_components",
+                {},
+            ),
+        },
+        "weather": (
+            serialise(weather)
+            if _weather_available(weather)
+            else None
+        ),
+        "market": serialise_many(
+            market
+        ),
+        "crops": crops,
+        "recent_activities": activities,
+        "harvests": harvests,
+        "recommendations": recommendations,
+        "alerts": alerts,
+        "location": {
+            "latitude": farm.get(
+                "latitude"
+            ),
+            "longitude": farm.get(
+                "longitude"
+            ),
+            "accuracy": farm.get(
+                "location_accuracy"
+            ),
+            "source": farm.get(
+                "location_source"
+            ),
+            "county": farm.get(
+                "county",
+                "",
+            ),
+            "town": farm.get(
+                "town",
+                "",
+            ),
+            "location": farm.get(
+                "location",
+                "",
+            ),
+        },
+        "generated_at": now_utc(),
+    }
+
+
+# ============================================================
+# DASHBOARD
+# ============================================================
+
+def dashboard(
+    user_id: str,
+) -> dict:
+    """
+    Main Shamba dashboard.
+
+    If the farmer has farms, the first active farm becomes
+    the primary farm while all farms remain available.
+    """
+
+    farms = list_farms(
+        str(user_id)
+    )
+
+    farmer = get_farmer(
+        str(user_id)
+    )
+
+    if not farms:
+        return {
+            "farmer": farmer,
+            "farms": [],
+            "primary_farm": None,
+            "summary": {
+                "farm_count": 0,
+                "crop_count": 0,
+                "active_crop_count": 0,
+                "harvest_count": 0,
+                "health_score": None,
+            },
+            "needs_setup": True,
+            "generated_at": now_utc(),
+        }
+
+    primary = farms[0]
+
+    primary_id = primary.get(
+        "id"
+    )
+
+    command_center = farm_command_center(
+        str(user_id),
+        primary_id,
+    )
+
+    total_crops = _collection(
+        CROPS
+    ).count_documents(
+        {
+            "owner_user_id": str(user_id),
+        }
+    )
+
+    active_crops = _collection(
+        CROPS
+    ).count_documents(
+        {
+            "owner_user_id": str(user_id),
+            "status": {
+                "$nin": [
+                    "harvested",
+                    "completed",
+                    "cancelled",
+                ]
+            },
+        }
+    )
+
+    harvest_count = _collection(
+        HARVESTS
+    ).count_documents(
+        {
+            "owner_user_id": str(user_id),
+        }
+    )
+
+    return {
+        "farmer": farmer,
+        "farms": farms,
+        "primary_farm": command_center,
+        "summary": {
+            "farm_count": len(farms),
+            "crop_count": total_crops,
+            "active_crop_count": active_crops,
+            "harvest_count": harvest_count,
+            "health_score": command_center[
+                "health"
+            ].get("score"),
+            "health_status": command_center[
+                "health"
+            ].get("status"),
+            "risk_level": command_center[
+                "health"
+            ].get("risk_level"),
+        },
+        "needs_setup": False,
+        "generated_at": now_utc(),
+    }
+
+
+# ============================================================
+# REFRESH INTELLIGENCE
+# ============================================================
+
+def refresh_farm_intelligence(
+    user_id: str,
+    farm_id: str,
+) -> dict:
+    """
+    Explicit intelligence refresh endpoint.
+
+    This is useful after:
+      - adding a crop
+      - updating soil/water data
+      - syncing weather
+      - syncing market prices
+      - completing farm activities
+    """
+
+    result = generate_farm_insight(
+        str(user_id),
+        str(farm_id),
+        persist=True,
+    )
+
     log_action(
         user_id,
-        "farm.intelligence.refreshed",
-        "farm",
-        farm_id,
+        "shamba_intelligence_refreshed",
+        {
+            "farm_id": str(farm_id),
+        },
     )
 
     return result
+
+
+# ============================================================
+# FARM RECOMMENDATIONS SNAPSHOT
+# ============================================================
+
+def recommendations_snapshot(
+    user_id: str,
+    farm_id: str,
+) -> dict:
+    insight = get_latest_insight(
+        str(user_id),
+        str(farm_id),
+    )
+
+    if not insight:
+        insight_result = generate_farm_insight(
+            str(user_id),
+            str(farm_id),
+            persist=True,
+        )
+
+        insight = (
+            insight_result.get(
+                "insight"
+            )
+            or {}
+        )
+
+    return {
+        "farm_id": str(farm_id),
+        "recommendations": list_recommendations(
+            str(user_id),
+            str(farm_id),
+        ),
+        "insight": insight,
+        "updated_at": now_utc(),
+    }
+
+
+# ============================================================
+# FARM ALERT SNAPSHOT
+# ============================================================
+
+def alerts_snapshot(
+    user_id: str,
+    farm_id: str,
+) -> dict:
+    return {
+        "farm_id": str(farm_id),
+        "alerts": list_alerts(
+            str(user_id),
+            str(farm_id),
+        ),
+        "unread_count": _collection(
+            ALERTS
+        ).count_documents(
+            {
+                "owner_user_id": str(user_id),
+                "farm_id": str(farm_id),
+                "status": "active",
+                "read": False,
+            }
+        ),
+        "updated_at": now_utc(),
+    }
