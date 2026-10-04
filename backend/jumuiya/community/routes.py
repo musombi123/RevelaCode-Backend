@@ -9,12 +9,16 @@ from backend.jumuiya.core.permissions import (
     require_authenticated,
     current_user_id,
 )
+
 from backend.jumuiya.core.responses import (
     ok,
     created,
 )
 
-from backend.jumuiya.community import services
+from backend.jumuiya.community import (
+    schemas,
+    services,
+)
 
 
 # =========================================================
@@ -36,7 +40,10 @@ def body():
         silent=True
     )
 
-    if not isinstance(data, dict):
+    if not isinstance(
+        data,
+        dict,
+    ):
         raise APIError(
             "JSON request body is required.",
             400,
@@ -46,57 +53,17 @@ def body():
     return data
 
 
-def text(
-    data,
-    key,
-    required=False,
-    max_len=5000,
-):
-    value = data.get(
-        key,
-        "",
-    )
-
-    if value is None:
-        value = ""
-
-    if not isinstance(value, str):
-        raise APIError(
-            f"{key} must be text.",
-            422,
-            "validation_error",
-        )
-
-    value = value.strip()
-
-    if required and not value:
-        raise APIError(
-            f"{key} is required.",
-            422,
-            "validation_error",
-        )
-
-    if len(value) > max_len:
-        raise APIError(
-            f"{key} is too long.",
-            422,
-            "validation_error",
-        )
-
-    return value
-
-
 def parse_limit(
     default=30,
     maximum=100,
 ):
+    raw = request.args.get(
+        "limit",
+        default,
+    )
+
     try:
-        value = int(
-            request.args.get(
-                "limit",
-                default,
-            )
-        )
+        value = int(raw)
     except (
         TypeError,
         ValueError,
@@ -121,6 +88,14 @@ def health():
     return ok({
         "hub": "community",
         "status": "online",
+        "version": "2.0",
+        "features": [
+            "posts",
+            "comments",
+            "reactions",
+            "ecosystem_context",
+            "notifications",
+        ],
     })
 
 
@@ -131,13 +106,23 @@ def health():
 @community_bp.get("/feed")
 @require_authenticated
 def get_feed():
+
+    user_id = current_user_id()
+
     return ok(
         services.feed(
+            user_id=user_id,
             category=request.args.get(
                 "category"
             ),
             hub=request.args.get(
                 "hub"
+            ),
+            post_type=request.args.get(
+                "type"
+            ),
+            search=request.args.get(
+                "search"
             ),
             limit=parse_limit(
                 default=30,
@@ -155,68 +140,9 @@ def get_feed():
 @require_authenticated
 def create_post():
 
-    data = body()
-
-    hub = (
-        text(
-            data,
-            "hub",
-            required=False,
-            max_len=60,
-        )
-        or "community"
-    ).lower()
-
-    category = (
-        text(
-            data,
-            "category",
-            required=False,
-            max_len=60,
-        )
-        or "general"
-    ).lower()
-
-    allowed_hubs = {
-        "community",
-        "biashara",
-        "shamba",
-        "elimu",
-    }
-
-    if hub not in allowed_hubs:
-        raise APIError(
-            "Invalid community hub.",
-            422,
-            "invalid_hub",
-        )
-
-    payload = {
-        "title": text(
-            data,
-            "title",
-            required=True,
-            max_len=180,
-        ),
-
-        "body": text(
-            data,
-            "body",
-            required=True,
-            max_len=10000,
-        ),
-
-        "category": category,
-
-        "hub": hub,
-
-        "location": text(
-            data,
-            "location",
-            required=False,
-            max_len=160,
-        ),
-    }
+    payload = schemas.create_post_payload(
+        body()
+    )
 
     return created(
         services.create_post(
@@ -237,11 +163,15 @@ def create_post():
 @require_authenticated
 def edit_post(post_id):
 
+    payload = schemas.update_post_payload(
+        body()
+    )
+
     return ok(
         services.update_post(
             current_user_id(),
             post_id,
-            body(),
+            payload,
         ),
         "Post updated.",
     )
@@ -295,12 +225,36 @@ def add_comment(post_id):
 
     data = body()
 
-    comment_body = text(
-        data,
+    comment_body = data.get(
         "body",
-        required=True,
-        max_len=3000,
+        "",
     )
+
+    if not isinstance(
+        comment_body,
+        str,
+    ):
+        raise APIError(
+            "body must be text.",
+            422,
+            "validation_error",
+        )
+
+    comment_body = comment_body.strip()
+
+    if not comment_body:
+        raise APIError(
+            "Comment cannot be empty.",
+            422,
+            "validation_error",
+        )
+
+    if len(comment_body) > 3000:
+        raise APIError(
+            "Comment must not exceed 3000 characters.",
+            422,
+            "validation_error",
+        )
 
     return created(
         services.add_comment(
@@ -326,5 +280,40 @@ def react(post_id):
         services.react(
             current_user_id(),
             post_id,
+        )
+    )
+
+
+# =========================================================
+# SEARCH
+# =========================================================
+
+@community_bp.get("/search")
+@require_authenticated
+def search():
+
+    query = (
+        request.args.get(
+            "q",
+            "",
+        )
+        .strip()
+    )
+
+    if not query:
+        raise APIError(
+            "Search query is required.",
+            422,
+            "search_query_required",
+        )
+
+    return ok(
+        services.search(
+            current_user_id(),
+            query,
+            limit=parse_limit(
+                default=20,
+                maximum=50,
+            ),
         )
     )
