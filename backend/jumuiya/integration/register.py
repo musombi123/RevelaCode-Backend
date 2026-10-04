@@ -9,6 +9,10 @@ from backend.jumuiya.integration.auth_bridge import (
     install_auth_bridge,
 )
 
+from backend.jumuiya.notifications.routes import (
+    notifications_bp,
+)
+
 from backend.jumuiya.identity.routes import identity_bp
 from backend.jumuiya.wallet.routes import wallet_bp
 from backend.jumuiya.marketplace.routes import marketplace_bp
@@ -121,6 +125,11 @@ def register_jumuiya(app):
 
     logger.info(
         "✅ Jumuiya Identity registered."
+    )
+
+    app.register_blueprint(
+        notifications_bp,
+        url_prefix="/api/jumuiya/notifications",
     )
 
     # =====================================================
