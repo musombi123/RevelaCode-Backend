@@ -467,5 +467,88 @@ def ensure_indexes():
             ("created_at", DESCENDING),
         ]
     )
+    # =====================================================
+    # ELIMU PROFESSIONAL WORKSPACE
+    # =====================================================
+
+    db["jumuiya_students"].create_index(
+        [
+            ("school_id", ASCENDING),
+            ("status", ASCENDING),
+            ("class_name", ASCENDING),
+        ]
+    )
+
+    db["jumuiya_students"].create_index(
+        [
+            ("school_id", ASCENDING),
+            ("admission_number", ASCENDING),
+        ],
+        unique=True,
+    )
+
+    db["jumuiya_attendance"].create_index(
+        [
+            ("school_id", ASCENDING),
+            ("student_id", ASCENDING),
+            ("date", DESCENDING),
+        ],
+    )
+
+    db["jumuiya_attendance"].create_index(
+        [
+            ("school_id", ASCENDING),
+            ("class_name", ASCENDING),
+            ("date", DESCENDING),
+        ],
+    )
+
+    db["jumuiya_assessments"].create_index(
+        [
+            ("school_id", ASCENDING),
+            ("student_id", ASCENDING),
+            ("created_at", DESCENDING),
+        ],
+    )
+
+    db["jumuiya_assessments"].create_index(
+        [
+            ("school_id", ASCENDING),
+            ("class_name", ASCENDING),
+            ("subject", ASCENDING),
+            ("academic_year", ASCENDING),
+            ("term", ASCENDING),
+        ],
+    )
+
+    db["jumuiya_school_events"].create_index(
+        [
+            ("school_id", ASCENDING),
+            ("start_date", ASCENDING),
+        ],
+    )
+
+    db["jumuiya_school_events"].create_index(
+        [
+            ("school_id", ASCENDING),
+            ("is_annual", ASCENDING),
+            ("start_date", ASCENDING),
+        ],
+    )
+
+    db["jumuiya_fees"].create_index(
+        [
+            ("school_id", ASCENDING),
+            ("status", ASCENDING),
+            ("created_at", DESCENDING),
+        ],
+    )
+
+    db["jumuiya_cbc_projects"].create_index(
+        [
+            ("school_id", ASCENDING),
+            ("created_at", DESCENDING),
+        ],
+    )
 
     return True
