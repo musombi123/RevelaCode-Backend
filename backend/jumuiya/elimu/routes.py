@@ -15,7 +15,6 @@ from backend.jumuiya.core.responses import (
     created,
     ok,
 )
-
 from backend.jumuiya.elimu import (
     schemas,
     services,
@@ -36,15 +35,11 @@ elimu_bp = Blueprint(
 # REQUEST HELPERS
 # =========================================================
 
-def body():
-    data = request.get_json(
-        silent=True
-    )
 
-    if not isinstance(
-        data,
-        dict,
-    ):
+def body():
+    data = request.get_json(silent=True)
+
+    if not isinstance(data, dict):
         raise APIError(
             "JSON request body is required.",
             400,
@@ -54,10 +49,7 @@ def body():
     return data
 
 
-def validate(
-    fn,
-    data,
-):
+def validate(fn, data):
     try:
         return fn(data)
     except ValueError as exc:
@@ -68,37 +60,35 @@ def validate(
         )
 
 
+def query_value(name, default=None):
+    value = request.args.get(name)
+    if value is None:
+        return default
+
+    value = value.strip()
+    return value if value else default
+
+
 # =========================================================
 # SCHOOL ACCESS GUARD
 # =========================================================
 
+
 def require_school_account(fn):
     """
-    Every real Elimu management endpoint passes through this
-    guard.
+    Hard Elimu access boundary.
 
-    A user without an active school account receives:
-
-        403
-        school_required
-
-    The APK can use that response to redirect internally to:
-
-        elimu-school-setup
+    Authenticated users without an active school account are
+    blocked from school-management resources with the canonical
+    `school_required` error. Android can use /access or /bootstrap
+    for internal navigation to the school setup screen.
     """
 
     @wraps(fn)
     @require_authenticated
     def wrapped(*args, **kwargs):
-
-        services.require_school(
-            current_user_id()
-        )
-
-        return fn(
-            *args,
-            **kwargs
-        )
+        services.require_school(current_user_id())
+        return fn(*args, **kwargs)
 
     return wrapped
 
@@ -107,13 +97,16 @@ def require_school_account(fn):
 # HEALTH
 # =========================================================
 
+
 @elimu_bp.get("/health")
 def health():
     return ok({
         "hub": "elimu",
         "status": "online",
-        "version": "3.0",
+        "version": services.ELIMU_VERSION,
         "architecture": "school-first",
+        "access_model": "active_school_account_required",
+        "client_mode": "android_native",
         "features": [
             "school_accounts",
             "students",
@@ -125,23 +118,43 @@ def health():
             "fees",
             "cbc",
             "annual_events",
+            "calendar",
             "reports",
+            "print_center",
             "print_ready_documents",
+            "apk_bootstrap",
         ],
     })
 
 
 # =========================================================
-# ACCESS
+# ACCESS / APK BOOTSTRAP
 # =========================================================
+
 
 @elimu_bp.get("/access")
 @require_authenticated
 def access():
     return ok(
-        services.access(
-            current_user_id()
-        )
+        services.access(current_user_id())
+    )
+
+
+@elimu_bp.get("/bootstrap")
+@require_authenticated
+def bootstrap():
+    """
+    Single startup request for the Android/Web Elimu entry point.
+
+    The client must not guess whether the user is a school account.
+    The service is the source of truth and returns either:
+
+        allowed=true  -> open Elimu dashboard
+        allowed=false -> navigate internally to elimu-school-setup
+    """
+
+    return ok(
+        services.hub_bootstrap(current_user_id())
     )
 
 
@@ -149,13 +162,12 @@ def access():
 # SCHOOL
 # =========================================================
 
+
 @elimu_bp.get("/school")
 @require_authenticated
 def get_school():
     return ok(
-        services.my_school(
-            current_user_id()
-        )
+        services.my_school(current_user_id())
     )
 
 
@@ -180,13 +192,12 @@ def save_school():
 # PROFILE
 # =========================================================
 
+
 @elimu_bp.get("/profile")
 @require_school_account
 def get_profile():
     return ok(
-        services.get_profile(
-            current_user_id()
-        )
+        services.get_profile(current_user_id())
     )
 
 
@@ -211,13 +222,12 @@ def save_profile():
 # DASHBOARD
 # =========================================================
 
+
 @elimu_bp.get("/dashboard")
 @require_school_account
 def get_dashboard():
     return ok(
-        services.dashboard(
-            current_user_id()
-        )
+        services.dashboard(current_user_id())
     )
 
 
@@ -225,13 +235,12 @@ def get_dashboard():
 # CLASSES
 # =========================================================
 
+
 @elimu_bp.get("/classes")
 @require_school_account
 def get_classes():
     return ok(
-        services.list_classes(
-            current_user_id()
-        )
+        services.list_classes(current_user_id())
     )
 
 
@@ -256,15 +265,14 @@ def add_class():
 # STUDENTS
 # =========================================================
 
+
 @elimu_bp.get("/students")
 @require_school_account
 def get_students():
     return ok(
         services.students(
             current_user_id(),
-            class_name=request.args.get(
-                "class_name"
-            ),
+            class_name=query_value("class_name"),
         )
     )
 
@@ -300,11 +308,13 @@ def get_student(student_id):
 @elimu_bp.put("/students/<student_id>")
 @require_school_account
 def edit_student(student_id):
+    payload = body()
+
     return ok(
         services.update_student(
             current_user_id(),
             student_id,
-            body(),
+            payload,
         ),
         "Student updated.",
     )
@@ -314,15 +324,14 @@ def edit_student(student_id):
 # LESSONS
 # =========================================================
 
+
 @elimu_bp.get("/lessons")
 @require_school_account
 def get_lessons():
     return ok(
         services.lessons(
             current_user_id(),
-            request.args.get(
-                "subject"
-            ),
+            query_value("subject"),
         )
     )
 
@@ -348,15 +357,14 @@ def add_lesson():
 # ASSIGNMENTS
 # =========================================================
 
+
 @elimu_bp.get("/assignments")
 @require_school_account
 def get_assignments():
     return ok(
         services.assignments(
             current_user_id(),
-            request.args.get(
-                "class_name"
-            ),
+            query_value("class_name"),
         )
     )
 
@@ -382,24 +390,17 @@ def add_assignment():
 # ATTENDANCE
 # =========================================================
 
+
 @elimu_bp.get("/attendance")
 @require_school_account
 def get_attendance():
     return ok(
         services.attendance(
             current_user_id(),
-            student_id=request.args.get(
-                "student_id"
-            ),
-            class_name=request.args.get(
-                "class_name"
-            ),
-            start_date=request.args.get(
-                "start_date"
-            ),
-            end_date=request.args.get(
-                "end_date"
-            ),
+            student_id=query_value("student_id"),
+            class_name=query_value("class_name"),
+            start_date=query_value("start_date"),
+            end_date=query_value("end_date"),
         )
     )
 
@@ -425,27 +426,18 @@ def add_attendance():
 # ASSESSMENTS
 # =========================================================
 
+
 @elimu_bp.get("/assessments")
 @require_school_account
 def get_assessments():
     return ok(
         services.assessments(
             current_user_id(),
-            student_id=request.args.get(
-                "student_id"
-            ),
-            class_name=request.args.get(
-                "class_name"
-            ),
-            subject=request.args.get(
-                "subject"
-            ),
-            academic_year=request.args.get(
-                "academic_year"
-            ),
-            term=request.args.get(
-                "term"
-            ),
+            student_id=query_value("student_id"),
+            class_name=query_value("class_name"),
+            subject=query_value("subject"),
+            academic_year=query_value("academic_year"),
+            term=query_value("term"),
         )
     )
 
@@ -471,15 +463,14 @@ def add_assessment():
 # FEES
 # =========================================================
 
+
 @elimu_bp.get("/fees")
 @require_school_account
 def get_fees():
     return ok(
         services.student_fees(
             current_user_id(),
-            status=request.args.get(
-                "status"
-            ),
+            status=query_value("status"),
         )
     )
 
@@ -505,13 +496,12 @@ def add_fee():
 # CBC
 # =========================================================
 
+
 @elimu_bp.get("/cbc/projects")
 @require_school_account
 def get_projects():
     return ok(
-        services.student_projects(
-            current_user_id()
-        )
+        services.student_projects(current_user_id())
     )
 
 
@@ -533,8 +523,9 @@ def add_project():
 
 
 # =========================================================
-# ANNUAL EVENTS
+# SCHOOL EVENTS / CALENDAR
 # =========================================================
+
 
 @elimu_bp.get("/events")
 @require_school_account
@@ -542,12 +533,8 @@ def get_events():
     return ok(
         services.events(
             current_user_id(),
-            year=request.args.get(
-                "year"
-            ),
-            event_type=request.args.get(
-                "event_type"
-            ),
+            year=query_value("year"),
+            event_type=query_value("event_type"),
         )
     )
 
@@ -594,17 +581,27 @@ def remove_event(event_id):
     )
 
 
+@elimu_bp.get("/calendar")
+@require_school_account
+def get_calendar():
+    return ok(
+        services.calendar(
+            current_user_id(),
+            year=query_value("year"),
+        )
+    )
+
+
 # =========================================================
-# REPORT CENTER
+# REPORT CENTER / PRINT CENTER
 # =========================================================
+
 
 @elimu_bp.get("/reports/catalog")
 @require_school_account
 def reports_catalog():
     return ok(
-        services.report_catalog(
-            current_user_id()
-        )
+        services.report_catalog(current_user_id())
     )
 
 
@@ -612,46 +609,32 @@ def reports_catalog():
 @require_school_account
 def report_school():
     return ok(
-        services.school_report(
-            current_user_id()
-        )
+        services.school_report(current_user_id())
     )
 
 
-@elimu_bp.get(
-    "/reports/student/<student_id>"
-)
+@elimu_bp.get("/reports/student/<student_id>")
 @require_school_account
 def report_student(student_id):
     return ok(
         services.student_report(
             current_user_id(),
             student_id,
-            academic_year=request.args.get(
-                "academic_year"
-            ),
-            term=request.args.get(
-                "term"
-            ),
+            academic_year=query_value("academic_year"),
+            term=query_value("term"),
         )
     )
 
 
-@elimu_bp.get(
-    "/reports/class/<path:class_name>"
-)
+@elimu_bp.get("/reports/class/<path:class_name>")
 @require_school_account
 def report_class(class_name):
     return ok(
         services.class_report(
             current_user_id(),
             class_name,
-            academic_year=request.args.get(
-                "academic_year"
-            ),
-            term=request.args.get(
-                "term"
-            ),
+            academic_year=query_value("academic_year"),
+            term=query_value("term"),
         )
     )
 
@@ -662,12 +645,8 @@ def report_attendance():
     return ok(
         services.attendance_report(
             current_user_id(),
-            start_date=request.args.get(
-                "start_date"
-            ),
-            end_date=request.args.get(
-                "end_date"
-            ),
+            start_date=query_value("start_date"),
+            end_date=query_value("end_date"),
         )
     )
 
@@ -678,9 +657,7 @@ def report_fees():
     return ok(
         services.fees_report(
             current_user_id(),
-            status=request.args.get(
-                "status"
-            ),
+            status=query_value("status"),
         )
     )
 
@@ -691,8 +668,33 @@ def report_events():
     return ok(
         services.events_report(
             current_user_id(),
-            year=request.args.get(
-                "year"
-            ),
+            year=query_value("year"),
         )
     )
+
+
+@elimu_bp.get("/reports/print/<report_type>")
+@require_school_account
+def print_report(report_type):
+    """
+    Unified Print Center endpoint.
+
+    Android receives a report package and renders it through the
+    native Android print/PDF/share pipeline. The backend does not
+    need a browser or external URL for printing.
+    """
+
+    package = services.print_report(
+        current_user_id(),
+        report_type,
+        student_id=query_value("student_id"),
+        class_name=query_value("class_name"),
+        academic_year=query_value("academic_year"),
+        term=query_value("term"),
+        start_date=query_value("start_date"),
+        end_date=query_value("end_date"),
+        status=query_value("status"),
+        year=query_value("year"),
+    )
+
+    return ok(package)
