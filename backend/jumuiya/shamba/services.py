@@ -84,23 +84,62 @@ def object_id(value: Any) -> ObjectId:
         )
 
 
-def serialise(document: dict | None) -> dict | None:
+def _json_safe(value: Any) -> Any:
     """
-    Convert Mongo document into frontend-safe JSON data.
+    Recursively convert MongoDB/Python values into
+    frontend-safe JSON-compatible values.
+
+    Handles:
+      - ObjectId
+      - datetime
+      - dictionaries
+      - lists
+      - tuples
+      - sets
     """
-    if not document:
+
+    if isinstance(value, ObjectId):
+        return str(value)
+
+    if isinstance(value, datetime):
+        return value.isoformat()
+
+    if isinstance(value, dict):
+        result = {}
+
+        for key, item in value.items():
+            safe_key = "id" if key == "_id" else str(key)
+            result[safe_key] = _json_safe(item)
+
+        return result
+
+    if isinstance(value, (list, tuple, set)):
+        return [
+            _json_safe(item)
+            for item in value
+        ]
+
+    return value
+
+
+def serialise(document: Any) -> Any:
+    """
+    Recursively convert Mongo/Python values into
+    frontend-safe JSON data.
+    """
+
+    if document is None:
         return None
 
-    result = dict(document)
+    return _json_safe(document)
 
-    if "_id" in result:
-        result["id"] = clean_id(result.pop("_id"))
 
-    for key, value in list(result.items()):
-        if isinstance(value, ObjectId):
-            result[key] = str(value)
-
-    return result
+def serialise_many(documents: list[dict]) -> list[dict]:
+    return [
+        serialise(document)
+        for document in documents
+        if document
+    ]
 
 
 def serialise_many(documents: list[dict]) -> list[dict]:
@@ -803,7 +842,7 @@ def get_weather(
 
     weather = _normalise_weather(farm)
 
-    return {
+    return serialise({
         "farm_id": str(farm["_id"]),
         "location": {
             "county": farm.get("county", ""),
@@ -814,9 +853,9 @@ def get_weather(
             "accuracy": farm.get("location_accuracy"),
         },
         "available": _weather_available(weather),
-        "weather": serialise(weather),
+        "weather": weather,
         "last_synced": farm.get("last_weather_sync"),
-    }
+    })
 
 
 # ============================================================
@@ -894,12 +933,12 @@ def get_market(
 
     market = _normalise_market(farm)
 
-    return {
+    return serialise({
         "farm_id": str(farm["_id"]),
-        "market": serialise_many(market),
+        "market": market,
         "available": bool(market),
         "last_synced": farm.get("last_market_sync"),
-    }
+    })
 
 
 # ============================================================
@@ -1280,13 +1319,13 @@ def analyze_crop(
         ),
     )
 
-    return {
-        "crop": serialise(crop),
+    return serialise({
+        "crop": crop,
         "risk": risk,
         "yield": yield_analysis,
         "financials": financials,
         "generated_at": now_utc(),
-    }
+    })
 
 
 # ============================================================
@@ -1845,20 +1884,14 @@ def generate_farm_insight(
             },
         )
 
-    return {
-        "farm": serialise(farm),
+    return serialise({
+        "farm": farm,
         "health": health,
-        "insight": serialise(
-            insight_document
-        ),
-        "recommendations": serialise_many(
-            recommendations
-        ),
-        "alerts": serialise_many(
-            alerts
-        ),
+        "insight": insight_document,
+        "recommendations": recommendations,
+        "alerts": alerts,
         "generated_at": now_utc(),
-    }
+    })
 
 
 # ============================================================
@@ -2272,65 +2305,40 @@ def farm_command_center(
         farm_id_string,
     )
 
-    return {
+    return serialise({
         "summary": summary,
-        "farm": serialise(farm),
+        "farm": farm,
         "health": {
-            "score": insight.get(
-                "health_score"
-            ),
-            "status": insight.get(
-                "health_status"
-            ),
-            "risk_level": insight.get(
-                "risk_level"
-            ),
+            "score": insight.get("health_score"),
+            "status": insight.get("health_status"),
+            "risk_level": insight.get("risk_level"),
             "components": insight.get(
                 "health_components",
                 {},
             ),
         },
         "weather": (
-            serialise(weather)
+            weather
             if _weather_available(weather)
             else None
         ),
-        "market": serialise_many(
-            market
-        ),
+        "market": market,
         "crops": crops,
         "recent_activities": activities,
         "harvests": harvests,
         "recommendations": recommendations,
         "alerts": alerts,
         "location": {
-            "latitude": farm.get(
-                "latitude"
-            ),
-            "longitude": farm.get(
-                "longitude"
-            ),
-            "accuracy": farm.get(
-                "location_accuracy"
-            ),
-            "source": farm.get(
-                "location_source"
-            ),
-            "county": farm.get(
-                "county",
-                "",
-            ),
-            "town": farm.get(
-                "town",
-                "",
-            ),
-            "location": farm.get(
-                "location",
-                "",
-            ),
+            "latitude": farm.get("latitude"),
+            "longitude": farm.get("longitude"),
+            "accuracy": farm.get("location_accuracy"),
+            "source": farm.get("location_source"),
+            "county": farm.get("county", ""),
+            "town": farm.get("town", ""),
+            "location": farm.get("location", ""),
         },
         "generated_at": now_utc(),
-    }
+    })
 
 
 # ============================================================
@@ -2356,7 +2364,7 @@ def dashboard(
     )
 
     if not farms:
-        return {
+        return serialise({
             "farmer": farmer,
             "farms": [],
             "primary_farm": None,
@@ -2369,7 +2377,7 @@ def dashboard(
             },
             "needs_setup": True,
             "generated_at": now_utc(),
-        }
+        })
 
     primary = farms[0]
 
@@ -2413,7 +2421,7 @@ def dashboard(
         }
     )
 
-    return {
+    return serialise({
         "farmer": farmer,
         "farms": farms,
         "primary_farm": command_center,
@@ -2434,7 +2442,7 @@ def dashboard(
         },
         "needs_setup": False,
         "generated_at": now_utc(),
-    }
+    })
 
 
 # ============================================================
@@ -2500,7 +2508,7 @@ def recommendations_snapshot(
             or {}
         )
 
-    return {
+    return serialise({
         "farm_id": str(farm_id),
         "recommendations": list_recommendations(
             str(user_id),
@@ -2508,7 +2516,7 @@ def recommendations_snapshot(
         ),
         "insight": insight,
         "updated_at": now_utc(),
-    }
+    })
 
 
 # ============================================================
@@ -2519,7 +2527,7 @@ def alerts_snapshot(
     user_id: str,
     farm_id: str,
 ) -> dict:
-    return {
+    return serialise({
         "farm_id": str(farm_id),
         "alerts": list_alerts(
             str(user_id),
@@ -2536,4 +2544,4 @@ def alerts_snapshot(
             }
         ),
         "updated_at": now_utc(),
-    }
+    })
