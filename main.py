@@ -1,4 +1,4 @@
-# backend/main.py
+# main.py
 
 from __future__ import annotations
 
@@ -7,18 +7,10 @@ import os
 import threading
 import time
 from datetime import datetime
-import jwt
 
 from dotenv import load_dotenv
-from flask import (
-    Flask,
-    jsonify,
-    request,
-    g,
-)
+from flask import Flask, jsonify
 from flask_cors import CORS
-
-from backend.study.import_sda_q3_2026 import import_q3
 
 
 # =========================================================
@@ -27,15 +19,6 @@ from backend.study.import_sda_q3_2026 import import_q3
 
 load_dotenv()
 
-# =========================================================
-# JWT AUTHENTICATION
-# =========================================================
-
-JWT_SECRET = os.getenv(
-    "JWT_SECRET"
-)
-
-JWT_ALGORITHM = "HS256"
 
 # =========================================================
 # LOGGING
@@ -43,24 +26,25 @@ JWT_ALGORITHM = "HS256"
 
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    format=(
+        "%(asctime)s "
+        "[%(levelname)s] "
+        "%(name)s: %(message)s"
+    ),
 )
 
-logger = logging.getLogger("main")
-
-
-if os.getenv("FLASK_ENV") != "production":
-    logger.info(
-        "MONGO_URI loaded: %s",
-        bool(os.getenv("MONGO_URI")),
-    )
+logger = logging.getLogger(
+    "revelacode.main"
+)
 
 
 # =========================================================
 # APP
 # =========================================================
 
-app = Flask(__name__)
+app = Flask(
+    __name__
+)
 
 
 # =========================================================
@@ -99,7 +83,7 @@ CORS(
 
 
 # =========================================================
-# DATABASE INIT
+# DATABASE
 # =========================================================
 
 try:
@@ -107,21 +91,21 @@ try:
     from backend.db import db
 
     logger.info(
-        "MongoDB initialized successfully"
+        "✅ MongoDB initialized successfully"
     )
 
-except Exception as e:
-
-    logger.warning(
-        "MongoDB not available, running without DB: %s",
-        e,
-    )
+except Exception as exc:
 
     db = None
 
+    logger.exception(
+        "❌ MongoDB initialization failed: %s",
+        exc,
+    )
+
 
 # =========================================================
-# BLUEPRINT REGISTRATION HELPER
+# ROUTE REGISTRATION HELPER
 # =========================================================
 
 def register_bp(
@@ -129,7 +113,11 @@ def register_bp(
     bp_name: str,
 ):
     """
-    Safely import and register an existing Flask blueprint.
+    Register a non-critical existing Flask blueprint.
+
+    Critical modules such as Study should NOT use this
+    helper because silently skipping them can leave the
+    application partially functional.
     """
 
     try:
@@ -139,30 +127,30 @@ def register_bp(
             fromlist=[bp_name],
         )
 
-        bp = getattr(
+        blueprint = getattr(
             module,
             bp_name,
         )
 
         app.register_blueprint(
-            bp
+            blueprint
         )
 
         logger.info(
-            "%s registered (%s)",
+            "✅ %s registered from %s",
             bp_name,
             import_path,
         )
 
         return True
 
-    except Exception as e:
+    except Exception as exc:
 
-        logger.warning(
-            "%s not available from %s: %s",
+        logger.exception(
+            "❌ %s registration failed from %s: %s",
             bp_name,
             import_path,
-            e,
+            exc,
         )
 
         return False
@@ -200,7 +188,7 @@ register_bp(
 try:
 
     from backend.jumuiya.integration.register import (
-        register_jumuiya
+        register_jumuiya,
     )
 
     register_jumuiya(
@@ -211,12 +199,13 @@ try:
         "✅ Jumuiya platform registered"
     )
 
-except Exception as e:
+except Exception as exc:
 
     logger.exception(
         "❌ Jumuiya registration failed: %s",
-        e,
+        exc,
     )
+
 
 # =========================================================
 # REVELAAI AI GATEWAY
@@ -225,7 +214,7 @@ except Exception as e:
 try:
 
     from backend.ai_gateway import (
-        register_ai_gateway
+        register_ai_gateway,
     )
 
     register_ai_gateway(
@@ -236,35 +225,186 @@ try:
         "✅ RevelaAI AI Gateway registered"
     )
 
-except Exception as e:
+except Exception as exc:
 
     logger.exception(
         "❌ RevelaAI AI Gateway registration failed: %s",
-        e,
+        exc,
     )
 
+
 # =========================================================
-# STUDY BLUEPRINT
+# STUDY PLATFORM
+# =========================================================
+#
+# IMPORTANT:
+#
+# Study is a core RevelaCode module.
+#
+# DO NOT hide its import behind a generic try/except.
+#
+# If Study cannot load, we want Gunicorn/Render to fail
+# loudly so the deployment exposes the real import problem
+# instead of serving a partially functional backend with:
+#
+#     /api/study/... -> 404
+#
 # =========================================================
 
 try:
 
-    from backend.routes.study_routes import study_bp
+    from backend.routes.study_routes import (
+        study_bp,
+    )
+
+except Exception as exc:
+
+    logger.exception(
+        "❌ CRITICAL: Study blueprint import failed: %s",
+        exc,
+    )
+
+    raise
+
+
+# ---------------------------------------------------------
+# Register the Study blueprint.
+#
+# study_routes.py defines:
+#
+#     url_prefix="/study"
+#
+# Therefore registering with:
+#
+#     url_prefix="/api"
+#
+# creates:
+#
+#     /api/study/...
+#
+# ---------------------------------------------------------
+
+try:
 
     app.register_blueprint(
         study_bp,
         url_prefix="/api",
     )
 
-    logger.info(
-        "study_bp registered with /api prefix"
-    )
-
-except Exception as e:
+except Exception as exc:
 
     logger.exception(
-        "study_bp registration failed: %s",
-        e,
+        "❌ CRITICAL: Study blueprint registration failed: %s",
+        exc,
+    )
+
+    raise
+
+
+logger.info(
+    "✅ Study blueprint registered with /api prefix"
+)
+
+
+# =========================================================
+# STUDY ROUTE VERIFICATION
+# =========================================================
+
+def get_registered_routes(
+    prefix: str | None = None,
+):
+    """
+    Return the application's registered routes.
+
+    Used during startup diagnostics.
+    """
+
+    routes = []
+
+    for rule in app.url_map.iter_rules():
+
+        if (
+            prefix is not None
+            and not rule.rule.startswith(
+                prefix
+            )
+        ):
+            continue
+
+        methods = sorted(
+            method
+            for method in rule.methods
+            if method
+            not in {
+                "HEAD",
+                "OPTIONS",
+            }
+        )
+
+        routes.append({
+            "rule": rule.rule,
+            "endpoint": rule.endpoint,
+            "methods": methods,
+        })
+
+    routes.sort(
+        key=lambda item:
+            item["rule"]
+    )
+
+    return routes
+
+
+def study_route_exists(
+    route: str,
+) -> bool:
+
+    return any(
+        rule.rule == route
+        for rule in app.url_map.iter_rules()
+    )
+
+
+# ---------------------------------------------------------
+# Verify canonical Study endpoints.
+# ---------------------------------------------------------
+
+STUDY_MATERIALS_ROUTE = (
+    "/api/study/materials"
+)
+
+STUDY_HEALTH_ROUTE = (
+    "/api/study/health"
+)
+
+logger.info(
+    "📚 Study materials route registered: %s",
+    study_route_exists(
+        STUDY_MATERIALS_ROUTE
+    ),
+)
+
+logger.info(
+    "📚 Study health route registered: %s",
+    study_route_exists(
+        STUDY_HEALTH_ROUTE
+    ),
+)
+
+logger.info(
+    "📚 Registered Study routes:"
+)
+
+for route in get_registered_routes(
+    "/api/study"
+):
+
+    logger.info(
+        "    %s %s",
+        ",".join(
+            route["methods"]
+        ),
+        route["rule"],
     )
 
 
@@ -292,7 +432,6 @@ register_bp(
     "domain_bp",
 )
 
-# Existing RevelaCode notification system.
 register_bp(
     "backend.routes.notifications_routes",
     "notifications_bp",
@@ -310,7 +449,9 @@ register_bp(
 
 try:
 
-    from backend.routes.admin_routes import admin_bp
+    from backend.routes.admin_routes import (
+        admin_bp,
+    )
 
     app.register_blueprint(
         admin_bp,
@@ -318,14 +459,14 @@ try:
     )
 
     logger.info(
-        "admin_bp registered with /api prefix"
+        "✅ admin_bp registered with /api prefix"
     )
 
-except Exception as e:
+except Exception as exc:
 
-    logger.warning(
-        "admin_bp registration failed: %s",
-        e,
+    logger.exception(
+        "❌ admin_bp registration failed: %s",
+        exc,
     )
 
 
@@ -335,7 +476,9 @@ except Exception as e:
 
 try:
 
-    from backend.routes.support_routes import support_bp
+    from backend.routes.support_routes import (
+        support_bp,
+    )
 
     app.register_blueprint(
         support_bp,
@@ -343,14 +486,14 @@ try:
     )
 
     logger.info(
-        "support_bp registered with /api/support prefix"
+        "✅ support_bp registered with /api/support prefix"
     )
 
-except Exception as e:
+except Exception as exc:
 
-    logger.warning(
-        "support_bp registration failed: %s",
-        e,
+    logger.exception(
+        "❌ support_bp registration failed: %s",
+        exc,
     )
 
 
@@ -365,7 +508,7 @@ register_bp(
 
 
 # =========================================================
-# ROOT HEALTH
+# ROOT
 # =========================================================
 
 @app.route(
@@ -375,10 +518,16 @@ register_bp(
 def index():
 
     return jsonify({
-        "message": "RevelaCode Backend is live",
-        "status": "ok",
+        "message":
+            "RevelaCode Backend is live",
+        "status":
+            "ok",
     }), 200
 
+
+# =========================================================
+# HEALTH
+# =========================================================
 
 @app.route(
     "/health",
@@ -388,11 +537,76 @@ def health():
 
     return jsonify({
         "ok": True,
-        "mongo_connected": db is not None,
-        "mongo_uri_set": bool(
-            os.getenv("MONGO_URI")
-        ),
-        "jumuiya": True,
+
+        "mongo_connected":
+            db is not None,
+
+        "mongo_uri_set":
+            bool(
+                os.getenv(
+                    "MONGO_URI"
+                )
+            ),
+
+        "jumuiya":
+            True,
+
+        "study": {
+            "registered":
+                study_route_exists(
+                    STUDY_MATERIALS_ROUTE
+                ),
+
+            "health_route":
+                study_route_exists(
+                    STUDY_HEALTH_ROUTE
+                ),
+
+            "materials_route":
+                study_route_exists(
+                    STUDY_MATERIALS_ROUTE
+                ),
+        },
+    }), 200
+
+
+# =========================================================
+# ROUTE DIAGNOSTICS
+# =========================================================
+
+@app.route(
+    "/api/diagnostics/routes",
+    methods=["GET"],
+)
+def diagnostics_routes():
+
+    return jsonify({
+        "success": True,
+
+        "study": {
+            "registered":
+                study_route_exists(
+                    STUDY_MATERIALS_ROUTE
+                ),
+
+            "health":
+                study_route_exists(
+                    STUDY_HEALTH_ROUTE
+                ),
+
+            "materials":
+                study_route_exists(
+                    STUDY_MATERIALS_ROUTE
+                ),
+
+            "routes":
+                get_registered_routes(
+                    "/api/study"
+                ),
+        },
+
+        "all_routes":
+            get_registered_routes(),
     }), 200
 
 
@@ -400,12 +614,32 @@ def health():
 # SDA Q3 2026 IMPORT
 # =========================================================
 
+try:
+
+    from backend.study.import_sda_q3_2026 import (
+        import_q3,
+    )
+
+except Exception as exc:
+
+    logger.exception(
+        "❌ SDA importer import failed: %s",
+        exc,
+    )
+
+    import_q3 = None
+
+
 def maybe_import_sda_q3_2026():
 
-    enabled = os.getenv(
-        "IMPORT_SDA_Q3_2026",
-        "false",
-    ).strip().lower()
+    enabled = (
+        os.getenv(
+            "IMPORT_SDA_Q3_2026",
+            "false",
+        )
+        .strip()
+        .lower()
+    )
 
     if enabled != "true":
 
@@ -420,6 +654,15 @@ def maybe_import_sda_q3_2026():
         logger.error(
             "❌ SDA importer cannot run because "
             "MongoDB is not initialized."
+        )
+
+        return
+
+    if import_q3 is None:
+
+        logger.error(
+            "❌ SDA importer cannot run because "
+            "import_q3 failed to load."
         )
 
         return
@@ -500,7 +743,9 @@ def daily_runner_loop():
     last_run_date = None
 
     backend_dir = os.path.abspath(
-        os.path.dirname(__file__)
+        os.path.dirname(
+            __file__
+        )
     )
 
     while True:
@@ -512,7 +757,7 @@ def daily_runner_loop():
             try:
 
                 from backend.daily_runner import (
-                    run_pipeline
+                    run_pipeline,
                 )
 
                 logger.info(
@@ -537,11 +782,11 @@ def daily_runner_loop():
                         current_dir
                     )
 
-            except Exception as e:
+            except Exception as exc:
 
                 logger.exception(
-                    "Daily runner failed: %s",
-                    e,
+                    "❌ Daily runner failed: %s",
+                    exc,
                 )
 
         time.sleep(
@@ -554,23 +799,13 @@ def daily_runner_loop():
 # =========================================================
 
 _background_jobs_started = False
-_background_jobs_lock = threading.Lock()
+
+_background_jobs_lock = (
+    threading.Lock()
+)
 
 
 def start_background_jobs():
-    """
-    Start all background jobs exactly once per Python
-    application process.
-
-    This function is called both:
-
-        - when running `python main.py`
-        - when Gunicorn imports `main:app`
-
-    IMPORTANT:
-        Use ONE Gunicorn worker because these jobs live
-        inside the web process.
-    """
 
     global _background_jobs_started
 
@@ -612,20 +847,6 @@ def start_background_jobs():
 # =========================================================
 # START BACKGROUND JOBS
 # =========================================================
-#
-# This is deliberately outside:
-#
-#     if __name__ == "__main__":
-#
-# because Gunicorn imports:
-#
-#     main:app
-#
-# and therefore does not execute the __main__ block.
-#
-# With ONE Gunicorn worker, the jobs run once inside the
-# web process.
-# =========================================================
 
 start_background_jobs()
 
@@ -636,10 +857,6 @@ start_background_jobs()
 
 if __name__ == "__main__":
 
-    # -----------------------------------------------------
-    # PORT
-    # -----------------------------------------------------
-
     port = int(
         os.environ.get(
             "PORT",
@@ -648,13 +865,9 @@ if __name__ == "__main__":
     )
 
     logger.info(
-        "Starting server on port %s",
+        "🚀 Starting server on port %s",
         port,
     )
-
-    # -----------------------------------------------------
-    # FLASK DEVELOPMENT SERVER
-    # -----------------------------------------------------
 
     app.run(
         host="0.0.0.0",
