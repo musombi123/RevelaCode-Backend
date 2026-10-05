@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import defaultdict
 from datetime import datetime, timezone
 from typing import Any
 
@@ -43,6 +44,29 @@ CBC = "jumuiya_cbc_projects"
 ATTENDANCE = "jumuiya_attendance"
 ASSESSMENTS = "jumuiya_assessments"
 EVENTS = "jumuiya_school_events"
+
+
+# =========================================================
+# ELIMU CONTRACT / STATUS CONSTANTS
+# =========================================================
+
+ELIMU_VERSION = "4.0"
+REPORT_SCHEMA_VERSION = "1.0"
+DEFAULT_COUNTRY = "Kenya"
+DEFAULT_CURRENCY = "KES"
+DEFAULT_TIMEZONE = "Africa/Nairobi"
+
+SCHOOL_STATUSES = {"active", "suspended", "archived"}
+STUDENT_STATUSES = {
+    "active",
+    "inactive",
+    "graduated",
+    "transferred",
+    "suspended",
+}
+EVENT_STATUSES = {"scheduled", "ongoing", "completed", "cancelled"}
+ATTENDANCE_STATUSES = {"present", "late", "absent", "excused"}
+
 
 
 # =========================================================
@@ -133,6 +157,144 @@ def _oid(value):
             400,
             "invalid_id",
         )
+
+
+# =========================================================
+# NORMALIZATION / SAFETY HELPERS
+# =========================================================
+
+def _text(value, default=""):
+    if value is None:
+        return default
+    return str(value).strip()
+
+
+def _lower(value, default=""):
+    value = _text(value, default)
+    return value.lower() if value else default
+
+
+def _safe_float(value, default=0.0):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _safe_bool(value, default=False):
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
+
+
+def _school_id(school):
+    return str(school["_id"])
+
+
+def _normalize_school_payload(data):
+    """Create a safe, additive school update contract."""
+    payload = dict(data or {})
+    payload.pop("_id", None)
+    payload.pop("owner_user_id", None)
+
+    payload.setdefault("country", DEFAULT_COUNTRY)
+    payload.setdefault("currency", DEFAULT_CURRENCY)
+    payload.setdefault("timezone", DEFAULT_TIMEZONE)
+    payload.setdefault("schema_version", ELIMU_VERSION)
+
+    branding = payload.get("report_branding")
+    if not isinstance(branding, dict):
+        branding = {}
+
+    payload["report_branding"] = {
+        "logo_url": branding.get("logo_url", payload.get("logo_url", "")),
+        "primary_color": branding.get("primary_color", ""),
+        "secondary_color": branding.get("secondary_color", ""),
+        "footer_text": branding.get("footer_text", ""),
+        "watermark": branding.get("watermark", ""),
+        **branding,
+    }
+
+    settings = payload.get("settings")
+    if not isinstance(settings, dict):
+        settings = {}
+
+    payload["settings"] = {
+        "allow_parent_access": settings.get("allow_parent_access", False),
+        "enable_notifications": settings.get("enable_notifications", True),
+        "enable_print_center": settings.get("enable_print_center", True),
+        "default_report_paper": settings.get("default_report_paper", "A4"),
+        "default_report_orientation": settings.get(
+            "default_report_orientation",
+            "portrait",
+        ),
+        **settings,
+    }
+
+    return payload
+
+
+def _normalize_event_payload(data):
+    """Normalize event metadata while remaining compatible with old records."""
+    payload = dict(data or {})
+    annual = _safe_bool(payload.get("is_annual"), False)
+
+    recurrence = payload.get("recurrence")
+    if not isinstance(recurrence, dict):
+        recurrence = {
+            "type": "annual" if annual else "none"
+        }
+    else:
+        recurrence = {
+            "type": _lower(
+                recurrence.get(
+                    "type",
+                    "annual" if annual else "none",
+                ),
+                "annual" if annual else "none",
+            ),
+            **recurrence,
+        }
+
+    payload["is_annual"] = annual
+    payload["recurrence"] = recurrence
+    payload.setdefault("visibility", "school")
+    payload.setdefault("all_day", False)
+    payload.setdefault("reminder_minutes", 0)
+    payload.setdefault(
+        "calendar_year",
+        _text(payload.get("academic_year")),
+    )
+    payload.setdefault("schema_version", ELIMU_VERSION)
+
+    return payload
+
+
+
+
+
+
+def _next_events(school_id, limit=5):
+    today = now_utc().date().isoformat()
+
+    docs = (
+        collection(EVENTS)
+        .find(
+            {
+                "school_id": str(school_id),
+                "status": {"$ne": "cancelled"},
+                "start_date": {"$gte": today},
+            }
+        )
+        .sort("start_date", 1)
+        .limit(limit)
+    )
+
+    return _many(docs)
 
 
 # =========================================================
@@ -248,6 +410,7 @@ def save_school(
     )
 
     now = now_utc()
+    data = _normalize_school_payload(data)
 
     existing = collection(
         SCHOOLS
@@ -644,6 +807,25 @@ def update_student(
         user_id
     )
 
+    school_id = _school_id(school)
+    student_oid = _oid(student_id)
+
+    existing = collection(
+        STUDENTS
+    ).find_one(
+        {
+            "_id": student_oid,
+            "school_id": school_id,
+        }
+    )
+
+    if not existing:
+        raise APIError(
+            "Student not found.",
+            404,
+            "student_not_found",
+        )
+
     allowed = {
         "admission_number",
         "full_name",
@@ -658,6 +840,10 @@ def update_student(
         "town",
         "address",
         "status",
+        "student_code",
+        "stream",
+        "enrollment_date",
+        "leaving_date",
     }
 
     update = {
@@ -673,18 +859,122 @@ def update_student(
             "validation_error",
         )
 
+    if "admission_number" in update:
+        admission_number = _text(
+            update["admission_number"]
+        )
+
+        if not admission_number:
+            raise APIError(
+                "Admission number cannot be empty.",
+                422,
+                "validation_error",
+            )
+
+        duplicate = collection(
+            STUDENTS
+        ).find_one(
+            {
+                "_id": {"$ne": student_oid},
+                "school_id": school_id,
+                "admission_number": admission_number,
+            }
+        )
+
+        if duplicate:
+            raise APIError(
+                "A student with this admission number already exists.",
+                409,
+                "student_exists",
+            )
+
+        update["admission_number"] = admission_number
+
+    if update.get("class_id"):
+        target_class = collection(
+            CLASSES
+        ).find_one(
+            {
+                "_id": _oid(update["class_id"]),
+                "school_id": school_id,
+                "status": "active",
+            }
+        )
+
+        if not target_class:
+            raise APIError(
+                "Class does not belong to this school.",
+                403,
+                "class_access_denied",
+            )
+
+        update["class_id"] = str(
+            target_class["_id"]
+        )
+        update["class_name"] = target_class.get(
+            "name",
+            update.get(
+                "class_name",
+                existing.get(
+                    "class_name",
+                    "",
+                ),
+            ),
+        )
+
+    elif "class_name" in update:
+        class_name = _text(
+            update["class_name"]
+        )
+
+        if class_name:
+            target_class = collection(
+                CLASSES
+            ).find_one(
+                {
+                    "school_id": school_id,
+                    "name": class_name,
+                    "status": "active",
+                }
+            )
+
+            if not target_class:
+                raise APIError(
+                    "Class does not belong to this school.",
+                    403,
+                    "class_access_denied",
+                )
+
+            update["class_id"] = str(
+                target_class["_id"]
+            )
+            update["class_name"] = target_class.get(
+                "name",
+                class_name,
+            )
+
+    if "status" in update:
+        status = _lower(
+            update["status"]
+        )
+
+        if status not in STUDENT_STATUSES:
+            raise APIError(
+                "Invalid student status.",
+                422,
+                "validation_error",
+            )
+
+        update["status"] = status
+
     update["updated_at"] = now_utc()
 
     doc = collection(
         STUDENTS
     ).find_one_and_update(
         {
-            "_id": _oid(
-                student_id
-            ),
-            "school_id": str(
-                school["_id"]
-            ),
+            "_id": student_oid,
+            "school_id": school_id,
         },
         {
             "$set": update
@@ -709,6 +999,7 @@ def update_student(
     return _ser(
         doc
     )
+
 
 
 # =========================================================
@@ -1133,16 +1424,14 @@ def create_fee(
     school = _school_document(
         user_id
     )
+    school_id = _school_id(school)
 
     payload = {
         **data,
-        "school_id": str(
-            school["_id"]
-        ),
+        "school_id": school_id,
     }
 
     if data.get("student_id"):
-
         student = collection(
             STUDENTS
         ).find_one(
@@ -1150,9 +1439,7 @@ def create_fee(
                 "_id": _oid(
                     data["student_id"]
                 ),
-                "school_id": str(
-                    school["_id"]
-                ),
+                "school_id": school_id,
             }
         )
 
@@ -1163,16 +1450,90 @@ def create_fee(
                 "student_access_denied",
             )
 
-        payload["student_user_id"] = (
-            payload.get(
-                "student_user_id",
-                "",
-            )
+        payload["student_id"] = str(
+            student["_id"]
+        )
+        payload["student_user_id"] = student.get(
+            "student_user_id",
+            "",
+        )
+        payload["student_name"] = student.get(
+            "full_name",
+            "",
+        )
+        payload["admission_number"] = student.get(
+            "admission_number",
+            "",
+        )
+        payload["class_name"] = student.get(
+            "class_name",
+            "",
+        )
+
+    amount = _safe_float(
+        payload.get("amount"),
+        0.0,
+    )
+    amount_paid = _safe_float(
+        payload.get("amount_paid"),
+        0.0,
+    )
+    amount_paid = max(
+        0.0,
+        min(
+            amount_paid,
+            amount,
+        ),
+    )
+
+    payload["amount"] = amount
+    payload["amount_paid"] = amount_paid
+    payload["balance"] = round(
+        max(
+            amount - amount_paid,
+            0.0,
+        ),
+        2,
+    )
+
+    if payload["balance"] == 0 and amount > 0:
+        payload["status"] = "paid"
+    elif amount_paid > 0:
+        payload["status"] = "partial"
+    else:
+        payload.setdefault(
+            "status",
+            "pending",
         )
 
     document = fee_document(
         user_id,
         payload,
+    )
+
+    # Additive accounting fields keep old model deployments compatible.
+    document["amount"] = amount
+    document["amount_paid"] = amount_paid
+    document["balance"] = round(
+        max(
+            amount - amount_paid,
+            0.0,
+        ),
+        2,
+    )
+    document.setdefault(
+        "currency",
+        payload.get(
+            "currency",
+            DEFAULT_CURRENCY,
+        ),
+    )
+    document.setdefault(
+        "status",
+        payload.get(
+            "status",
+            "pending",
+        ),
     )
 
     result = collection(
@@ -1181,9 +1542,7 @@ def create_fee(
         document
     )
 
-    document["_id"] = (
-        result.inserted_id
-    )
+    document["_id"] = result.inserted_id
 
     log_action(
         user_id,
@@ -1195,6 +1554,7 @@ def create_fee(
     return _ser(
         document
     )
+
 
 
 def student_fees(
@@ -1241,18 +1601,15 @@ def create_cbc_project(
     school = _school_document(
         user_id
     )
+    school_id = _school_id(school)
 
     payload = {
         **data,
-        "school_id": str(
-            school["_id"]
-        ),
+        "school_id": school_id,
+        "teacher_user_id": str(user_id),
     }
 
-    if data.get(
-        "student_id"
-    ):
-
+    if data.get("student_id"):
         student = collection(
             STUDENTS
         ).find_one(
@@ -1260,9 +1617,7 @@ def create_cbc_project(
                 "_id": _oid(
                     data["student_id"]
                 ),
-                "school_id": str(
-                    school["_id"]
-                ),
+                "school_id": school_id,
             }
         )
 
@@ -1273,9 +1628,38 @@ def create_cbc_project(
                 "student_access_denied",
             )
 
+        payload["student_id"] = str(
+            student["_id"]
+        )
+        payload["student_user_id"] = student.get(
+            "student_user_id",
+            "",
+        )
+        payload["student_name"] = student.get(
+            "full_name",
+            "",
+        )
+        payload["admission_number"] = student.get(
+            "admission_number",
+            "",
+        )
+        payload["class_name"] = student.get(
+            "class_name",
+            "",
+        )
+
     document = cbc_project_document(
         user_id,
         payload,
+    )
+
+    document.setdefault(
+        "school_id",
+        school_id,
+    )
+    document.setdefault(
+        "teacher_user_id",
+        str(user_id),
     )
 
     result = collection(
@@ -1284,9 +1668,7 @@ def create_cbc_project(
         document
     )
 
-    document["_id"] = (
-        result.inserted_id
-    )
+    document["_id"] = result.inserted_id
 
     log_action(
         user_id,
@@ -1298,6 +1680,7 @@ def create_cbc_project(
     return _ser(
         document
     )
+
 
 
 def student_projects(
@@ -1339,10 +1722,80 @@ def create_event(
         user_id
     )
 
+    payload = _normalize_event_payload(
+        data
+    )
+    payload["created_by"] = str(
+        user_id
+    )
+
+    payload["calendar_year"] = (
+        payload.get("calendar_year")
+        or payload.get("academic_year")
+        or (
+            _text(
+                payload.get("start_date")
+            )[:4]
+            if payload.get("start_date")
+            else ""
+        )
+    )
+
     document = event_document(
         user_id,
         school["_id"],
-        data,
+        payload,
+    )
+
+    # Preserve upgraded metadata even while older model code is being rolled out.
+    document.setdefault(
+        "schema_version",
+        ELIMU_VERSION,
+    )
+    document.setdefault(
+        "recurrence",
+        payload["recurrence"],
+    )
+    document.setdefault(
+        "visibility",
+        payload.get(
+            "visibility",
+            "school",
+        ),
+    )
+    document.setdefault(
+        "all_day",
+        _safe_bool(
+            payload.get(
+                "all_day"
+            ),
+            False,
+        ),
+    )
+    document.setdefault(
+        "reminder_minutes",
+        max(
+            0,
+            int(
+                _safe_float(
+                    payload.get(
+                        "reminder_minutes"
+                    ),
+                    0,
+                )
+            ),
+        ),
+    )
+    document.setdefault(
+        "calendar_year",
+        payload.get(
+            "calendar_year",
+            "",
+        ),
+    )
+    document.setdefault(
+        "created_by",
+        str(user_id),
     )
 
     result = collection(
@@ -1351,9 +1804,7 @@ def create_event(
         document
     )
 
-    document["_id"] = (
-        result.inserted_id
-    )
+    document["_id"] = result.inserted_id
 
     log_action(
         user_id,
@@ -1377,32 +1828,54 @@ def events(
         user_id
     )
 
+    school_id = _school_id(
+        school
+    )
+
     query = {
-        "school_id": str(
-            school["_id"]
-        ),
+        "school_id": school_id,
         "status": {
             "$ne": "cancelled"
         },
     }
 
     if year:
-        query["start_date"] = {
-            "$regex": f"^{str(year)}"
-        }
+        year_value = _text(
+            year
+        )
+        query["$or"] = [
+            {
+                "calendar_year": year_value
+            },
+            {
+                "start_date": {
+                    "$regex": f"^{year_value}"
+                }
+            },
+        ]
 
     if event_type:
-        query["event_type"] = str(
+        query["event_type"] = _lower(
             event_type
-        ).strip().lower()
+        )
 
     docs = (
-        collection(EVENTS)
-        .find(query)
+        collection(
+            EVENTS
+        )
+        .find(
+            query
+        )
         .sort(
             [
-                ("start_date", 1),
-                ("created_at", -1),
+                (
+                    "start_date",
+                    1,
+                ),
+                (
+                    "created_at",
+                    -1,
+                ),
             ]
         )
     )
@@ -1421,6 +1894,10 @@ def update_event(
         user_id
     )
 
+    school_id = _school_id(
+        school
+    )
+
     allowed = {
         "title",
         "event_type",
@@ -1433,6 +1910,11 @@ def update_event(
         "term",
         "is_annual",
         "status",
+        "recurrence",
+        "visibility",
+        "all_day",
+        "reminder_minutes",
+        "calendar_year",
     }
 
     update = {
@@ -1448,6 +1930,88 @@ def update_event(
             "validation_error",
         )
 
+    if "status" in update:
+        status = _lower(
+            update["status"]
+        )
+
+        if status not in EVENT_STATUSES:
+            raise APIError(
+                "Invalid event status.",
+                422,
+                "validation_error",
+            )
+
+        update["status"] = status
+
+    if (
+        "is_annual" in update
+        or "recurrence" in update
+    ):
+        annual = _safe_bool(
+            update.get(
+                "is_annual"
+            ),
+            False,
+        )
+
+        recurrence = update.get(
+            "recurrence"
+        )
+
+        if not isinstance(
+            recurrence,
+            dict,
+        ):
+            recurrence = {
+                "type": (
+                    "annual"
+                    if annual
+                    else "none"
+                )
+            }
+
+        recurrence = {
+            "type": _lower(
+                recurrence.get(
+                    "type",
+                    (
+                        "annual"
+                        if annual
+                        else "none"
+                    ),
+                ),
+                (
+                    "annual"
+                    if annual
+                    else "none"
+                ),
+            ),
+            **recurrence,
+        }
+
+        update["recurrence"] = recurrence
+        update["is_annual"] = annual
+
+    if (
+        "calendar_year" not in update
+        and update.get("academic_year")
+    ):
+        update["calendar_year"] = _text(
+            update["academic_year"]
+        )
+
+    if "reminder_minutes" in update:
+        update["reminder_minutes"] = max(
+            0,
+            int(
+                _safe_float(
+                    update["reminder_minutes"],
+                    0,
+                )
+            ),
+        )
+
     update["updated_at"] = now_utc()
 
     doc = collection(
@@ -1457,9 +2021,7 @@ def update_event(
             "_id": _oid(
                 event_id
             ),
-            "school_id": str(
-                school["_id"]
-            ),
+            "school_id": school_id,
         },
         {
             "$set": update
@@ -1484,6 +2046,7 @@ def update_event(
     return _ser(
         doc
     )
+
 
 
 def delete_event(
@@ -1555,12 +2118,28 @@ def _school_header(
             "registration_number",
             "",
         ),
+        "school_type": school.get(
+            "school_type",
+            "",
+        ),
         "motto": school.get(
             "motto",
             "",
         ),
+        "mission": school.get(
+            "mission",
+            "",
+        ),
+        "vision": school.get(
+            "vision",
+            "",
+        ),
         "principal_name": school.get(
             "principal_name",
+            "",
+        ),
+        "administrator_name": school.get(
+            "administrator_name",
             "",
         ),
         "phone": school.get(
@@ -1569,6 +2148,14 @@ def _school_header(
         ),
         "email": school.get(
             "email",
+            "",
+        ),
+        "website": school.get(
+            "website",
+            "",
+        ),
+        "postal_address": school.get(
+            "postal_address",
             "",
         ),
         "location": school.get(
@@ -1583,6 +2170,10 @@ def _school_header(
             "town",
             "",
         ),
+        "country": school.get(
+            "country",
+            DEFAULT_COUNTRY,
+        ),
         "logo_url": school.get(
             "logo_url",
             "",
@@ -1594,6 +2185,16 @@ def _performance_band(
     percentage,
 ):
     if percentage is None:
+        return "Not assessed"
+
+    try:
+        percentage = float(
+            percentage
+        )
+    except (
+        TypeError,
+        ValueError,
+    ):
         return "Not assessed"
 
     if percentage >= 80:
@@ -1611,6 +2212,77 @@ def _performance_band(
     return "Needs Support"
 
 
+def _report_branding(
+    school,
+):
+    branding = school.get(
+        "report_branding"
+    )
+
+    if not isinstance(
+        branding,
+        dict,
+    ):
+        branding = {}
+
+    return {
+        "logo_url": branding.get(
+            "logo_url"
+        ) or school.get(
+            "logo_url",
+            "",
+        ),
+        "primary_color": branding.get(
+            "primary_color",
+            "",
+        ),
+        "secondary_color": branding.get(
+            "secondary_color",
+            "",
+        ),
+        "footer_text": branding.get(
+            "footer_text",
+            "",
+        ),
+        "watermark": branding.get(
+            "watermark",
+            "",
+        ),
+    }
+
+
+def _print_config(
+    school,
+    orientation="portrait",
+):
+    settings = school.get(
+        "settings"
+    )
+
+    if not isinstance(
+        settings,
+        dict,
+    ):
+        settings = {}
+
+    return {
+        "ready": True,
+        "renderer": "android_native",
+        "paper": settings.get(
+            "default_report_paper",
+            "A4",
+        ),
+        "orientation": orientation,
+        "repeat_school_header": True,
+        "include_generated_at": True,
+        "include_footer": True,
+        "signature_lines": True,
+        "save_as_pdf": True,
+        "share": True,
+        "print_preview": True,
+    }
+
+
 def _print_package(
     *,
     report_type,
@@ -1620,27 +2292,72 @@ def _print_package(
     rows,
     summary,
     metadata=None,
+    orientation="portrait",
 ):
+    settings = school.get(
+        "settings"
+    )
+
+    if not isinstance(
+        settings,
+        dict,
+    ):
+        settings = {}
+
+    metadata = dict(
+        metadata or {}
+    )
+
+    metadata.setdefault(
+        "academic_year",
+        school.get(
+            "academic_year",
+            "",
+        ),
+    )
+    metadata.setdefault(
+        "term",
+        school.get(
+            "current_term",
+            "",
+        ),
+    )
+    metadata.setdefault(
+        "schema_version",
+        REPORT_SCHEMA_VERSION,
+    )
+
     return {
+        "schema_version": REPORT_SCHEMA_VERSION,
+        "hub": "elimu",
         "report_type": report_type,
         "title": title,
+        "document_code": (
+            f"ELIMU-"
+            f"{str(report_type).upper()}"
+        ),
         "generated_at": now_utc().isoformat(),
-        "paper": "A4",
-        "orientation": "portrait",
+        "paper": settings.get(
+            "default_report_paper",
+            "A4",
+        ),
+        "orientation": orientation,
         "school": _school_header(
+            school
+        ),
+        "branding": _report_branding(
             school
         ),
         "columns": columns,
         "rows": rows,
         "summary": summary,
-        "metadata": metadata or {},
-        "print": {
-            "ready": True,
-            "paper": "A4",
-            "orientation": "portrait",
-            "repeat_school_header": True,
-        },
+        "metadata": metadata,
+        "print": _print_config(
+            school,
+            orientation=orientation,
+        ),
     }
+
 
 
 # =========================================================
@@ -1650,38 +2367,94 @@ def _print_package(
 def report_catalog(
     user_id,
 ):
-    _school_document(
+    school = _school_document(
         user_id
     )
 
+    reports = [
+        {
+            "key": "school",
+            "label": "School Profile Report",
+            "description": (
+                "Official school identity, leadership, "
+                "contact and setup summary."
+            ),
+            "screen": "reports-school",
+            "printable": True,
+            "paper": "A4",
+        },
+        {
+            "key": "student",
+            "label": "Student Report Card",
+            "description": (
+                "Student academic performance, competency "
+                "and attendance summary."
+            ),
+            "screen": "reports-student",
+            "printable": True,
+            "paper": "A4",
+            "requires": ["student_id"],
+        },
+        {
+            "key": "class",
+            "label": "Class Performance Report",
+            "description": (
+                "Class-wide academic performance and learner "
+                "summary."
+            ),
+            "screen": "reports-class",
+            "printable": True,
+            "paper": "A4",
+            "requires": ["class_name"],
+        },
+        {
+            "key": "attendance",
+            "label": "Attendance Report",
+            "description": (
+                "Attendance records with present, late, absent "
+                "and excused totals."
+            ),
+            "screen": "reports-attendance",
+            "printable": True,
+            "paper": "A4",
+        },
+        {
+            "key": "fees",
+            "label": "Fees Report",
+            "description": (
+                "Fee records with amount paid and outstanding "
+                "balance information."
+            ),
+            "screen": "reports-fees",
+            "printable": True,
+            "paper": "A4",
+            "orientation": "landscape",
+        },
+        {
+            "key": "events",
+            "label": "Annual Events Calendar",
+            "description": (
+                "Printable school calendar covering annual "
+                "and one-time events."
+            ),
+            "screen": "reports-events",
+            "printable": True,
+            "paper": "A4",
+        },
+    ]
+
     return {
-        "reports": [
-            {
-                "key": "school",
-                "label": "School Profile Report",
-            },
-            {
-                "key": "student",
-                "label": "Student Report Card",
-            },
-            {
-                "key": "class",
-                "label": "Class Performance Report",
-            },
-            {
-                "key": "attendance",
-                "label": "Attendance Report",
-            },
-            {
-                "key": "fees",
-                "label": "Fees Report",
-            },
-            {
-                "key": "events",
-                "label": "Annual Events Calendar",
-            },
-        ]
+        "hub": "elimu",
+        "school_id": _school_id(
+            school
+        ),
+        "reports": reports,
+        "print_center": _print_config(
+            school
+        ),
+        "generated_at": now_utc().isoformat(),
     }
+
 
 
 # =========================================================
@@ -2106,19 +2879,21 @@ def class_report(
         user_id
     )
 
-    school_id = str(
-        school["_id"]
+    school_id = _school_id(
+        school
+    )
+    class_name = _text(
+        class_name
     )
 
     students_docs = list(
         collection(
             STUDENTS
-        ).find(
+        )
+        .find(
             {
                 "school_id": school_id,
-                "class_name": str(
-                    class_name
-                ).strip(),
+                "class_name": class_name,
                 "status": "active",
             }
         )
@@ -2131,7 +2906,6 @@ def class_report(
     rows = []
 
     for student in students_docs:
-
         query = {
             "school_id": school_id,
             "student_id": str(
@@ -2140,9 +2914,7 @@ def class_report(
         }
 
         if academic_year:
-            query[
-                "academic_year"
-            ] = academic_year
+            query["academic_year"] = academic_year
 
         if term:
             query["term"] = term
@@ -2150,18 +2922,66 @@ def class_report(
         assessments_docs = list(
             collection(
                 ASSESSMENTS
-            ).find(query)
+            )
+            .find(query)
+            .sort(
+                [
+                    ("subject", 1),
+                    ("created_at", -1),
+                ]
+            )
         )
 
-        percentages = [
-            float(
-                item["percentage"]
+        latest_by_subject = {}
+
+        for item in assessments_docs:
+            subject = _text(
+                item.get(
+                    "subject"
+                ),
+                "Subject",
             )
-            for item in assessments_docs
-            if item.get(
+
+            if subject not in latest_by_subject:
+                latest_by_subject[subject] = item
+
+        percentages = []
+
+        for item in latest_by_subject.values():
+            percentage = item.get(
                 "percentage"
-            ) is not None
-        ]
+            )
+
+            if percentage is None:
+                score = item.get(
+                    "score"
+                )
+                maximum = item.get(
+                    "max_score",
+                    100,
+                )
+
+                try:
+                    percentage = (
+                        float(score)
+                        / float(maximum)
+                    ) * 100
+                except (
+                    TypeError,
+                    ValueError,
+                    ZeroDivisionError,
+                ):
+                    percentage = None
+
+            if percentage is not None:
+                percentages.append(
+                    round(
+                        float(
+                            percentage
+                        ),
+                        2,
+                    )
+                )
 
         average = (
             round(
@@ -2184,7 +3004,7 @@ def class_report(
                     "",
                 ),
                 len(
-                    assessments_docs
+                    latest_by_subject
                 ),
                 average,
                 _performance_band(
@@ -2212,14 +3032,14 @@ def class_report(
     return _print_package(
         report_type="class",
         title=(
-            f"Class Performance Report - "
+            "Class Performance Report - "
             f"{class_name}"
         ),
         school=school,
         columns=[
             "Admission No.",
             "Student",
-            "Assessments",
+            "Subjects Assessed",
             "Average %",
             "Performance",
         ],
@@ -2228,6 +3048,11 @@ def class_report(
             "class_name": class_name,
             "student_count": len(
                 students_docs
+            ),
+            "students_assessed": sum(
+                1
+                for row in rows
+                if row[3] is not None
             ),
             "class_average": class_average,
             "performance_band": _performance_band(
@@ -2239,6 +3064,7 @@ def class_report(
             "term": term,
         },
     )
+
 
 
 # =========================================================
@@ -2362,26 +3188,53 @@ def fees_report(
         status=status,
     )
 
-    total_amount = 0
-
+    total_amount = 0.0
+    total_paid = 0.0
+    total_balance = 0.0
     status_counts = {}
-
     rows = []
 
     for record in records:
-
-        amount = float(
+        amount = _safe_float(
             record.get(
-                "amount",
-                0,
-            )
-            or 0
+                "amount"
+            ),
+            0.0,
         )
 
-        total_amount += amount
+        amount_paid = _safe_float(
+            record.get(
+                "amount_paid"
+            ),
+            0.0,
+        )
 
-        current_status = record.get(
-            "status",
+        balance = record.get(
+            "balance"
+        )
+
+        if balance is None:
+            balance = max(
+                amount - amount_paid,
+                0.0,
+            )
+        else:
+            balance = max(
+                _safe_float(
+                    balance,
+                    0.0,
+                ),
+                0.0,
+            )
+
+        total_amount += amount
+        total_paid += amount_paid
+        total_balance += balance
+
+        current_status = _lower(
+            record.get(
+                "status"
+            ),
             "pending",
         )
 
@@ -2398,20 +3251,33 @@ def fees_report(
         rows.append(
             [
                 record.get(
-                    "student_id",
+                    "student_name",
                     record.get(
-                        "student_user_id",
-                        "",
+                        "student_id",
+                        record.get(
+                            "student_user_id",
+                            "",
+                        ),
                     ),
+                ),
+                record.get(
+                    "admission_number",
+                    "",
+                ),
+                record.get(
+                    "class_name",
+                    "",
                 ),
                 record.get(
                     "description",
                     "",
                 ),
                 amount,
+                amount_paid,
+                balance,
                 record.get(
                     "currency",
-                    "KES",
+                    DEFAULT_CURRENCY,
                 ),
                 record.get(
                     "term",
@@ -2435,8 +3301,12 @@ def fees_report(
         school=school,
         columns=[
             "Student",
+            "Admission No.",
+            "Class",
             "Description",
             "Amount",
+            "Paid",
+            "Balance",
             "Currency",
             "Term",
             "Academic Year",
@@ -2447,13 +3317,26 @@ def fees_report(
             "records": len(
                 records
             ),
-            "total_amount": total_amount,
+            "total_amount": round(
+                total_amount,
+                2,
+            ),
+            "total_paid": round(
+                total_paid,
+                2,
+            ),
+            "total_balance": round(
+                total_balance,
+                2,
+            ),
             "status_counts": status_counts,
         },
         metadata={
             "status": status,
         },
+        orientation="landscape",
     )
+
 
 
 # =========================================================
@@ -2468,65 +3351,62 @@ def events_report(
         user_id
     )
 
-    query = {
-        "school_id": str(
-            school["_id"]
-        ),
-        "status": {
-            "$ne": "cancelled"
-        },
-    }
-
-    if year:
-        query["start_date"] = {
-            "$regex": f"^{str(year)}"
-        }
-
-    records = list(
-        collection(
-            EVENTS
-        ).find(query).sort(
-            "start_date",
-            1,
-        )
+    records = events(
+        user_id,
+        year=year,
     )
 
-    rows = [
-        [
-            item.get(
-                "start_date",
-                "",
-            ),
-            item.get(
-                "end_date",
-                "",
-            ),
-            item.get(
-                "title",
-                "",
-            ),
-            item.get(
-                "event_type",
-                "",
-            ),
-            item.get(
-                "location",
-                "",
-            ),
-            (
-                "Annual"
-                if item.get(
-                    "is_annual"
-                )
-                else "One-time"
-            ),
-            item.get(
-                "status",
-                "",
-            ),
-        ]
-        for item in records
-    ]
+    rows = []
+
+    for item in records:
+        recurrence = item.get(
+            "recurrence"
+        )
+
+        if isinstance(
+            recurrence,
+            dict,
+        ):
+            recurrence_type = recurrence.get(
+                "type",
+                "annual" if item.get("is_annual") else "none",
+            )
+        else:
+            recurrence_type = (
+                "annual"
+                if item.get("is_annual")
+                else "none"
+            )
+
+        rows.append(
+            [
+                item.get(
+                    "start_date",
+                    "",
+                ),
+                item.get(
+                    "end_date",
+                    "",
+                ),
+                item.get(
+                    "title",
+                    "",
+                ),
+                item.get(
+                    "event_type",
+                    "",
+                ),
+                item.get(
+                    "location",
+                    "",
+                ),
+                recurrence_type,
+                item.get(
+                    "status",
+                    "",
+                ),
+            ]
+        )
 
     return _print_package(
         report_type="events",
@@ -2538,7 +3418,7 @@ def events_report(
             "Event",
             "Type",
             "Location",
-            "Frequency",
+            "Recurrence",
             "Status",
         ],
         rows=rows,
@@ -2552,6 +3432,34 @@ def events_report(
                 if item.get(
                     "is_annual"
                 )
+                or (
+                    isinstance(
+                        item.get(
+                            "recurrence"
+                        ),
+                        dict,
+                    )
+                    and item.get(
+                        "recurrence",
+                        {},
+                    ).get(
+                        "type"
+                    ) == "annual"
+                )
+            ),
+            "scheduled_events": sum(
+                1
+                for item in records
+                if item.get(
+                    "status"
+                ) == "scheduled"
+            ),
+            "completed_events": sum(
+                1
+                for item in records
+                if item.get(
+                    "status"
+                ) == "completed"
             ),
         },
         metadata={
@@ -2559,6 +3467,418 @@ def events_report(
         },
     )
 
+
+
+# =========================================================
+# CALENDAR / PRINT CENTER / APK BOOTSTRAP
+# =========================================================
+
+def calendar(
+    user_id,
+    year=None,
+):
+    """Return a mobile-friendly annual school calendar contract."""
+    school = _school_document(
+        user_id
+    )
+
+    if year is None:
+        configured_year = (
+            school.get("calendar_year")
+            or school.get("academic_year")
+            or str(
+                now_utc().year
+            )
+        )
+        year = (
+            _text(
+                configured_year
+            )[:4]
+            or str(
+                now_utc().year
+            )
+        )
+    else:
+        year = _text(
+            year
+        )
+
+    records = events(
+        user_id,
+        year=year,
+    )
+
+    months = defaultdict(list)
+
+    for event in records:
+        start = _text(
+            event.get(
+                "start_date"
+            )
+        )
+        month = (
+            start[5:7]
+            if len(start) >= 7
+            else "00"
+        )
+        months[month].append(
+            event
+        )
+
+    month_items = []
+
+    for month_number in range(1, 13):
+        month_key = f"{month_number:02d}"
+        month_events = months.get(
+            month_key,
+            [],
+        )
+
+        month_items.append(
+            {
+                "month": month_number,
+                "key": month_key,
+                "events": month_events,
+                "count": len(
+                    month_events
+                ),
+            }
+        )
+
+    return {
+        "hub": "elimu",
+        "school": _school_header(
+            school
+        ),
+        "year": year,
+        "academic_year": school.get(
+            "academic_year",
+            "",
+        ),
+        "current_term": school.get(
+            "current_term",
+            "",
+        ),
+        "events": records,
+        "months": month_items,
+        "summary": {
+            "total": len(
+                records
+            ),
+            "annual": sum(
+                1
+                for event in records
+                if event.get(
+                    "is_annual"
+                )
+            ),
+            "scheduled": sum(
+                1
+                for event in records
+                if event.get(
+                    "status"
+                ) == "scheduled"
+            ),
+            "completed": sum(
+                1
+                for event in records
+                if event.get(
+                    "status"
+                ) == "completed"
+            ),
+        },
+        "print": _print_config(
+            school
+        ),
+    }
+
+
+def print_report(
+    user_id,
+    report_type,
+    *,
+    student_id=None,
+    class_name=None,
+    academic_year=None,
+    term=None,
+    start_date=None,
+    end_date=None,
+    status=None,
+    year=None,
+):
+    """Single print-center dispatcher shared by web and Android clients."""
+    key = _lower(
+        report_type
+    )
+
+    dispatch = {
+        "school": lambda: school_report(
+            user_id
+        ),
+        "student": lambda: student_report(
+            user_id,
+            student_id,
+            academic_year=academic_year,
+            term=term,
+        ),
+        "class": lambda: class_report(
+            user_id,
+            class_name,
+            academic_year=academic_year,
+            term=term,
+        ),
+        "attendance": lambda: attendance_report(
+            user_id,
+            start_date=start_date,
+            end_date=end_date,
+        ),
+        "fees": lambda: fees_report(
+            user_id,
+            status=status,
+        ),
+        "events": lambda: events_report(
+            user_id,
+            year=year,
+        ),
+        "annual_events": lambda: events_report(
+            user_id,
+            year=year,
+        ),
+    }
+
+    if key not in dispatch:
+        raise APIError(
+            "Unsupported report type.",
+            404,
+            "report_not_found",
+        )
+
+    if key == "student" and not student_id:
+        raise APIError(
+            "student_id is required for a student report.",
+            422,
+            "validation_error",
+        )
+
+    if key == "class" and not class_name:
+        raise APIError(
+            "class_name is required for a class report.",
+            422,
+            "validation_error",
+        )
+
+    package = dispatch[
+        key
+    ]()
+
+    return {
+        **package,
+        "print_center": {
+            "available": True,
+            "native_android": True,
+            "save_as_pdf": True,
+            "share": True,
+        },
+    }
+
+
+def hub_bootstrap(
+    user_id,
+):
+    """One-call startup contract for Android/Web Elimu navigation."""
+    access_state = access(
+        user_id
+    )
+
+    if not access_state[
+        "allowed"
+    ]:
+        return {
+            "hub": "elimu",
+            "version": ELIMU_VERSION,
+            "access": access_state,
+            "redirect": access_state.get(
+                "redirect"
+            ),
+            "school": None,
+            "profile": None,
+            "modules": [],
+            "quick_actions": [],
+            "metrics": {},
+            "upcoming_events": [],
+            "reports": [],
+            "print_center": {
+                "available": False,
+                "reason": "school_required",
+                "native_android": True,
+            },
+        }
+
+    dashboard_data = dashboard(
+        user_id
+    )
+    school = _school_document(
+        user_id
+    )
+
+    modules = [
+        {
+            "key": "dashboard",
+            "label": "School Dashboard",
+            "screen": "elimu-dashboard",
+            "enabled": True,
+        },
+        {
+            "key": "students",
+            "label": "Students",
+            "screen": "elimu-students",
+            "enabled": True,
+        },
+        {
+            "key": "classes",
+            "label": "Classes",
+            "screen": "elimu-classes",
+            "enabled": True,
+        },
+        {
+            "key": "attendance",
+            "label": "Attendance",
+            "screen": "elimu-attendance",
+            "enabled": True,
+        },
+        {
+            "key": "assessments",
+            "label": "Assessments",
+            "screen": "elimu-assessments",
+            "enabled": True,
+        },
+        {
+            "key": "lessons",
+            "label": "Lessons",
+            "screen": "elimu-lessons",
+            "enabled": True,
+        },
+        {
+            "key": "assignments",
+            "label": "Assignments",
+            "screen": "elimu-assignments",
+            "enabled": True,
+        },
+        {
+            "key": "fees",
+            "label": "Fees",
+            "screen": "elimu-fees",
+            "enabled": True,
+        },
+        {
+            "key": "cbc",
+            "label": "CBC Projects",
+            "screen": "elimu-cbc",
+            "enabled": True,
+        },
+        {
+            "key": "calendar",
+            "label": "Annual Calendar",
+            "screen": "elimu-calendar",
+            "enabled": True,
+        },
+        {
+            "key": "reports",
+            "label": "Report Center",
+            "screen": "elimu-reports",
+            "enabled": True,
+        },
+        {
+            "key": "print",
+            "label": "Print Center",
+            "screen": "elimu-print-center",
+            "enabled": True,
+        },
+    ]
+
+    quick_actions = [
+        {
+            "key": "add_student",
+            "label": "Add Student",
+            "screen": "elimu-students-create",
+            "icon": "user-plus",
+        },
+        {
+            "key": "attendance",
+            "label": "Mark Attendance",
+            "screen": "elimu-attendance",
+            "icon": "calendar-check",
+        },
+        {
+            "key": "assessment",
+            "label": "Record Assessment",
+            "screen": "elimu-assessments-create",
+            "icon": "graduation-cap",
+        },
+        {
+            "key": "event",
+            "label": "Add Event",
+            "screen": "elimu-events-create",
+            "icon": "calendar-plus",
+        },
+        {
+            "key": "report",
+            "label": "Print Report",
+            "screen": "elimu-print-center",
+            "icon": "printer",
+        },
+    ]
+
+    return {
+        "hub": "elimu",
+        "version": ELIMU_VERSION,
+        "access": {
+            **dashboard_data.get(
+                "access",
+                {}
+            ),
+            "allowed": True,
+            "has_school": True,
+        },
+        "redirect": None,
+        "school": _ser(
+            school
+        ),
+        "profile": dashboard_data.get(
+            "profile"
+        ),
+        "modules": modules,
+        "quick_actions": quick_actions,
+        "metrics": dashboard_data.get(
+            "metrics",
+            {},
+        ),
+        "upcoming_events": dashboard_data.get(
+            "upcoming_events",
+            [],
+        ),
+        "recent": dashboard_data.get(
+            "recent",
+            {},
+        ),
+        "reports": report_catalog(
+            user_id
+        ).get(
+            "reports",
+            [],
+        ),
+        "print_center": dashboard_data.get(
+            "print_center",
+            _print_config(
+                school
+            ),
+        ),
+    }
+
+
+# =========================================================
+# DASHBOARD
+# =========================================================
 
 # =========================================================
 # DASHBOARD
@@ -2571,8 +3891,8 @@ def dashboard(
         user_id
     )
 
-    school_id = str(
-        school["_id"]
+    school_id = _school_id(
+        school
     )
 
     classes_count = collection(
@@ -2670,28 +3990,48 @@ def dashboard(
         .limit(6)
     )
 
+    profile = collection(
+        PROFILES
+    ).find_one(
+        {
+            "user_id": str(
+                user_id
+            )
+        }
+    )
+
+    upcoming_events = _next_events(
+        school_id,
+        limit=5,
+    )
+
     return {
+        "hub": "elimu",
+        "version": ELIMU_VERSION,
         "access": {
             "allowed": True,
+            "has_school": True,
             "school_id": school_id,
         },
-
         "school": _ser(
             school
         ),
-
         "profile": _ser(
-            collection(
-                PROFILES
-            ).find_one(
-                {
-                    "user_id": str(
-                        user_id
-                    )
-                }
-            )
+            profile
         ),
-
+        "modules": {
+            "students": True,
+            "classes": True,
+            "attendance": True,
+            "assessments": True,
+            "lessons": True,
+            "assignments": True,
+            "fees": True,
+            "cbc": True,
+            "events": True,
+            "reports": True,
+            "print_center": True,
+        },
         "metrics": {
             "classes": classes_count,
             "students": students_count,
@@ -2700,7 +4040,7 @@ def dashboard(
             "events": events_count,
             "pending_fees": pending_fees,
         },
-
+        "upcoming_events": upcoming_events,
         "recent": {
             "events": _many(
                 recent_events
@@ -2709,4 +4049,14 @@ def dashboard(
                 recent_assignments
             ),
         },
+        "quick_actions": [
+            "add_student",
+            "attendance",
+            "assessment",
+            "event",
+            "report",
+        ],
+        "print_center": _print_config(
+            school
+        ),
     }
