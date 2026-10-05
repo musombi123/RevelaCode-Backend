@@ -252,11 +252,12 @@ try:
     from backend.routes.study_routes import study_bp
 
     app.register_blueprint(
-        study_bp
+        study_bp,
+        url_prefix="/api",
     )
 
     logger.info(
-        "study_bp registered"
+        "study_bp registered with /api prefix"
     )
 
 except Exception as e:
