@@ -1,27 +1,67 @@
 # backend/routes/study_routes.py
 
-from flask import Blueprint, request, jsonify
+from __future__ import annotations
+
+import json
+import logging
+from typing import Any, Dict, List, Optional
+
+from flask import Blueprint, jsonify, request
 
 from backend.db import get_db
 
-from backend.study.study_service import StudyService
-from backend.study.lesson_processor import LessonProcessor
+from backend.study.study_service import (
+    StudyService,
+)
+
+from backend.study.lesson_processor import (
+    LessonProcessor,
+)
+
 from backend.study.material_preferences import (
     MaterialPreferences,
 )
+
 from backend.study.rootword_service import (
     RootWordService,
 )
+
 from backend.study.bookmark_service import (
     BookmarkService,
 )
+
 from backend.study.sda_quarterly_service import (
     SDAQuarterlyService,
 )
 
+from backend.study.ai_context_service import (
+    AIContextService,
+)
+
+
+# =========================================================
+# LOGGING
+# =========================================================
+
+logger = logging.getLogger("revelacode.study")
+
 
 # =========================================================
 # BLUEPRINT
+# =========================================================
+#
+# main.py registers this blueprint with:
+#
+#     url_prefix="/api"
+#
+# Therefore the public Study API becomes:
+#
+#     /api/study/...
+#
+# Example:
+#
+#     GET /api/study/materials
+#
 # =========================================================
 
 study_bp = Blueprint(
@@ -29,6 +69,336 @@ study_bp = Blueprint(
     __name__,
     url_prefix="/study",
 )
+
+
+# =========================================================
+# HELPERS
+# =========================================================
+
+def _json_body() -> Dict[str, Any]:
+    """
+    Safely return a JSON request body.
+    """
+
+    data = request.get_json(
+        silent=True
+    )
+
+    return (
+        data
+        if isinstance(data, dict)
+        else {}
+    )
+
+
+def _clean_string(
+    value: Any,
+) -> str:
+    """
+    Normalize an arbitrary value to a trimmed string.
+    """
+
+    if value is None:
+        return ""
+
+    return str(
+        value
+    ).strip()
+
+
+def _parse_int(
+    value: Any,
+    default: Optional[int] = None,
+    *,
+    minimum: Optional[int] = None,
+    maximum: Optional[int] = None,
+) -> Optional[int]:
+    """
+    Safely parse an integer query/form value.
+    """
+
+    if value is None:
+        return default
+
+    text = _clean_string(
+        value
+    )
+
+    if not text:
+        return default
+
+    try:
+        number = int(text)
+    except (
+        TypeError,
+        ValueError,
+    ):
+        return default
+
+    if (
+        minimum is not None
+        and number < minimum
+    ):
+        return default
+
+    if (
+        maximum is not None
+        and number > maximum
+    ):
+        return default
+
+    return number
+
+
+def _normalize_tags(
+    value: Any,
+) -> List[str]:
+    """
+    Accept tags as:
+
+        ["faith", "SDA"]
+
+    or:
+
+        "faith,SDA"
+    """
+
+    if value is None:
+        return []
+
+    if isinstance(
+        value,
+        str,
+    ):
+        text = value.strip()
+
+        if not text:
+            return []
+
+        # -------------------------------------------------
+        # Try JSON first.
+        # -------------------------------------------------
+
+        if (
+            text.startswith("[")
+            and text.endswith("]")
+        ):
+            try:
+                parsed = json.loads(
+                    text
+                )
+
+                if isinstance(
+                    parsed,
+                    list,
+                ):
+                    value = parsed
+
+            except Exception:
+                value = text.split(",")
+
+        else:
+            value = text.split(",")
+
+    if not isinstance(
+        value,
+        list,
+    ):
+        return []
+
+    tags = []
+
+    for item in value:
+
+        tag = _clean_string(
+            item
+        )
+
+        if tag:
+            tags.append(
+                tag
+            )
+
+    # Preserve order while removing duplicates.
+    return list(
+        dict.fromkeys(
+            tags
+        )
+    )
+
+
+def _serialize_value(
+    value: Any,
+) -> Any:
+    """
+    Make Mongo/complex Python values JSON-safe.
+    """
+
+    if value is None:
+        return None
+
+    if isinstance(
+        value,
+        dict,
+    ):
+        return {
+            str(key):
+            _serialize_value(item)
+            for key, item in value.items()
+        }
+
+    if isinstance(
+        value,
+        list,
+    ):
+        return [
+            _serialize_value(item)
+            for item in value
+        ]
+
+    # ObjectId and similar BSON values.
+    if not isinstance(
+        value,
+        (
+            str,
+            int,
+            float,
+            bool,
+        ),
+    ):
+        return str(
+            value
+        )
+
+    return value
+
+
+def _error_response(
+    message: str,
+    status_code: int = 500,
+    *,
+    error: Any = None,
+):
+    """
+    Consistent Study API error response.
+    """
+
+    payload = {
+        "success": False,
+        "message": message,
+    }
+
+    # Do not expose internal errors by default.
+    if error is not None:
+        logger.exception(
+            "Study API error: %s",
+            error,
+        )
+
+    return jsonify(
+        payload
+    ), status_code
+
+
+def _extract_ai_answer(
+    value: Any,
+) -> str:
+    """
+    Normalize the different response shapes that
+    RevelaAI may return.
+    """
+
+    if value is None:
+        return ""
+
+    if isinstance(
+        value,
+        str,
+    ):
+        return value.strip()
+
+    if isinstance(
+        value,
+        dict,
+    ):
+
+        for key in (
+            "answer",
+            "response",
+            "content",
+            "text",
+            "message",
+        ):
+
+            candidate = value.get(
+                key
+            )
+
+            if isinstance(
+                candidate,
+                str,
+            ) and candidate.strip():
+
+                return candidate.strip()
+
+        # Nested answer.
+        nested = value.get(
+            "data"
+        )
+
+        if nested is not None:
+            return _extract_ai_answer(
+                nested
+            )
+
+        return ""
+
+    return str(
+        value
+    ).strip()
+
+
+# =========================================================
+# STUDY HEALTH / DIAGNOSTICS
+# =========================================================
+
+@study_bp.route(
+    "/health",
+    methods=["GET"],
+)
+def study_health():
+    """
+    Lightweight Study API diagnostic.
+
+    Public endpoint:
+
+        GET /api/study/health
+    """
+
+    return jsonify({
+        "success": True,
+        "study": True,
+        "service": "study",
+        "status": "ok",
+        "routes": {
+            "materials":
+                "/api/study/materials",
+            "material":
+                "/api/study/material/<material_id>",
+            "search":
+                "/api/study/search",
+            "upload":
+                "/api/study/upload",
+            "ask_ai":
+                "/api/study/ask-ai",
+            "bookmarks":
+                "/api/study/bookmarks/<user_id>",
+            "sda_today":
+                "/api/study/sda/today",
+            "sda_week":
+                "/api/study/sda/week",
+        },
+    }), 200
 
 
 # =========================================================
@@ -40,311 +410,212 @@ study_bp = Blueprint(
     methods=["GET"],
 )
 def get_materials():
+    """
+    Get available Study materials.
 
-    category = request.args.get(
-        "category"
-    )
+    Canonical endpoint:
 
-    materials = StudyService.get_materials(
-        category
-    )
+        GET /api/study/materials
 
-    return jsonify({
-        "success": True,
-        "count": len(materials),
-        "materials": materials,
-    }), 200
+    Optional filters:
 
+        ?category=faith
+        ?subcategory=sda_quarterly
+        ?material_type=lesson
 
-# =========================================================
-# PREFERENCES
-# =========================================================
+    Backward compatibility is preserved for the
+    existing StudyService interface.
+    """
 
-@study_bp.route(
-    "/preferences",
-    methods=["POST"],
-)
-def save_preferences():
+    try:
 
-    data = request.get_json(
-        silent=True
-    ) or {}
-
-    user_id = data.get(
-        "user_id"
-    )
-
-    preferences = data.get(
-        "preferences",
-        [],
-    )
-
-    if not user_id:
-        return jsonify({
-            "success": False,
-            "message": "user_id is required.",
-        }), 400
-
-    if not isinstance(
-        preferences,
-        list,
-    ):
-        return jsonify({
-            "success": False,
-            "message": "preferences must be a list.",
-        }), 400
-
-    result = (
-        MaterialPreferences
-        .save_preferences(
-            user_id,
-            preferences,
+        category = (
+            _clean_string(
+                request.args.get(
+                    "category"
+                )
+            )
+            or None
         )
-    )
 
-    return jsonify(
-        result
-    ), 200
-
-
-# =========================================================
-# RECOMMENDED MATERIALS
-# =========================================================
-
-@study_bp.route(
-    "/recommend/<user_id>",
-    methods=["GET"],
-)
-def recommended_materials(
-    user_id,
-):
-
-    materials = (
-        MaterialPreferences
-        .get_recommended_materials(
-            user_id
+        subcategory = (
+            _clean_string(
+                request.args.get(
+                    "subcategory"
+                )
+            )
+            or None
         )
-    )
 
-    return jsonify({
-        "success": True,
-        "count": len(materials),
-        "materials": materials,
-    }), 200
+        material_type = (
+            _clean_string(
+                request.args.get(
+                    "material_type"
+                )
+            )
+            or None
+        )
 
+        # -------------------------------------------------
+        # Current StudyService supports:
+        #
+        #   category
+        #   subcategory
+        #   file_type
+        #
+        # Until StudyService is upgraded, map the
+        # public material_type filter onto its existing
+        # file_type argument.
+        # -------------------------------------------------
 
-# =========================================================
-# UPLOAD / CREATE MATERIAL
-# =========================================================
+        file_type = material_type
 
-@study_bp.route(
-    "/upload",
-    methods=["POST"],
-)
-def upload_material():
-
-    # -----------------------------------------------------
-    # FILE UPLOAD
-    # -----------------------------------------------------
-
-    if "file" in request.files:
-
-        file = request.files["file"]
-
-        if not file.filename:
-            return jsonify({
-                "success": False,
-                "message": "No file selected.",
-            }), 400
-
-        extracted = (
-            LessonProcessor
-            .process_uploaded_file(
-                file
+        materials = (
+            StudyService
+            .get_materials(
+                category=category,
+                subcategory=subcategory,
+                file_type=file_type,
             )
         )
 
+        if not isinstance(
+            materials,
+            list,
+        ):
+            materials = []
+
+        # -------------------------------------------------
+        # Optional pagination
+        #
+        # Existing clients that do not request page/limit
+        # continue receiving the complete library.
+        # -------------------------------------------------
+
+        page_raw = request.args.get(
+            "page"
+        )
+
+        limit_raw = request.args.get(
+            "limit"
+        )
+
+        page_requested = (
+            page_raw is not None
+        )
+
+        limit_requested = (
+            limit_raw is not None
+        )
+
+        page = _parse_int(
+            page_raw,
+            default=1,
+            minimum=1,
+        )
+
+        limit = _parse_int(
+            limit_raw,
+            default=50,
+            minimum=1,
+            maximum=100,
+        )
+
+        total = len(
+            materials
+        )
+
+        if (
+            page_requested
+            or limit_requested
+        ):
+
+            start = (
+                (page - 1)
+                * limit
+            )
+
+            end = (
+                start
+                + limit
+            )
+
+            paged_materials = (
+                materials[
+                    start:end
+                ]
+            )
+
+            total_pages = (
+                (
+                    total
+                    + limit
+                    - 1
+                )
+                // limit
+                if total
+                else 0
+            )
+
+            response_materials = (
+                paged_materials
+            )
+
+            pagination = {
+                "page": page,
+                "limit": limit,
+                "total": total,
+                "total_pages": total_pages,
+                "has_next":
+                    page < total_pages,
+                "has_previous":
+                    page > 1,
+            }
+
+        else:
+
+            response_materials = (
+                materials
+            )
+
+            pagination = None
+
+        safe_materials = [
+            _serialize_value(
+                item
+            )
+            for item in response_materials
+        ]
+
+        response = {
+            "success": True,
+            "count": len(
+                safe_materials
+            ),
+            "total": total,
+            "materials": safe_materials,
+        }
+
+        if pagination is not None:
+            response[
+                "pagination"
+            ] = pagination
+
         return jsonify(
-            extracted
+            response
         ), 200
 
-    # -----------------------------------------------------
-    # TEXT MATERIAL
-    # -----------------------------------------------------
+    except Exception as exc:
 
-    data = request.get_json(
-        silent=True
-    ) or {}
-
-    title = data.get(
-        "title"
-    )
-
-    content = data.get(
-        "content"
-    )
-
-    if not title:
-        return jsonify({
-            "success": False,
-            "message": "title is required.",
-        }), 400
-
-    if not content:
-        return jsonify({
-            "success": False,
-            "message": "content is required.",
-        }), 400
-
-    tags = data.get(
-        "tags",
-        [],
-    )
-
-    if not isinstance(
-        tags,
-        list,
-    ):
-        tags = []
-
-    result = (
-        LessonProcessor
-        .process_text_material(
-            title=title,
-            category=data.get(
-                "category"
-            ),
-            subcategory=data.get(
-                "subcategory"
-            ),
-            content=content,
-            year=data.get(
-                "year"
-            ),
-            tags=tags,
+        logger.exception(
+            "Failed to load Study materials."
         )
-    )
 
-    return jsonify(
-        result
-    ), 200
-
-
-# =========================================================
-# SEARCH
-# =========================================================
-
-@study_bp.route(
-    "/search",
-    methods=["GET"],
-)
-def search_materials():
-
-    query = request.args.get(
-        "q",
-        "",
-    ).strip()
-
-    if not query:
-        return jsonify({
-            "success": True,
-            "count": 0,
-            "results": [],
-        }), 200
-
-    results = StudyService.search_materials(
-        query
-    )
-
-    return jsonify({
-        "success": True,
-        "count": len(results),
-        "results": results,
-    }), 200
-
-
-# =========================================================
-# ROOTWORD SEARCH
-# =========================================================
-
-@study_bp.route(
-    "/rootword",
-    methods=["GET"],
-)
-def search_rootword():
-
-    word = request.args.get(
-        "word",
-        "",
-    ).strip()
-
-    if not word:
-        return jsonify({
-            "success": False,
-            "message": "word is required.",
-        }), 400
-
-    result = RootWordService.search(
-        word
-    )
-
-    return jsonify(
-        result
-    ), 200
-
-
-# =========================================================
-# ADD ROOTWORD
-# =========================================================
-
-@study_bp.route(
-    "/rootword",
-    methods=["POST"],
-)
-def add_rootword():
-
-    data = request.get_json(
-        silent=True
-    ) or {}
-
-    if not data.get("word"):
-        return jsonify({
-            "success": False,
-            "message": "word is required.",
-        }), 400
-
-    result = (
-        RootWordService
-        .add_rootword(
-            word=data.get(
-                "word"
-            ),
-            language=data.get(
-                "language"
-            ),
-            strong_number=data.get(
-                "strong_number"
-            ),
-            transliteration=data.get(
-                "transliteration"
-            ),
-            meaning=data.get(
-                "meaning"
-            ),
-            scriptures=data.get(
-                "scriptures",
-                [],
-            ),
-            notes=data.get(
-                "notes",
-                [],
-            ),
+        return _error_response(
+            "Failed to load study materials.",
+            500,
+            error=exc,
         )
-    )
-
-    return jsonify(
-        result
-    ), 200
 
 
 # =========================================================
@@ -358,25 +629,896 @@ def add_rootword():
 def get_material(
     material_id,
 ):
+    """
+    Get one Study material by Mongo ObjectId or
+    custom material UUID.
+    """
 
-    material = StudyService.get_material_by_id(
+    material_id = _clean_string(
         material_id
     )
 
-    if not material:
-        return jsonify({
-            "success": False,
-            "message": "Material not found.",
-        }), 404
+    if not material_id:
 
-    return jsonify({
-        "success": True,
-        "material": material,
-    }), 200
+        return _error_response(
+            "material_id is required.",
+            400,
+        )
+
+    try:
+
+        material = (
+            StudyService
+            .get_material_by_id(
+                material_id
+            )
+        )
+
+        if not material:
+
+            return jsonify({
+                "success": False,
+                "message":
+                    "Material not found.",
+            }), 404
+
+        return jsonify({
+            "success": True,
+            "material":
+                _serialize_value(
+                    material
+                ),
+        }), 200
+
+    except Exception as exc:
+
+        return _error_response(
+            "Failed to load study material.",
+            500,
+            error=exc,
+        )
 
 
 # =========================================================
-# BOOKMARK
+# PREFERENCES
+# =========================================================
+
+@study_bp.route(
+    "/preferences",
+    methods=["POST"],
+)
+def save_preferences():
+    """
+    Save a user's Study preferences.
+    """
+
+    data = _json_body()
+
+    user_id = _clean_string(
+        data.get(
+            "user_id"
+        )
+    )
+
+    preferences = data.get(
+        "preferences",
+        [],
+    )
+
+    if not user_id:
+
+        return _error_response(
+            "user_id is required.",
+            400,
+        )
+
+    if not isinstance(
+        preferences,
+        list,
+    ):
+
+        return _error_response(
+            "preferences must be a list.",
+            400,
+        )
+
+    cleaned_preferences = []
+
+    for preference in preferences:
+
+        value = _clean_string(
+            preference
+        )
+
+        if value:
+            cleaned_preferences.append(
+                value
+            )
+
+    cleaned_preferences = list(
+        dict.fromkeys(
+            cleaned_preferences
+        )
+    )
+
+    try:
+
+        result = (
+            MaterialPreferences
+            .save_preferences(
+                user_id,
+                cleaned_preferences,
+            )
+        )
+
+        return jsonify(
+            _serialize_value(
+                result
+            )
+        ), 200
+
+    except Exception as exc:
+
+        return _error_response(
+            "Failed to save study preferences.",
+            500,
+            error=exc,
+        )
+
+
+# =========================================================
+# GET PREFERENCES
+# =========================================================
+
+@study_bp.route(
+    "/preferences/<user_id>",
+    methods=["GET"],
+)
+def get_preferences(
+    user_id,
+):
+    """
+    Get saved preferences for a user.
+    """
+
+    user_id = _clean_string(
+        user_id
+    )
+
+    if not user_id:
+
+        return _error_response(
+            "user_id is required.",
+            400,
+        )
+
+    try:
+
+        preferences = (
+            MaterialPreferences
+            .get_preferences(
+                user_id
+            )
+        )
+
+        if not isinstance(
+            preferences,
+            list,
+        ):
+            preferences = []
+
+        return jsonify({
+            "success": True,
+            "user_id": user_id,
+            "preferences":
+                preferences,
+        }), 200
+
+    except Exception as exc:
+
+        return _error_response(
+            "Failed to load study preferences.",
+            500,
+            error=exc,
+        )
+
+
+# =========================================================
+# RECOMMENDED MATERIALS
+# =========================================================
+
+@study_bp.route(
+    "/recommend/<user_id>",
+    methods=["GET"],
+)
+def recommended_materials(
+    user_id,
+):
+    """
+    Get personalized Study recommendations.
+    """
+
+    user_id = _clean_string(
+        user_id
+    )
+
+    if not user_id:
+
+        return _error_response(
+            "user_id is required.",
+            400,
+        )
+
+    try:
+
+        materials = (
+            MaterialPreferences
+            .get_recommended_materials(
+                user_id
+            )
+        )
+
+        if not isinstance(
+            materials,
+            list,
+        ):
+            materials = []
+
+        safe_materials = [
+            _serialize_value(
+                item
+            )
+            for item in materials
+        ]
+
+        return jsonify({
+            "success": True,
+            "count": len(
+                safe_materials
+            ),
+            "materials":
+                safe_materials,
+        }), 200
+
+    except Exception as exc:
+
+        return _error_response(
+            "Failed to load study recommendations.",
+            500,
+            error=exc,
+        )
+
+
+# =========================================================
+# UPLOAD / CREATE MATERIAL
+# =========================================================
+
+@study_bp.route(
+    "/upload",
+    methods=["POST"],
+)
+def upload_material():
+    """
+    Create a Study material from:
+
+        1. uploaded PDF/DOCX/TXT
+        2. JSON text content
+    """
+
+    try:
+
+        # =================================================
+        # FILE UPLOAD
+        # =================================================
+
+        if "file" in request.files:
+
+            file = request.files[
+                "file"
+            ]
+
+            if not file.filename:
+
+                return _error_response(
+                    "No file selected.",
+                    400,
+                )
+
+            title = _clean_string(
+                request.form.get(
+                    "title"
+                )
+            ) or None
+
+            category = _clean_string(
+                request.form.get(
+                    "category"
+                )
+            ) or None
+
+            subcategory = _clean_string(
+                request.form.get(
+                    "subcategory"
+                )
+            ) or None
+
+            year = _parse_int(
+                request.form.get(
+                    "year"
+                ),
+                default=None,
+            )
+
+            tags = _normalize_tags(
+                request.form.get(
+                    "tags"
+                )
+            )
+
+            result = (
+                LessonProcessor
+                .process_uploaded_file(
+                    file,
+                    title=title,
+                    category=category,
+                    subcategory=subcategory,
+                    year=year,
+                    tags=tags,
+                )
+            )
+
+            status_code = (
+                200
+                if result.get(
+                    "success",
+                    False,
+                )
+                else 400
+            )
+
+            return jsonify(
+                _serialize_value(
+                    result
+                )
+            ), status_code
+
+        # =================================================
+        # TEXT MATERIAL
+        # =================================================
+
+        data = _json_body()
+
+        title = _clean_string(
+            data.get(
+                "title"
+            )
+        )
+
+        category = _clean_string(
+            data.get(
+                "category"
+            )
+        )
+
+        subcategory = _clean_string(
+            data.get(
+                "subcategory"
+            )
+        )
+
+        content = _clean_string(
+            data.get(
+                "content"
+            )
+        )
+
+        if not title:
+
+            return _error_response(
+                "title is required.",
+                400,
+            )
+
+        if not category:
+
+            return _error_response(
+                "category is required.",
+                400,
+            )
+
+        if not subcategory:
+
+            return _error_response(
+                "subcategory is required.",
+                400,
+            )
+
+        if not content:
+
+            return _error_response(
+                "content is required.",
+                400,
+            )
+
+        year = _parse_int(
+            data.get(
+                "year"
+            ),
+            default=None,
+        )
+
+        tags = _normalize_tags(
+            data.get(
+                "tags",
+                [],
+            )
+        )
+
+        result = (
+            LessonProcessor
+            .process_text_material(
+                title=title,
+                category=category,
+                subcategory=subcategory,
+                content=content,
+                year=year,
+                tags=tags,
+            )
+        )
+
+        status_code = (
+            200
+            if result.get(
+                "success",
+                False,
+            )
+            else 400
+        )
+
+        return jsonify(
+            _serialize_value(
+                result
+            )
+        ), status_code
+
+    except ValueError as exc:
+
+        return _error_response(
+            str(exc),
+            400,
+        )
+
+    except Exception as exc:
+
+        return _error_response(
+            "Study material upload failed.",
+            500,
+            error=exc,
+        )
+
+
+# =========================================================
+# SEARCH
+# =========================================================
+
+@study_bp.route(
+    "/search",
+    methods=["GET"],
+)
+def search_materials():
+    """
+    Search Study materials by title/content/tags.
+    """
+
+    query = _clean_string(
+        request.args.get(
+            "q",
+            ""
+        )
+    )
+
+    if not query:
+
+        return jsonify({
+            "success": True,
+            "count": 0,
+            "query": "",
+            "results": [],
+        }), 200
+
+    try:
+
+        results = (
+            StudyService
+            .search_materials(
+                query
+            )
+        )
+
+        if not isinstance(
+            results,
+            list,
+        ):
+            results = []
+
+        safe_results = [
+            _serialize_value(
+                item
+            )
+            for item in results
+        ]
+
+        return jsonify({
+            "success": True,
+            "count": len(
+                safe_results
+            ),
+            "query": query,
+            "results":
+                safe_results,
+        }), 200
+
+    except Exception as exc:
+
+        return _error_response(
+            "Failed to search study materials.",
+            500,
+            error=exc,
+        )
+
+
+# =========================================================
+# AI STUDY ASSISTANT
+# =========================================================
+
+@study_bp.route(
+    "/ask-ai",
+    methods=["POST"],
+)
+def ask_study_ai():
+    """
+    Ask RevelaAI about a specific Study material.
+
+    Expected payload:
+
+        {
+            "material_id": "...",
+            "question": "Explain this lesson..."
+        }
+    """
+
+    data = _json_body()
+
+    material_id = _clean_string(
+        data.get(
+            "material_id"
+        )
+    )
+
+    question = (
+        _clean_string(
+            data.get(
+                "question"
+            )
+        )
+        or
+        _clean_string(
+            data.get(
+                "user_question"
+            )
+        )
+    )
+
+    if not material_id:
+
+        return _error_response(
+            "material_id is required.",
+            400,
+        )
+
+    if not question:
+
+        return _error_response(
+            "question is required.",
+            400,
+        )
+
+    try:
+
+        result = (
+            AIContextService
+            .ask_material_ai(
+                material_id,
+                question,
+            )
+        )
+
+        if not isinstance(
+            result,
+            dict,
+        ):
+
+            answer = _extract_ai_answer(
+                result
+            )
+
+            return jsonify({
+                "success":
+                    bool(answer),
+                "material_id":
+                    material_id,
+                "question":
+                    question,
+                "answer":
+                    answer,
+            }), 200
+
+        result = _serialize_value(
+            result
+        )
+
+        # -------------------------------------------------
+        # Normalize answer.
+        # -------------------------------------------------
+
+        raw_answer = result.get(
+            "answer"
+        )
+
+        normalized_answer = (
+            _extract_ai_answer(
+                raw_answer
+            )
+        )
+
+        if normalized_answer:
+
+            result[
+                "answer"
+            ] = normalized_answer
+
+        return jsonify(
+            result
+        ), 200
+
+    except Exception as exc:
+
+        return _error_response(
+            "Study AI request failed.",
+            500,
+            error=exc,
+        )
+
+
+# =========================================================
+# ROOTWORD SEARCH
+# =========================================================
+
+@study_bp.route(
+    "/rootword",
+    methods=["GET"],
+)
+def search_rootword():
+    """
+    Search Biblical/Hebrew/Greek root words.
+
+    The current RootWordService does not yet expose
+    a search() method, so this route contains a safe
+    compatibility fallback against MongoDB.
+    """
+
+    word = _clean_string(
+        request.args.get(
+            "word",
+            "",
+        )
+    )
+
+    if not word:
+
+        return _error_response(
+            "word is required.",
+            400,
+        )
+
+    try:
+
+        # -------------------------------------------------
+        # Prefer a proper service method when available.
+        # -------------------------------------------------
+
+        search_method = getattr(
+            RootWordService,
+            "search",
+            None,
+        )
+
+        if callable(
+            search_method
+        ):
+
+            result = search_method(
+                word
+            )
+
+            return jsonify(
+                _serialize_value(
+                    result
+                )
+            ), 200
+
+        # -------------------------------------------------
+        # Compatibility fallback.
+        # -------------------------------------------------
+
+        db = get_db()
+
+        regex = {
+            "$regex":
+                word,
+            "$options":
+                "i",
+        }
+
+        results = list(
+            db[
+                "rootwords"
+            ].find({
+                "$or": [
+                    {
+                        "word":
+                            regex,
+                    },
+                    {
+                        "meaning":
+                            regex,
+                    },
+                    {
+                        "transliteration":
+                            regex,
+                    },
+                    {
+                        "strong_number":
+                            regex,
+                    },
+                    {
+                        "language":
+                            regex,
+                    },
+                ]
+            })
+        )
+
+        safe_results = []
+
+        for item in results:
+
+            safe_results.append(
+                _serialize_value(
+                    item
+                )
+            )
+
+        return jsonify({
+            "success": True,
+            "count": len(
+                safe_results
+            ),
+            "query": word,
+            "results":
+                safe_results,
+            "data":
+                safe_results,
+        }), 200
+
+    except Exception as exc:
+
+        return _error_response(
+            "Failed to search root words.",
+            500,
+            error=exc,
+        )
+
+
+# =========================================================
+# ADD ROOTWORD
+# =========================================================
+
+@study_bp.route(
+    "/rootword",
+    methods=["POST"],
+)
+def add_rootword():
+
+    data = _json_body()
+
+    word = _clean_string(
+        data.get(
+            "word"
+        )
+    )
+
+    if not word:
+
+        return _error_response(
+            "word is required.",
+            400,
+        )
+
+    try:
+
+        result = (
+            RootWordService
+            .add_rootword(
+                word=word,
+                language=_clean_string(
+                    data.get(
+                        "language"
+                    )
+                ) or None,
+                strong_number=_clean_string(
+                    data.get(
+                        "strong_number"
+                    )
+                ) or None,
+                transliteration=_clean_string(
+                    data.get(
+                        "transliteration"
+                    )
+                ) or None,
+                meaning=_clean_string(
+                    data.get(
+                        "meaning"
+                    )
+                ) or None,
+                scriptures=(
+                    data.get(
+                        "scriptures",
+                        []
+                    )
+                    if isinstance(
+                        data.get(
+                            "scriptures",
+                            [],
+                        ),
+                        list,
+                    )
+                    else []
+                ),
+                notes=(
+                    data.get(
+                        "notes",
+                        []
+                    )
+                    if isinstance(
+                        data.get(
+                            "notes",
+                            [],
+                        ),
+                        list,
+                    )
+                    else []
+                ),
+            )
+        )
+
+        return jsonify(
+            _serialize_value(
+                result
+            )
+        ), 200
+
+    except Exception as exc:
+
+        return _error_response(
+            "Failed to create root word.",
+            500,
+            error=exc,
+        )
+
+
+# =========================================================
+# ADD BOOKMARK
 # =========================================================
 
 @study_bp.route(
@@ -385,41 +1527,75 @@ def get_material(
 )
 def save_bookmark():
 
-    data = request.get_json(
-        silent=True
-    ) or {}
+    data = _json_body()
 
-    user_id = data.get(
-        "user_id"
-    )
-
-    material_id = data.get(
-        "material_id"
-    )
-
-    if not user_id:
-        return jsonify({
-            "success": False,
-            "message": "user_id is required.",
-        }), 400
-
-    if not material_id:
-        return jsonify({
-            "success": False,
-            "message": "material_id is required.",
-        }), 400
-
-    result = (
-        BookmarkService
-        .add_bookmark(
-            user_id,
-            str(material_id),
+    user_id = _clean_string(
+        data.get(
+            "user_id"
         )
     )
 
-    return jsonify(
-        result
-    ), 200
+    material_id = _clean_string(
+        data.get(
+            "material_id"
+        )
+    )
+
+    if not user_id:
+
+        return _error_response(
+            "user_id is required.",
+            400,
+        )
+
+    if not material_id:
+
+        return _error_response(
+            "material_id is required.",
+            400,
+        )
+
+    try:
+
+        # -------------------------------------------------
+        # Verify material exists before creating bookmark.
+        # -------------------------------------------------
+
+        material = (
+            StudyService
+            .get_material_by_id(
+                material_id
+            )
+        )
+
+        if not material:
+
+            return _error_response(
+                "Study material not found.",
+                404,
+            )
+
+        result = (
+            BookmarkService
+            .add_bookmark(
+                user_id,
+                material_id,
+            )
+        )
+
+        return jsonify(
+            _serialize_value(
+                result
+            )
+        ), 200
+
+    except Exception as exc:
+
+        return _error_response(
+            "Failed to save study bookmark.",
+            500,
+            error=exc,
+        )
 
 
 # =========================================================
@@ -430,43 +1606,97 @@ def save_bookmark():
     "/bookmarks/<user_id>",
     methods=["GET"],
 )
-def get_bookmarks(user_id):
+def get_bookmarks(
+    user_id,
+):
 
-    bookmarks = (
-        BookmarkService
-        .get_bookmarks(user_id)
+    user_id = _clean_string(
+        user_id
     )
 
-    materials = []
+    if not user_id:
 
-    for bookmark in bookmarks:
-        material_id = bookmark.get(
-            "material_id"
+        return _error_response(
+            "user_id is required.",
+            400,
         )
 
-        if not material_id:
-            continue
+    try:
 
-        material = (
-            StudyService
-            .get_material_by_id(
-                material_id
+        bookmarks = (
+            BookmarkService
+            .get_bookmarks(
+                user_id
             )
         )
 
-        if material:
-            materials.append(
+        if not isinstance(
+            bookmarks,
+            list,
+        ):
+            bookmarks = []
+
+        materials = []
+
+        for bookmark in bookmarks:
+
+            if not isinstance(
+                bookmark,
+                dict,
+            ):
+                continue
+
+            material_id = _clean_string(
+                bookmark.get(
+                    "material_id"
+                )
+            )
+
+            if not material_id:
+                continue
+
+            material = (
+                StudyService
+                .get_material_by_id(
+                    material_id
+                )
+            )
+
+            if material:
+
+                materials.append(
+                    material
+                )
+
+        safe_materials = [
+            _serialize_value(
                 material
             )
+            for material in materials
+        ]
 
-    return jsonify({
-        "success": True,
-        "count": len(materials),
-        "bookmarks": materials,
-    }), 200
+        return jsonify({
+            "success": True,
+            "user_id":
+                user_id,
+            "count": len(
+                safe_materials
+            ),
+            "bookmarks":
+                safe_materials,
+        }), 200
+
+    except Exception as exc:
+
+        return _error_response(
+            "Failed to load study bookmarks.",
+            500,
+            error=exc,
+        )
+
 
 # =========================================================
-# SDA QUARTERLY
+# SDA TODAY
 # =========================================================
 
 @study_bp.route(
@@ -475,24 +1705,39 @@ def get_bookmarks(user_id):
 )
 def sda_today():
 
-    material = (
-        SDAQuarterlyService
-        .get_today()
-    )
+    try:
 
-    if not material:
+        material = (
+            SDAQuarterlyService
+            .get_today()
+        )
+
+        if not material:
+
+            return jsonify({
+                "success": False,
+                "message":
+                    (
+                        "No SDA quarterly lesson "
+                        "is available for today."
+                    ),
+            }), 404
+
         return jsonify({
-            "success": False,
-            "message": (
-                "No SDA quarterly lesson "
-                "is available for today."
-            ),
-        }), 404
+            "success": True,
+            "material":
+                _serialize_value(
+                    material
+                ),
+        }), 200
 
-    return jsonify({
-        "success": True,
-        "material": material,
-    }), 200
+    except Exception as exc:
+
+        return _error_response(
+            "Failed to load today's SDA lesson.",
+            500,
+            error=exc,
+        )
 
 
 # =========================================================
@@ -505,16 +1750,42 @@ def sda_today():
 )
 def sda_current_week():
 
-    materials = (
-        SDAQuarterlyService
-        .get_current_week()
-    )
+    try:
 
-    return jsonify({
-        "success": True,
-        "count": len(materials),
-        "materials": materials,
-    }), 200
+        materials = (
+            SDAQuarterlyService
+            .get_current_week()
+        )
+
+        if not isinstance(
+            materials,
+            list,
+        ):
+            materials = []
+
+        safe_materials = [
+            _serialize_value(
+                material
+            )
+            for material in materials
+        ]
+
+        return jsonify({
+            "success": True,
+            "count": len(
+                safe_materials
+            ),
+            "materials":
+                safe_materials,
+        }), 200
+
+    except Exception as exc:
+
+        return _error_response(
+            "Failed to load the current SDA week.",
+            500,
+            error=exc,
+        )
 
 
 # =========================================================
@@ -529,38 +1800,62 @@ def sda_by_date(
     lesson_date,
 ):
 
-    parsed = (
-        SDAQuarterlyService
-        .parse_date(
-            lesson_date
-        )
+    lesson_date = _clean_string(
+        lesson_date
     )
 
-    if not parsed:
-        return jsonify({
-            "success": False,
-            "message": (
-                "Date must use YYYY-MM-DD."
-            ),
-        }), 400
+    if not lesson_date:
 
-    material = (
-        SDAQuarterlyService
-        .get_by_date(
-            parsed
+        return _error_response(
+            "lesson_date is required.",
+            400,
         )
-    )
 
-    if not material:
+    try:
+
+        parsed = (
+            SDAQuarterlyService
+            .parse_date(
+                lesson_date
+            )
+        )
+
+        if not parsed:
+
+            return _error_response(
+                "Date must use YYYY-MM-DD.",
+                400,
+            )
+
+        material = (
+            SDAQuarterlyService
+            .get_by_date(
+                parsed
+            )
+        )
+
+        if not material:
+
+            return _error_response(
+                "Lesson not found.",
+                404,
+            )
+
         return jsonify({
-            "success": False,
-            "message": "Lesson not found.",
-        }), 404
+            "success": True,
+            "material":
+                _serialize_value(
+                    material
+                ),
+        }), 200
 
-    return jsonify({
-        "success": True,
-        "material": material,
-    }), 200
+    except Exception as exc:
+
+        return _error_response(
+            "Failed to load the SDA lesson.",
+            500,
+            error=exc,
+        )
 
 
 # =========================================================
@@ -582,28 +1877,60 @@ def sda_quarter(
         3,
         4,
     ):
-        return jsonify({
-            "success": False,
-            "message": (
-                "Quarter must be between 1 and 4."
-            ),
-        }), 400
 
-    materials = (
-        SDAQuarterlyService
-        .get_quarter(
-            year,
-            quarter,
+        return _error_response(
+            "Quarter must be between 1 and 4.",
+            400,
         )
-    )
 
-    return jsonify({
-        "success": True,
-        "year": year,
-        "quarter": quarter,
-        "count": len(materials),
-        "materials": materials,
-    }), 200
+    if year < 1900 or year > 3000:
+
+        return _error_response(
+            "Invalid year.",
+            400,
+        )
+
+    try:
+
+        materials = (
+            SDAQuarterlyService
+            .get_quarter(
+                year,
+                quarter,
+            )
+        )
+
+        if not isinstance(
+            materials,
+            list,
+        ):
+            materials = []
+
+        safe_materials = [
+            _serialize_value(
+                material
+            )
+            for material in materials
+        ]
+
+        return jsonify({
+            "success": True,
+            "year": year,
+            "quarter": quarter,
+            "count": len(
+                safe_materials
+            ),
+            "materials":
+                safe_materials,
+        }), 200
+
+    except Exception as exc:
+
+        return _error_response(
+            "Failed to load SDA quarter.",
+            500,
+            error=exc,
+        )
 
 
 # =========================================================
@@ -615,20 +1942,25 @@ def sda_quarter(
     methods=["POST"],
 )
 def import_sda_quarter():
+    """
+    Import a validated SDA quarter payload.
 
-    data = request.get_json(
-        silent=True
-    ) or {}
+    NOTE:
+    Administrative authorization should be attached
+    here when the central admin/auth contract is finalized.
+    """
+
+    data = _json_body()
 
     if not data:
-        return jsonify({
-            "success": False,
-            "message": (
-                "Quarter payload is required."
-            ),
-        }), 400
+
+        return _error_response(
+            "Quarter payload is required.",
+            400,
+        )
 
     try:
+
         result = (
             SDAQuarterlyService
             .import_quarter(
@@ -637,27 +1969,22 @@ def import_sda_quarter():
         )
 
         return jsonify(
-            result
+            _serialize_value(
+                result
+            )
         ), 200
 
     except ValueError as exc:
 
-        return jsonify({
-            "success": False,
-            "message": str(exc),
-        }), 400
+        return _error_response(
+            str(exc),
+            400,
+        )
 
     except Exception as exc:
 
-        print(
-            "❌ SDA import failed:",
-            exc,
+        return _error_response(
+            "Failed to import SDA quarterly lessons.",
+            500,
+            error=exc,
         )
-
-        return jsonify({
-            "success": False,
-            "message": (
-                "Failed to import SDA quarterly lessons."
-            ),
-            "error": str(exc),
-        }), 500
