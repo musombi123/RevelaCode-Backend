@@ -274,21 +274,19 @@ except Exception as exc:
 #
 #     url_prefix="/study"
 #
-# Therefore registering with:
+# The application-level prefix must therefore be:
 #
-#     url_prefix="/api"
+#     /api/study
 #
-# creates:
-#
-#     /api/study/...
-#
+# because the registration prefix overrides the blueprint
+# prefix in Flask.
 # ---------------------------------------------------------
 
 try:
 
     app.register_blueprint(
         study_bp,
-        url_prefix="/api",
+        url_prefix="/api/study",
     )
 
 except Exception as exc:

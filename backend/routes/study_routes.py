@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import date, datetime
 from typing import Any, Dict, List, Optional
 
 from flask import Blueprint, jsonify, request
 
 from backend.db import get_db
+from backend.utils.decorators import require_role
 
 from backend.study.study_service import (
     StudyService,
@@ -43,7 +45,9 @@ from backend.study.ai_context_service import (
 # LOGGING
 # =========================================================
 
-logger = logging.getLogger("revelacode.study")
+logger = logging.getLogger(
+    "revelacode.study"
+)
 
 
 # =========================================================
@@ -54,13 +58,9 @@ logger = logging.getLogger("revelacode.study")
 #
 #     url_prefix="/api"
 #
-# Therefore the public Study API becomes:
+# Therefore:
 #
 #     /api/study/...
-#
-# Example:
-#
-#     GET /api/study/materials
 #
 # =========================================================
 
@@ -72,12 +72,27 @@ study_bp = Blueprint(
 
 
 # =========================================================
+# CONSTANTS
+# =========================================================
+
+DEFAULT_PAGE = 1
+DEFAULT_LIMIT = 50
+MAX_LIMIT = 100
+
+DEFAULT_SEARCH_LIMIT = 50
+MAX_SEARCH_LIMIT = 100
+
+DEFAULT_RECOMMENDATION_LIMIT = 20
+MAX_RECOMMENDATION_LIMIT = 100
+
+
+# =========================================================
 # HELPERS
 # =========================================================
 
 def _json_body() -> Dict[str, Any]:
     """
-    Safely return a JSON request body.
+    Safely return a JSON object from the request.
     """
 
     data = request.get_json(
@@ -86,7 +101,10 @@ def _json_body() -> Dict[str, Any]:
 
     return (
         data
-        if isinstance(data, dict)
+        if isinstance(
+            data,
+            dict,
+        )
         else {}
     )
 
@@ -95,7 +113,7 @@ def _clean_string(
     value: Any,
 ) -> str:
     """
-    Normalize an arbitrary value to a trimmed string.
+    Normalize an arbitrary value into a trimmed string.
     """
 
     if value is None:
@@ -114,7 +132,7 @@ def _parse_int(
     maximum: Optional[int] = None,
 ) -> Optional[int]:
     """
-    Safely parse an integer query/form value.
+    Safely parse an integer value.
     """
 
     if value is None:
@@ -128,11 +146,16 @@ def _parse_int(
         return default
 
     try:
-        number = int(text)
+
+        number = int(
+            text
+        )
+
     except (
         TypeError,
         ValueError,
     ):
+
         return default
 
     if (
@@ -161,6 +184,10 @@ def _normalize_tags(
     or:
 
         "faith,SDA"
+
+    or:
+
+        "[\"faith\", \"SDA\"]"
     """
 
     if value is None:
@@ -170,20 +197,19 @@ def _normalize_tags(
         value,
         str,
     ):
+
         text = value.strip()
 
         if not text:
             return []
 
-        # -------------------------------------------------
-        # Try JSON first.
-        # -------------------------------------------------
-
         if (
             text.startswith("[")
             and text.endswith("]")
         ):
+
             try:
+
                 parsed = json.loads(
                     text
                 )
@@ -192,21 +218,34 @@ def _normalize_tags(
                     parsed,
                     list,
                 ):
+
                     value = parsed
 
-            except Exception:
+                else:
+
+                    value = text.split(",")
+
+            except (
+                TypeError,
+                ValueError,
+                json.JSONDecodeError,
+            ):
+
                 value = text.split(",")
 
         else:
+
             value = text.split(",")
 
     if not isinstance(
         value,
-        list,
+        (list, tuple, set),
     ):
+
         return []
 
     tags = []
+    seen = set()
 
     for item in value:
 
@@ -214,16 +253,34 @@ def _normalize_tags(
             item
         )
 
-        if tag:
-            tags.append(
-                tag
-            )
+        if not tag:
+            continue
 
-    # Preserve order while removing duplicates.
-    return list(
-        dict.fromkeys(
-            tags
+        normalized = tag.casefold()
+
+        if normalized in seen:
+            continue
+
+        seen.add(
+            normalized
         )
+
+        tags.append(
+            tag
+        )
+
+    return tags
+
+
+def _normalize_preferences(
+    value: Any,
+) -> List[str]:
+    """
+    Normalize user study preferences.
+    """
+
+    return _normalize_tags(
+        value
     )
 
 
@@ -231,7 +288,7 @@ def _serialize_value(
     value: Any,
 ) -> Any:
     """
-    Make Mongo/complex Python values JSON-safe.
+    Convert MongoDB/Python values into JSON-safe values.
     """
 
     if value is None:
@@ -241,23 +298,48 @@ def _serialize_value(
         value,
         dict,
     ):
+
         return {
             str(key):
-            _serialize_value(item)
+            _serialize_value(
+                item
+            )
             for key, item in value.items()
         }
 
     if isinstance(
         value,
-        list,
+        (
+            list,
+            tuple,
+            set,
+        ),
     ):
+
         return [
-            _serialize_value(item)
+            _serialize_value(
+                item
+            )
             for item in value
         ]
 
-    # ObjectId and similar BSON values.
-    if not isinstance(
+    if isinstance(
+        value,
+        (
+            datetime,
+            date,
+        ),
+    ):
+
+        return value.isoformat()
+
+    if value.__class__.__name__ == "ObjectId":
+
+        return str(
+            value
+        )
+
+    if isinstance(
         value,
         (
             str,
@@ -266,11 +348,12 @@ def _serialize_value(
             bool,
         ),
     ):
-        return str(
-            value
-        )
 
-    return value
+        return value
+
+    return str(
+        value
+    )
 
 
 def _error_response(
@@ -280,7 +363,10 @@ def _error_response(
     error: Any = None,
 ):
     """
-    Consistent Study API error response.
+    Return a consistent Study API error response.
+
+    Internal exception details are logged, not exposed to
+    the client.
     """
 
     payload = {
@@ -288,11 +374,12 @@ def _error_response(
         "message": message,
     }
 
-    # Do not expose internal errors by default.
     if error is not None:
-        logger.exception(
+
+        logger.error(
             "Study API error: %s",
             error,
+            exc_info=True,
         )
 
     return jsonify(
@@ -304,8 +391,7 @@ def _extract_ai_answer(
     value: Any,
 ) -> str:
     """
-    Normalize the different response shapes that
-    RevelaAI may return.
+    Normalize different RevelaAI response shapes.
     """
 
     if value is None:
@@ -315,6 +401,7 @@ def _extract_ai_answer(
         value,
         str,
     ):
+
         return value.strip()
 
     if isinstance(
@@ -327,6 +414,7 @@ def _extract_ai_answer(
             "response",
             "content",
             "text",
+            "output",
             "message",
         ):
 
@@ -341,15 +429,43 @@ def _extract_ai_answer(
 
                 return candidate.strip()
 
-        # Nested answer.
-        nested = value.get(
-            "data"
-        )
+        for key in (
+            "data",
+            "result",
+        ):
 
-        if nested is not None:
-            return _extract_ai_answer(
-                nested
+            nested = value.get(
+                key
             )
+
+            if nested is not None:
+
+                answer = (
+                    _extract_ai_answer(
+                        nested
+                    )
+                )
+
+                if answer:
+                    return answer
+
+        return ""
+
+    if isinstance(
+        value,
+        list,
+    ):
+
+        for item in value:
+
+            answer = (
+                _extract_ai_answer(
+                    item
+                )
+            )
+
+            if answer:
+                return answer
 
         return ""
 
@@ -358,8 +474,64 @@ def _extract_ai_answer(
     ).strip()
 
 
+def _paginate(
+    items: List[Any],
+    page: int,
+    limit: int,
+):
+    """
+    Apply API-level pagination while preserving the existing
+    StudyService list contract.
+    """
+
+    total = len(
+        items
+    )
+
+    start = (
+        (page - 1)
+        * limit
+    )
+
+    end = (
+        start
+        + limit
+    )
+
+    paged = items[
+        start:end
+    ]
+
+    total_pages = (
+        (
+            total
+            + limit
+            - 1
+        )
+        // limit
+        if total
+        else 0
+    )
+
+    return (
+        paged,
+        {
+            "page": page,
+            "limit": limit,
+            "total": total,
+            "total_pages": total_pages,
+            "has_next": (
+                page < total_pages
+            ),
+            "has_previous": (
+                page > 1
+            ),
+        },
+    )
+
+
 # =========================================================
-# STUDY HEALTH / DIAGNOSTICS
+# STUDY HEALTH
 # =========================================================
 
 @study_bp.route(
@@ -383,20 +555,48 @@ def study_health():
         "routes": {
             "materials":
                 "/api/study/materials",
+
             "material":
                 "/api/study/material/<material_id>",
+
             "search":
                 "/api/study/search",
+
             "upload":
                 "/api/study/upload",
+
             "ask_ai":
                 "/api/study/ask-ai",
+
+            "preferences":
+                "/api/study/preferences",
+
+            "recommend":
+                "/api/study/recommend/<user_id>",
+
+            "rootword":
+                "/api/study/rootword",
+
+            "bookmark":
+                "/api/study/bookmark",
+
             "bookmarks":
                 "/api/study/bookmarks/<user_id>",
+
             "sda_today":
                 "/api/study/sda/today",
+
             "sda_week":
                 "/api/study/sda/week",
+
+            "sda_date":
+                "/api/study/sda/date/<lesson_date>",
+
+            "sda_quarter":
+                "/api/study/sda/quarter/<year>/<quarter>",
+
+            "sda_import":
+                "/api/study/sda/import",
         },
     }), 200
 
@@ -411,20 +611,19 @@ def study_health():
 )
 def get_materials():
     """
-    Get available Study materials.
+    Get Study materials.
 
-    Canonical endpoint:
+    Examples:
 
         GET /api/study/materials
 
-    Optional filters:
+        GET /api/study/materials?category=faith
 
-        ?category=faith
-        ?subcategory=sda_quarterly
-        ?material_type=lesson
+        GET /api/study/materials?subcategory=sda_quarterly
 
-    Backward compatibility is preserved for the
-    existing StudyService interface.
+        GET /api/study/materials?material_type=lesson
+
+        GET /api/study/materials?page=1&limit=20
     """
 
     try:
@@ -457,25 +656,30 @@ def get_materials():
         )
 
         # -------------------------------------------------
-        # Current StudyService supports:
-        #
-        #   category
-        #   subcategory
-        #   file_type
-        #
-        # Until StudyService is upgraded, map the
-        # public material_type filter onto its existing
-        # file_type argument.
+        # Preserve legacy file_type requests.
         # -------------------------------------------------
 
-        file_type = material_type
+        file_type = (
+            _clean_string(
+                request.args.get(
+                    "file_type"
+                )
+            )
+            or None
+        )
+
+        resolved_type = (
+            material_type
+            or file_type
+            or None
+        )
 
         materials = (
             StudyService
             .get_materials(
                 category=category,
                 subcategory=subcategory,
-                file_type=file_type,
+                material_type=resolved_type,
             )
         )
 
@@ -483,102 +687,60 @@ def get_materials():
             materials,
             list,
         ):
+
             materials = []
 
-        # -------------------------------------------------
-        # Optional pagination
-        #
-        # Existing clients that do not request page/limit
-        # continue receiving the complete library.
-        # -------------------------------------------------
-
-        page_raw = request.args.get(
-            "page"
-        )
-
-        limit_raw = request.args.get(
-            "limit"
-        )
-
         page_requested = (
-            page_raw is not None
+            request.args.get(
+                "page"
+            )
+            is not None
         )
 
         limit_requested = (
-            limit_raw is not None
+            request.args.get(
+                "limit"
+            )
+            is not None
         )
 
         page = _parse_int(
-            page_raw,
-            default=1,
+            request.args.get(
+                "page"
+            ),
+            default=DEFAULT_PAGE,
             minimum=1,
         )
 
         limit = _parse_int(
-            limit_raw,
-            default=50,
+            request.args.get(
+                "limit"
+            ),
+            default=DEFAULT_LIMIT,
             minimum=1,
-            maximum=100,
+            maximum=MAX_LIMIT,
         )
 
-        total = len(
-            materials
-        )
+        pagination = None
 
         if (
             page_requested
             or limit_requested
         ):
 
-            start = (
-                (page - 1)
-                * limit
-            )
-
-            end = (
-                start
-                + limit
-            )
-
-            paged_materials = (
-                materials[
-                    start:end
-                ]
-            )
-
-            total_pages = (
-                (
-                    total
-                    + limit
-                    - 1
+            response_materials, pagination = (
+                _paginate(
+                    materials,
+                    page,
+                    limit,
                 )
-                // limit
-                if total
-                else 0
             )
-
-            response_materials = (
-                paged_materials
-            )
-
-            pagination = {
-                "page": page,
-                "limit": limit,
-                "total": total,
-                "total_pages": total_pages,
-                "has_next":
-                    page < total_pages,
-                "has_previous":
-                    page > 1,
-            }
 
         else:
 
             response_materials = (
                 materials
             )
-
-            pagination = None
 
         safe_materials = [
             _serialize_value(
@@ -592,11 +754,14 @@ def get_materials():
             "count": len(
                 safe_materials
             ),
-            "total": total,
+            "total": len(
+                materials
+            ),
             "materials": safe_materials,
         }
 
         if pagination is not None:
+
             response[
                 "pagination"
             ] = pagination
@@ -606,10 +771,6 @@ def get_materials():
         ), 200
 
     except Exception as exc:
-
-        logger.exception(
-            "Failed to load Study materials."
-        )
 
         return _error_response(
             "Failed to load study materials.",
@@ -630,8 +791,7 @@ def get_material(
     material_id,
 ):
     """
-    Get one Study material by Mongo ObjectId or
-    custom material UUID.
+    Retrieve one Study material.
     """
 
     material_id = _clean_string(
@@ -656,11 +816,10 @@ def get_material(
 
         if not material:
 
-            return jsonify({
-                "success": False,
-                "message":
-                    "Material not found.",
-            }), 404
+            return _error_response(
+                "Material not found.",
+                404,
+            )
 
         return jsonify({
             "success": True,
@@ -689,7 +848,18 @@ def get_material(
 )
 def save_preferences():
     """
-    Save a user's Study preferences.
+    Save Study preferences.
+
+    Expected:
+
+        {
+            "user_id": "...",
+            "preferences": [
+                "faith",
+                "SDA",
+                "Bible"
+            ]
+        }
     """
 
     data = _json_body()
@@ -722,22 +892,9 @@ def save_preferences():
             400,
         )
 
-    cleaned_preferences = []
-
-    for preference in preferences:
-
-        value = _clean_string(
-            preference
-        )
-
-        if value:
-            cleaned_preferences.append(
-                value
-            )
-
-    cleaned_preferences = list(
-        dict.fromkeys(
-            cleaned_preferences
+    cleaned_preferences = (
+        _normalize_preferences(
+            preferences
         )
     )
 
@@ -751,11 +908,20 @@ def save_preferences():
             )
         )
 
+        status_code = (
+            200
+            if result.get(
+                "success",
+                False,
+            )
+            else 400
+        )
+
         return jsonify(
             _serialize_value(
                 result
             )
-        ), 200
+        ), status_code
 
     except Exception as exc:
 
@@ -778,7 +944,7 @@ def get_preferences(
     user_id,
 ):
     """
-    Get saved preferences for a user.
+    Get saved Study preferences.
     """
 
     user_id = _clean_string(
@@ -805,13 +971,19 @@ def get_preferences(
             preferences,
             list,
         ):
+
             preferences = []
 
         return jsonify({
             "success": True,
             "user_id": user_id,
             "preferences":
-                preferences,
+                _serialize_value(
+                    preferences
+                ),
+            "count": len(
+                preferences
+            ),
         }), 200
 
     except Exception as exc:
@@ -824,7 +996,7 @@ def get_preferences(
 
 
 # =========================================================
-# RECOMMENDED MATERIALS
+# RECOMMENDATIONS
 # =========================================================
 
 @study_bp.route(
@@ -836,6 +1008,10 @@ def recommended_materials(
 ):
     """
     Get personalized Study recommendations.
+
+    Optional:
+
+        ?limit=20
     """
 
     user_id = _clean_string(
@@ -849,12 +1025,22 @@ def recommended_materials(
             400,
         )
 
+    limit = _parse_int(
+        request.args.get(
+            "limit"
+        ),
+        default=DEFAULT_RECOMMENDATION_LIMIT,
+        minimum=1,
+        maximum=MAX_RECOMMENDATION_LIMIT,
+    )
+
     try:
 
         materials = (
             MaterialPreferences
             .get_recommended_materials(
-                user_id
+                user_id,
+                limit=limit,
             )
         )
 
@@ -862,6 +1048,7 @@ def recommended_materials(
             materials,
             list,
         ):
+
             materials = []
 
         safe_materials = [
@@ -873,6 +1060,7 @@ def recommended_materials(
 
         return jsonify({
             "success": True,
+            "user_id": user_id,
             "count": len(
                 safe_materials
             ),
@@ -890,13 +1078,57 @@ def recommended_materials(
 
 
 # =========================================================
+# STUDY STATS
+# =========================================================
+
+@study_bp.route(
+    "/stats",
+    methods=["GET"],
+)
+def study_stats():
+    """
+    Return Study library statistics.
+    """
+
+    try:
+
+        result = (
+            StudyService
+            .get_stats()
+        )
+
+        return jsonify(
+            _serialize_value(
+                result
+            )
+        ), 200
+
+    except Exception as exc:
+
+        return _error_response(
+            "Failed to load study statistics.",
+            500,
+            error=exc,
+        )
+
+
+# =========================================================
 # UPLOAD / CREATE MATERIAL
+# =========================================================
+#
+# Administrative operation.
+#
+# Existing admin authentication is reused through:
+#
+#     @require_role("admin")
+#
 # =========================================================
 
 @study_bp.route(
     "/upload",
     methods=["POST"],
 )
+@require_role("admin")
 def upload_material():
     """
     Create a Study material from:
@@ -924,29 +1156,40 @@ def upload_material():
                     400,
                 )
 
-            title = _clean_string(
-                request.form.get(
-                    "title"
+            title = (
+                _clean_string(
+                    request.form.get(
+                        "title"
+                    )
                 )
-            ) or None
+                or None
+            )
 
-            category = _clean_string(
-                request.form.get(
-                    "category"
+            category = (
+                _clean_string(
+                    request.form.get(
+                        "category"
+                    )
                 )
-            ) or None
+                or None
+            )
 
-            subcategory = _clean_string(
-                request.form.get(
-                    "subcategory"
+            subcategory = (
+                _clean_string(
+                    request.form.get(
+                        "subcategory"
+                    )
                 )
-            ) or None
+                or None
+            )
 
             year = _parse_int(
                 request.form.get(
                     "year"
                 ),
                 default=None,
+                minimum=1900,
+                maximum=2100,
             )
 
             tags = _normalize_tags(
@@ -1045,6 +1288,8 @@ def upload_material():
                 "year"
             ),
             default=None,
+            minimum=1900,
+            maximum=2100,
         )
 
         tags = _normalize_tags(
@@ -1107,13 +1352,17 @@ def upload_material():
 )
 def search_materials():
     """
-    Search Study materials by title/content/tags.
+    Search Study materials.
+
+    Example:
+
+        GET /api/study/search?q=faith&limit=20
     """
 
     query = _clean_string(
         request.args.get(
             "q",
-            ""
+            "",
         )
     )
 
@@ -1126,12 +1375,22 @@ def search_materials():
             "results": [],
         }), 200
 
+    limit = _parse_int(
+        request.args.get(
+            "limit"
+        ),
+        default=DEFAULT_SEARCH_LIMIT,
+        minimum=1,
+        maximum=MAX_SEARCH_LIMIT,
+    )
+
     try:
 
         results = (
             StudyService
             .search_materials(
-                query
+                query,
+                limit=limit,
             )
         )
 
@@ -1139,6 +1398,7 @@ def search_materials():
             results,
             list,
         ):
+
             results = []
 
         safe_results = [
@@ -1179,11 +1439,11 @@ def ask_study_ai():
     """
     Ask RevelaAI about a specific Study material.
 
-    Expected payload:
+    Expected:
 
         {
             "material_id": "...",
-            "question": "Explain this lesson..."
+            "question": "Explain this lesson."
         }
     """
 
@@ -1225,6 +1485,41 @@ def ask_study_ai():
 
     try:
 
+        # -------------------------------------------------
+        # Verify material and AI availability.
+        # -------------------------------------------------
+
+        material = (
+            StudyService
+            .get_material_by_id(
+                material_id
+            )
+        )
+
+        if not material:
+
+            return _error_response(
+                "Study material not found.",
+                404,
+            )
+
+        if (
+            isinstance(
+                material,
+                dict,
+            )
+            and material.get(
+                "ai_enabled",
+                True,
+            )
+            is False
+        ):
+
+            return _error_response(
+                "AI assistance is disabled for this material.",
+                403,
+            )
+
         result = (
             AIContextService
             .ask_material_ai(
@@ -1238,13 +1533,16 @@ def ask_study_ai():
             dict,
         ):
 
-            answer = _extract_ai_answer(
-                result
+            answer = (
+                _extract_ai_answer(
+                    result
+                )
             )
 
             return jsonify({
-                "success":
-                    bool(answer),
+                "success": bool(
+                    answer
+                ),
                 "material_id":
                     material_id,
                 "question":
@@ -1256,10 +1554,6 @@ def ask_study_ai():
         result = _serialize_value(
             result
         )
-
-        # -------------------------------------------------
-        # Normalize answer.
-        # -------------------------------------------------
 
         raw_answer = result.get(
             "answer"
@@ -1302,9 +1596,9 @@ def search_rootword():
     """
     Search Biblical/Hebrew/Greek root words.
 
-    The current RootWordService does not yet expose
-    a search() method, so this route contains a safe
-    compatibility fallback against MongoDB.
+    Example:
+
+        GET /api/study/rootword?word=logos
     """
 
     word = _clean_string(
@@ -1321,95 +1615,37 @@ def search_rootword():
             400,
         )
 
+    limit = _parse_int(
+        request.args.get(
+            "limit"
+        ),
+        default=25,
+        minimum=1,
+        maximum=100,
+    )
+
     try:
 
-        # -------------------------------------------------
-        # Prefer a proper service method when available.
-        # -------------------------------------------------
-
-        search_method = getattr(
-            RootWordService,
-            "search",
-            None,
-        )
-
-        if callable(
-            search_method
-        ):
-
-            result = search_method(
-                word
-            )
-
-            return jsonify(
-                _serialize_value(
-                    result
-                )
-            ), 200
-
-        # -------------------------------------------------
-        # Compatibility fallback.
-        # -------------------------------------------------
-
-        db = get_db()
-
-        regex = {
-            "$regex":
+        result = (
+            RootWordService
+            .search(
                 word,
-            "$options":
-                "i",
-        }
-
-        results = list(
-            db[
-                "rootwords"
-            ].find({
-                "$or": [
-                    {
-                        "word":
-                            regex,
-                    },
-                    {
-                        "meaning":
-                            regex,
-                    },
-                    {
-                        "transliteration":
-                            regex,
-                    },
-                    {
-                        "strong_number":
-                            regex,
-                    },
-                    {
-                        "language":
-                            regex,
-                    },
-                ]
-            })
+                limit=limit,
+            )
         )
 
-        safe_results = []
-
-        for item in results:
-
-            safe_results.append(
-                _serialize_value(
-                    item
-                )
+        return jsonify(
+            _serialize_value(
+                result
             )
-
-        return jsonify({
-            "success": True,
-            "count": len(
-                safe_results
-            ),
-            "query": word,
-            "results":
-                safe_results,
-            "data":
-                safe_results,
-        }), 200
+        ), (
+            200
+            if result.get(
+                "success",
+                False,
+            )
+            else 400
+        )
 
     except Exception as exc:
 
@@ -1428,7 +1664,13 @@ def search_rootword():
     "/rootword",
     methods=["POST"],
 )
+@require_role("admin")
 def add_rootword():
+    """
+    Create a Biblical/Hebrew/Greek root-word record.
+
+    Administrative operation.
+    """
 
     data = _json_body()
 
@@ -1451,30 +1693,39 @@ def add_rootword():
             RootWordService
             .add_rootword(
                 word=word,
+
                 language=_clean_string(
                     data.get(
                         "language"
                     )
-                ) or None,
+                )
+                or None,
+
                 strong_number=_clean_string(
                     data.get(
                         "strong_number"
                     )
-                ) or None,
+                )
+                or None,
+
                 transliteration=_clean_string(
                     data.get(
                         "transliteration"
                     )
-                ) or None,
+                )
+                or None,
+
                 meaning=_clean_string(
                     data.get(
                         "meaning"
                     )
-                ) or None,
+                )
+                or None,
+
                 scriptures=(
                     data.get(
                         "scriptures",
-                        []
+                        [],
                     )
                     if isinstance(
                         data.get(
@@ -1485,10 +1736,11 @@ def add_rootword():
                     )
                     else []
                 ),
+
                 notes=(
                     data.get(
                         "notes",
-                        []
+                        [],
                     )
                     if isinstance(
                         data.get(
@@ -1502,11 +1754,30 @@ def add_rootword():
             )
         )
 
+        if not isinstance(
+            result,
+            dict,
+        ):
+
+            return _error_response(
+                "Invalid root word service response.",
+                500,
+            )
+
+        status_code = (
+            200
+            if result.get(
+                "success",
+                False,
+            )
+            else 400
+        )
+
         return jsonify(
             _serialize_value(
                 result
             )
-        ), 200
+        ), status_code
 
     except Exception as exc:
 
@@ -1526,6 +1797,9 @@ def add_rootword():
     methods=["POST"],
 )
 def save_bookmark():
+    """
+    Save a Study bookmark.
+    """
 
     data = _json_body()
 
@@ -1557,24 +1831,6 @@ def save_bookmark():
 
     try:
 
-        # -------------------------------------------------
-        # Verify material exists before creating bookmark.
-        # -------------------------------------------------
-
-        material = (
-            StudyService
-            .get_material_by_id(
-                material_id
-            )
-        )
-
-        if not material:
-
-            return _error_response(
-                "Study material not found.",
-                404,
-            )
-
         result = (
             BookmarkService
             .add_bookmark(
@@ -1583,16 +1839,210 @@ def save_bookmark():
             )
         )
 
+        if not isinstance(
+            result,
+            dict,
+        ):
+
+            return _error_response(
+                "Invalid bookmark service response.",
+                500,
+            )
+
+        if result.get(
+            "success",
+            False,
+        ):
+
+            return jsonify(
+                _serialize_value(
+                    result
+                )
+            ), 200
+
+        message = (
+            result.get(
+                "message"
+            )
+            or "Failed to save study bookmark."
+        )
+
+        if (
+            "not found"
+            in message.lower()
+        ):
+
+            status_code = 404
+
+        else:
+
+            status_code = 400
+
         return jsonify(
             _serialize_value(
                 result
             )
-        ), 200
+        ), status_code
 
     except Exception as exc:
 
         return _error_response(
             "Failed to save study bookmark.",
+            500,
+            error=exc,
+        )
+
+
+# =========================================================
+# REMOVE BOOKMARK
+# =========================================================
+
+@study_bp.route(
+    "/bookmark",
+    methods=["DELETE"],
+)
+def remove_bookmark():
+    """
+    Remove a Study bookmark.
+
+    Expected:
+
+        {
+            "user_id": "...",
+            "material_id": "..."
+        }
+    """
+
+    data = _json_body()
+
+    user_id = _clean_string(
+        data.get(
+            "user_id"
+        )
+    )
+
+    material_id = _clean_string(
+        data.get(
+            "material_id"
+        )
+    )
+
+    if not user_id:
+
+        return _error_response(
+            "user_id is required.",
+            400,
+        )
+
+    if not material_id:
+
+        return _error_response(
+            "material_id is required.",
+            400,
+        )
+
+    try:
+
+        result = (
+            BookmarkService
+            .remove_bookmark(
+                user_id,
+                material_id,
+            )
+        )
+
+        status_code = (
+            200
+            if result.get(
+                "success",
+                False,
+            )
+            else 400
+        )
+
+        return jsonify(
+            _serialize_value(
+                result
+            )
+        ), status_code
+
+    except Exception as exc:
+
+        return _error_response(
+            "Failed to remove study bookmark.",
+            500,
+            error=exc,
+        )
+
+
+# =========================================================
+# CHECK BOOKMARK
+# =========================================================
+
+@study_bp.route(
+    "/bookmark/check",
+    methods=["GET"],
+)
+def check_bookmark():
+    """
+    Check bookmark state.
+
+    Example:
+
+        GET /api/study/bookmark/check
+            ?user_id=...
+            &material_id=...
+    """
+
+    user_id = _clean_string(
+        request.args.get(
+            "user_id"
+        )
+    )
+
+    material_id = _clean_string(
+        request.args.get(
+            "material_id"
+        )
+    )
+
+    if not user_id:
+
+        return _error_response(
+            "user_id is required.",
+            400,
+        )
+
+    if not material_id:
+
+        return _error_response(
+            "material_id is required.",
+            400,
+        )
+
+    try:
+
+        bookmarked = (
+            BookmarkService
+            .is_bookmarked(
+                user_id,
+                material_id,
+            )
+        )
+
+        return jsonify({
+            "success": True,
+            "user_id": user_id,
+            "material_id": material_id,
+            "bookmarked": bool(
+                bookmarked
+            ),
+        }), 200
+
+    except Exception as exc:
+
+        return _error_response(
+            "Failed to check study bookmark.",
             500,
             error=exc,
         )
@@ -1609,6 +2059,9 @@ def save_bookmark():
 def get_bookmarks(
     user_id,
 ):
+    """
+    Get a user's bookmarked Study materials.
+    """
 
     user_id = _clean_string(
         user_id
@@ -1621,12 +2074,22 @@ def get_bookmarks(
             400,
         )
 
+    limit = _parse_int(
+        request.args.get(
+            "limit"
+        ),
+        default=DEFAULT_LIMIT,
+        minimum=1,
+        maximum=MAX_LIMIT,
+    )
+
     try:
 
         bookmarks = (
             BookmarkService
             .get_bookmarks(
-                user_id
+                user_id,
+                limit=limit,
             )
         )
 
@@ -1634,9 +2097,11 @@ def get_bookmarks(
             bookmarks,
             list,
         ):
+
             bookmarks = []
 
         materials = []
+        bookmark_records = []
 
         for bookmark in bookmarks:
 
@@ -1654,6 +2119,10 @@ def get_bookmarks(
 
             if not material_id:
                 continue
+
+            bookmark_records.append(
+                bookmark
+            )
 
             material = (
                 StudyService
@@ -1677,13 +2146,16 @@ def get_bookmarks(
 
         return jsonify({
             "success": True,
-            "user_id":
-                user_id,
+            "user_id": user_id,
             "count": len(
                 safe_materials
             ),
             "bookmarks":
                 safe_materials,
+            "bookmark_records":
+                _serialize_value(
+                    bookmark_records
+                ),
         }), 200
 
     except Exception as exc:
@@ -1704,27 +2176,40 @@ def get_bookmarks(
     methods=["GET"],
 )
 def sda_today():
+    """
+    Get today's SDA quarterly lesson using Kenya time.
+    """
 
     try:
 
+        target = (
+            SDAQuarterlyService
+            .today_date()
+        )
+
         material = (
             SDAQuarterlyService
-            .get_today()
+            .get_today(
+                target
+            )
         )
 
         if not material:
 
             return jsonify({
                 "success": False,
-                "message":
-                    (
-                        "No SDA quarterly lesson "
-                        "is available for today."
-                    ),
+                "message": (
+                    "No SDA quarterly lesson "
+                    "is available for today."
+                ),
+                "date":
+                    target.isoformat(),
             }), 404
 
         return jsonify({
             "success": True,
+            "date":
+                target.isoformat(),
             "material":
                 _serialize_value(
                     material
@@ -1749,18 +2234,29 @@ def sda_today():
     methods=["GET"],
 )
 def sda_current_week():
+    """
+    Get the current Saturday-Friday SDA lesson week.
+    """
 
     try:
 
+        target = (
+            SDAQuarterlyService
+            .today_date()
+        )
+
         materials = (
             SDAQuarterlyService
-            .get_current_week()
+            .get_current_week(
+                target
+            )
         )
 
         if not isinstance(
             materials,
             list,
         ):
+
             materials = []
 
         safe_materials = [
@@ -1799,6 +2295,13 @@ def sda_current_week():
 def sda_by_date(
     lesson_date,
 ):
+    """
+    Get an SDA lesson by date.
+
+    Canonical format:
+
+        YYYY-MM-DD
+    """
 
     lesson_date = _clean_string(
         lesson_date
@@ -1811,21 +2314,21 @@ def sda_by_date(
             400,
         )
 
-    try:
+    parsed = (
+        SDAQuarterlyService
+        .parse_date(
+            lesson_date
+        )
+    )
 
-        parsed = (
-            SDAQuarterlyService
-            .parse_date(
-                lesson_date
-            )
+    if not parsed:
+
+        return _error_response(
+            "Date must use YYYY-MM-DD.",
+            400,
         )
 
-        if not parsed:
-
-            return _error_response(
-                "Date must use YYYY-MM-DD.",
-                400,
-            )
+    try:
 
         material = (
             SDAQuarterlyService
@@ -1843,6 +2346,8 @@ def sda_by_date(
 
         return jsonify({
             "success": True,
+            "date":
+                parsed.isoformat(),
             "material":
                 _serialize_value(
                     material
@@ -1870,6 +2375,9 @@ def sda_quarter(
     year,
     quarter,
 ):
+    """
+    Get all daily lessons in an SDA quarter.
+    """
 
     if quarter not in (
         1,
@@ -1904,25 +2412,91 @@ def sda_quarter(
             materials,
             list,
         ):
+
             materials = []
+
+        page_requested = (
+            request.args.get(
+                "page"
+            )
+            is not None
+        )
+
+        limit_requested = (
+            request.args.get(
+                "limit"
+            )
+            is not None
+        )
+
+        page = _parse_int(
+            request.args.get(
+                "page"
+            ),
+            default=1,
+            minimum=1,
+        )
+
+        limit = _parse_int(
+            request.args.get(
+                "limit"
+            ),
+            default=DEFAULT_LIMIT,
+            minimum=1,
+            maximum=MAX_LIMIT,
+        )
+
+        pagination = None
+
+        if (
+            page_requested
+            or limit_requested
+        ):
+
+            response_materials, pagination = (
+                _paginate(
+                    materials,
+                    page,
+                    limit,
+                )
+            )
+
+        else:
+
+            response_materials = (
+                materials
+            )
 
         safe_materials = [
             _serialize_value(
                 material
             )
-            for material in materials
+            for material in response_materials
         ]
 
-        return jsonify({
+        response = {
             "success": True,
             "year": year,
             "quarter": quarter,
             "count": len(
                 safe_materials
             ),
+            "total": len(
+                materials
+            ),
             "materials":
                 safe_materials,
-        }), 200
+        }
+
+        if pagination is not None:
+
+            response[
+                "pagination"
+            ] = pagination
+
+        return jsonify(
+            response
+        ), 200
 
     except Exception as exc:
 
@@ -1936,18 +2510,29 @@ def sda_quarter(
 # =========================================================
 # SDA IMPORT
 # =========================================================
+#
+# Administrative operation.
+#
+# This endpoint is intentionally protected because importing
+# an entire quarter can modify a large amount of Study data.
+# =========================================================
 
 @study_bp.route(
     "/sda/import",
     methods=["POST"],
 )
+@require_role("admin")
 def import_sda_quarter():
     """
     Import a validated SDA quarter payload.
 
-    NOTE:
-    Administrative authorization should be attached
-    here when the central admin/auth contract is finalized.
+    Expected structure:
+
+        {
+            "year": 2026,
+            "quarter": 3,
+            "lessons": [...]
+        }
     """
 
     data = _json_body()
@@ -1968,11 +2553,20 @@ def import_sda_quarter():
             )
         )
 
+        status_code = (
+            200
+            if result.get(
+                "success",
+                False,
+            )
+            else 400
+        )
+
         return jsonify(
             _serialize_value(
                 result
             )
-        ), 200
+        ), status_code
 
     except ValueError as exc:
 

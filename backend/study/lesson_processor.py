@@ -2,15 +2,34 @@
 
 from __future__ import annotations
 
+import hashlib
+import logging
 import os
-from datetime import datetime
+from datetime import datetime, timezone
+from typing import Any, Optional
 
 from backend.db import get_db
 from backend.models.StudyMaterial import StudyMaterial
-from backend.study.upload_service import UploadService
 from backend.study.file_extractors import FileExtractors
+from backend.study.upload_service import UploadService
 
 
+# =========================================================
+# LOGGING
+# =========================================================
+
+logger = logging.getLogger(
+    "revelacode.study.lesson_processor"
+)
+
+
+# =========================================================
+# PATHS
+# =========================================================
+
+# backend/study/lesson_processor.py
+#        ↑
+# backend/
 BASE_DIR = os.path.dirname(
     os.path.dirname(__file__)
 )
@@ -18,8 +37,13 @@ BASE_DIR = os.path.dirname(
 STUDY_STORAGE = os.path.join(
     BASE_DIR,
     "user_data",
-    "study_materials"
+    "study_materials",
 )
+
+
+# =========================================================
+# SUPPORTED FILE TYPES
+# =========================================================
 
 SUPPORTED_FILE_TYPES = {
     "pdf",
@@ -28,6 +52,104 @@ SUPPORTED_FILE_TYPES = {
 }
 
 
+# =========================================================
+# LIMITS
+# =========================================================
+
+# Prevent unexpectedly huge extracted documents from being
+# inserted into MongoDB or passed into downstream AI systems.
+MAX_EXTRACTED_CHARACTERS = 5_000_000
+
+
+# =========================================================
+# HELPERS
+# =========================================================
+
+def utc_now_iso() -> str:
+    """
+    Return a timezone-aware UTC timestamp.
+    """
+
+    return datetime.now(
+        timezone.utc
+    ).isoformat()
+
+
+def normalize_scalar(
+    value: Any,
+) -> str:
+    """
+    Convert a value into a clean string.
+    """
+
+    if value is None:
+        return ""
+
+    return str(
+        value
+    ).strip()
+
+
+def safe_year(
+    value: Any,
+) -> Optional[int]:
+    """
+    Normalize year input.
+
+    Returns:
+        int or None
+    """
+
+    if value is None:
+        return None
+
+    if isinstance(
+        value,
+        bool,
+    ):
+        return None
+
+    try:
+
+        year = int(
+            str(value).strip()
+        )
+
+    except (
+        TypeError,
+        ValueError,
+    ):
+
+        return None
+
+    # Reasonable study-content year range.
+    if year < 1900 or year > 2100:
+        return None
+
+    return year
+
+
+def content_hash(
+    content: str,
+) -> str:
+    """
+    Generate a stable SHA-256 hash for extracted content.
+
+    This is useful for diagnostics and future duplicate
+    detection without changing the current database schema.
+    """
+
+    return hashlib.sha256(
+        content.encode(
+            "utf-8"
+        )
+    ).hexdigest()
+
+
+# =========================================================
+# LESSON PROCESSOR
+# =========================================================
+
 class LessonProcessor:
 
     # =====================================================
@@ -35,42 +157,123 @@ class LessonProcessor:
     # =====================================================
 
     @staticmethod
-    def ensure_path(path: str):
+    def ensure_path(
+        path: str,
+    ):
+        """
+        Create a directory when it does not exist.
+        """
+
+        if not path:
+            raise ValueError(
+                "Storage path is required."
+            )
+
         os.makedirs(
             path,
-            exist_ok=True
+            exist_ok=True,
         )
+
+    # =====================================================
+    # FILE CLEANUP
+    # =====================================================
+
+    @staticmethod
+    def remove_file(
+        path: Optional[str],
+    ) -> None:
+        """
+        Safely remove a file.
+
+        Failure to remove a temporary/orphaned upload should
+        never replace the original processing result.
+        """
+
+        if not path:
+            return
+
+        try:
+
+            if os.path.isfile(
+                path
+            ):
+                os.remove(
+                    path
+                )
+
+        except Exception as exc:
+
+            logger.warning(
+                "Unable to remove study upload %s: %s",
+                path,
+                exc,
+            )
 
     # =====================================================
     # TAG NORMALIZATION
     # =====================================================
 
     @staticmethod
-    def normalize_tags(tags):
+    def normalize_tags(
+        tags: Any,
+    ) -> list[str]:
+        """
+        Normalize tags from either:
+
+            "faith,sda,bible"
+
+        or:
+
+            ["faith", "sda", "bible"]
+        """
+
         if tags is None:
             return []
 
-        if isinstance(tags, str):
+        if isinstance(
+            tags,
+            str,
+        ):
+
             tags = [
                 item.strip()
                 for item in tags.split(",")
             ]
 
-        if not isinstance(tags, list):
+        if not isinstance(
+            tags,
+            (list, tuple, set),
+        ):
+
             return []
 
         cleaned = []
+        seen = set()
 
         for item in tags:
-            if not isinstance(item, str):
+
+            if not isinstance(
+                item,
+                str,
+            ):
                 continue
 
             value = item.strip()
 
-            if value:
-                cleaned.append(value)
+            if not value:
+                continue
 
-        return list(dict.fromkeys(cleaned))
+            key = value.casefold()
+
+            if key in seen:
+                continue
+
+            seen.add(key)
+            cleaned.append(
+                value
+            )
+
+        return cleaned
 
     # =====================================================
     # DUPLICATE CHECK
@@ -79,17 +282,72 @@ class LessonProcessor:
     @staticmethod
     def find_duplicate(
         db,
-        title,
-        category,
-        subcategory,
+        title: str,
+        category: str,
+        subcategory: str,
     ):
+        """
+        Find an existing material by normalized title,
+        category and subcategory.
+
+        Case-insensitive matching prevents duplicates such as:
+
+            "Faith"
+            "faith"
+            "FAITH"
+        """
+
+        title = normalize_scalar(
+            title
+        )
+
+        category = normalize_scalar(
+            category
+        )
+
+        subcategory = normalize_scalar(
+            subcategory
+        )
+
+        if not title:
+            return None
+
         return db[
             "study_materials"
-        ].find_one({
-            "title": title,
-            "category": category,
-            "subcategory": subcategory,
-        })
+        ].find_one(
+            {
+                "title": {
+                    "$regex": (
+                        "^"
+                        + __import__("re").escape(
+                            title
+                        )
+                        + "$"
+                    ),
+                    "$options": "i",
+                },
+                "category": {
+                    "$regex": (
+                        "^"
+                        + __import__("re").escape(
+                            category
+                        )
+                        + "$"
+                    ),
+                    "$options": "i",
+                },
+                "subcategory": {
+                    "$regex": (
+                        "^"
+                        + __import__("re").escape(
+                            subcategory
+                        )
+                        + "$"
+                    ),
+                    "$options": "i",
+                },
+            }
+        )
 
     # =====================================================
     # SAVE MATERIAL
@@ -107,42 +365,88 @@ class LessonProcessor:
         material_type="lesson",
         file_path=None,
         source_filename=None,
+        author="RevelaCode Admin",
+        ai_enabled=True,
+        metadata=None,
     ):
-        title = str(
-            title or ""
-        ).strip()
+        """
+        Validate and persist a study material.
 
-        category = str(
-            category or ""
-        ).strip()
+        This method is intentionally compatible with existing
+        Study routes and SDA import services.
+        """
 
-        subcategory = str(
-            subcategory or ""
-        ).strip()
+        title = normalize_scalar(
+            title
+        )
 
-        content = str(
-            content or ""
-        ).strip()
+        category = normalize_scalar(
+            category
+        )
+
+        subcategory = normalize_scalar(
+            subcategory
+        )
+
+        content = normalize_scalar(
+            content
+        )
+
+        material_type = normalize_scalar(
+            material_type
+        ).lower() or "lesson"
+
+        author = normalize_scalar(
+            author
+        ) or "RevelaCode Admin"
+
+        year = safe_year(
+            year
+        )
+
+        normalized_tags = (
+            LessonProcessor.normalize_tags(
+                tags
+            )
+        )
+
+        # -------------------------------------------------
+        # Validation
+        # -------------------------------------------------
 
         if not title:
+
             raise ValueError(
                 "Study material title is required."
             )
 
         if not category:
+
             raise ValueError(
                 "Study material category is required."
             )
 
         if not subcategory:
+
             raise ValueError(
                 "Study material subcategory is required."
             )
 
         if not content:
+
             raise ValueError(
                 "Study material content could not be extracted."
             )
+
+        if len(content) > MAX_EXTRACTED_CHARACTERS:
+
+            raise ValueError(
+                "Study material is too large after extraction."
+            )
+
+        # -------------------------------------------------
+        # Database
+        # -------------------------------------------------
 
         db = get_db()
 
@@ -156,12 +460,14 @@ class LessonProcessor:
         )
 
         if existing:
+
             existing["_id"] = str(
                 existing["_id"]
             )
 
             return {
                 "success": False,
+                "duplicate": True,
                 "message": (
                     "A study material with the "
                     "same title, category and "
@@ -169,6 +475,45 @@ class LessonProcessor:
                 ),
                 "material": existing,
             }
+
+        # -------------------------------------------------
+        # Metadata
+        # -------------------------------------------------
+
+        material_metadata = {}
+
+        if isinstance(
+            metadata,
+            dict,
+        ):
+
+            material_metadata.update(
+                metadata
+            )
+
+        material_metadata.update(
+            {
+                "content_length": len(
+                    content
+                ),
+                "content_hash": content_hash(
+                    content
+                ),
+                "processed_at": utc_now_iso(),
+            }
+        )
+
+        if source_filename:
+
+            material_metadata[
+                "source_filename"
+            ] = normalize_scalar(
+                source_filename
+            )
+
+        # -------------------------------------------------
+        # Build model
+        # -------------------------------------------------
 
         material = StudyMaterial(
             title=title,
@@ -178,24 +523,21 @@ class LessonProcessor:
             material_type=material_type,
             file_path=file_path,
             year=year,
-            author="RevelaCode Admin",
-            tags=LessonProcessor.normalize_tags(
-                tags
+            author=author,
+            tags=normalized_tags,
+            metadata=material_metadata,
+            ai_enabled=bool(
+                ai_enabled
             ),
-            metadata={
-                "source_filename":
-                    source_filename,
-                "content_length":
-                    len(content),
-                "processed_at":
-                    datetime.utcnow().isoformat(),
-            },
-            ai_enabled=True,
         )
 
         material_data = (
             material.to_dict()
         )
+
+        # -------------------------------------------------
+        # Insert
+        # -------------------------------------------------
 
         result = db[
             "study_materials"
@@ -207,8 +549,17 @@ class LessonProcessor:
             result.inserted_id
         )
 
+        logger.info(
+            "Study material created: id=%s title=%s category=%s subcategory=%s",
+            material_data.get("id"),
+            title,
+            category,
+            subcategory,
+        )
+
         return {
             "success": True,
+            "duplicate": False,
             "message": (
                 "Study material created successfully."
             ),
@@ -229,6 +580,10 @@ class LessonProcessor:
         year=None,
         tags=None,
     ):
+        """
+        Process a material supplied directly as text.
+        """
+
         return LessonProcessor.save_material(
             title=title,
             category=category,
@@ -237,6 +592,35 @@ class LessonProcessor:
             year=year,
             tags=tags,
             material_type="lesson",
+        )
+
+    # =====================================================
+    # FILE EXTENSION
+    # =====================================================
+
+    @staticmethod
+    def detect_extension(
+        filename: str,
+    ) -> str:
+        """
+        Return a normalized file extension.
+        """
+
+        filename = normalize_scalar(
+            filename
+        )
+
+        if "." not in filename:
+            return ""
+
+        return (
+            filename
+            .rsplit(
+                ".",
+                1,
+            )[-1]
+            .strip()
+            .lower()
         )
 
     # =====================================================
@@ -253,90 +637,171 @@ class LessonProcessor:
         year=None,
         tags=None,
     ):
+        """
+        Process an uploaded PDF, DOCX or TXT document.
+
+        Pipeline:
+
+            validate
+              ↓
+            save upload
+              ↓
+            extract content
+              ↓
+            validate extracted content
+              ↓
+            save study material
+              ↓
+            cleanup orphan upload when necessary
+        """
+
+        # -------------------------------------------------
+        # Basic file validation
+        # -------------------------------------------------
+
         if file is None:
+
             return {
                 "success": False,
-                "message": "No file was provided.",
+                "message": (
+                    "No file was provided."
+                ),
             }
 
-        filename = (
-            str(
-                file.filename or ""
-            ).strip()
+        raw_filename = normalize_scalar(
+            getattr(
+                file,
+                "filename",
+                "",
+            )
         )
 
-        if not filename:
+        if not raw_filename:
+
             return {
                 "success": False,
-                "message": "No file was selected.",
+                "message": (
+                    "No file was selected."
+                ),
             }
 
+        # Avoid storing client-provided directory paths.
+        filename = os.path.basename(
+            raw_filename
+        )
+
         extension = (
-            filename.rsplit(
-                ".",
-                1
-            )[-1].lower()
-            if "." in filename
-            else ""
+            LessonProcessor.detect_extension(
+                filename
+            )
         )
 
         if extension not in SUPPORTED_FILE_TYPES:
+
             return {
                 "success": False,
                 "message": (
                     f".{extension or 'file'} is not supported. "
                     "Supported formats are PDF, DOCX and TXT."
                 ),
+                "filename": filename,
+                "file_type": extension,
             }
 
-        if not title:
-            title = os.path.splitext(
+        # -------------------------------------------------
+        # Validate metadata before touching disk
+        # -------------------------------------------------
+
+        title = (
+            normalize_scalar(
+                title
+            )
+            or os.path.splitext(
                 filename
             )[0]
+        )
 
-        try:
-            # -------------------------------------------------
-            # Save uploaded source file
-            # -------------------------------------------------
+        category = normalize_scalar(
+            category
+        )
 
-            saved_path = (
-                UploadService.save(
-                    file
-                )
-            )
+        subcategory = normalize_scalar(
+            subcategory
+        )
 
-            # -------------------------------------------------
-            # Select correct extractor
-            # -------------------------------------------------
+        if not category:
 
-            extractors = {
-                "pdf":
-                    FileExtractors.extract_pdf,
-
-                "docx":
-                    FileExtractors.extract_docx,
-
-                "txt":
-                    FileExtractors.extract_txt,
+            return {
+                "success": False,
+                "message": (
+                    "Study material category is required."
+                ),
+                "filename": filename,
+                "file_type": extension,
             }
 
-            extractor = extractors[
-                extension
-            ]
+        if not subcategory:
+
+            return {
+                "success": False,
+                "message": (
+                    "Study material subcategory is required."
+                ),
+                "filename": filename,
+                "file_type": extension,
+            }
+
+        year = safe_year(
+            year
+        )
+
+        normalized_tags = (
+            LessonProcessor.normalize_tags(
+                tags
+            )
+        )
+
+        saved_path = None
+
+        try:
 
             # -------------------------------------------------
-            # Extract actual document text
+            # Save source file
             # -------------------------------------------------
 
-            content = extractor(
-                saved_path
+            saved_path = UploadService.save(
+                file
             )
 
-            content = str(
-                content or ""
-            ).strip()
+            if not saved_path:
+
+                raise RuntimeError(
+                    "Upload service did not return a file path."
+                )
+
+            if not os.path.isfile(
+                saved_path
+            ):
+
+                raise FileNotFoundError(
+                    "Uploaded file could not be found after saving."
+                )
+
+            # -------------------------------------------------
+            # Extract document
+            # -------------------------------------------------
+
+            content = FileExtractors.extract(
+                saved_path,
+                extension,
+            )
+
+            content = normalize_scalar(
+                content
+            )
 
             if not content:
+
                 return {
                     "success": False,
                     "message": (
@@ -347,8 +812,23 @@ class LessonProcessor:
                     "file_type": extension,
                 }
 
+            if len(content) > MAX_EXTRACTED_CHARACTERS:
+
+                return {
+                    "success": False,
+                    "message": (
+                        "The file contains too much extracted "
+                        "text to be processed safely."
+                    ),
+                    "filename": filename,
+                    "file_type": extension,
+                    "extracted_characters": len(
+                        content
+                    ),
+                }
+
             # -------------------------------------------------
-            # Store relative source path
+            # Store source path relative to backend
             # -------------------------------------------------
 
             relative_path = os.path.relpath(
@@ -356,39 +836,79 @@ class LessonProcessor:
                 BASE_DIR,
             )
 
-            # -------------------------------------------------
-            # Save extracted material
-            # -------------------------------------------------
-
-            result = (
-                LessonProcessor.save_material(
-                    title=title,
-                    category=category,
-                    subcategory=subcategory,
-                    content=content,
-                    year=year,
-                    tags=tags,
-                    material_type=extension,
-                    file_path=relative_path,
-                    source_filename=filename,
+            # Always use forward slashes for a portable
+            # database representation.
+            relative_path = (
+                relative_path.replace(
+                    os.sep,
+                    "/",
                 )
             )
+
+            # -------------------------------------------------
+            # Persist material
+            # -------------------------------------------------
+
+            result = LessonProcessor.save_material(
+                title=title,
+                category=category,
+                subcategory=subcategory,
+                content=content,
+                year=year,
+                tags=normalized_tags,
+                material_type=extension,
+                file_path=relative_path,
+                source_filename=filename,
+            )
+
+            # -------------------------------------------------
+            # Duplicate cleanup
+            # -------------------------------------------------
+            #
+            # The source file is not needed as a second copy
+            # when the material already exists.
+            # -------------------------------------------------
+
+            if not result.get(
+                "success",
+                False,
+            ):
+
+                LessonProcessor.remove_file(
+                    saved_path
+                )
+
+                saved_path = None
 
             return {
                 **result,
                 "filename": filename,
                 "file_type": extension,
-                "extracted_characters":
-                    len(content),
+                "extracted_characters": len(
+                    content
+                ),
             }
 
         except Exception as exc:
+
+            logger.exception(
+                "Study document processing failed for %s",
+                filename,
+            )
+
+            # -------------------------------------------------
+            # Remove orphan upload on failure
+            # -------------------------------------------------
+
+            LessonProcessor.remove_file(
+                saved_path
+            )
+
             return {
                 "success": False,
                 "message": (
                     "Study document processing failed."
                 ),
-                "error": str(exc),
                 "filename": filename,
                 "file_type": extension,
             }
