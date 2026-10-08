@@ -19,6 +19,7 @@ from backend.jumuiya.elimu import (
     schemas,
     services,
 )
+from backend.jumuiya.elimu.reports.routes import reports_bp
 
 
 # =========================================================
@@ -62,10 +63,12 @@ def validate(fn, data):
 
 def query_value(name, default=None):
     value = request.args.get(name)
+
     if value is None:
         return default
 
     value = value.strip()
+
     return value if value else default
 
 
@@ -80,14 +83,19 @@ def require_school_account(fn):
 
     Authenticated users without an active school account are
     blocked from school-management resources with the canonical
-    `school_required` error. Android can use /access or /bootstrap
-    for internal navigation to the school setup screen.
+    `school_required` error.
+
+    Android can use /access or /bootstrap for internal
+    navigation to the school setup screen.
     """
 
     @wraps(fn)
     @require_authenticated
     def wrapped(*args, **kwargs):
-        services.require_school(current_user_id())
+        services.require_school(
+            current_user_id()
+        )
+
         return fn(*args, **kwargs)
 
     return wrapped
@@ -120,6 +128,11 @@ def health():
             "annual_events",
             "calendar",
             "reports",
+            "curriculum_configuration",
+            "exam_report_cards",
+            "class_report_cards",
+            "report_publication",
+            "post_exam_programmes",
             "print_center",
             "print_ready_documents",
             "apk_bootstrap",
@@ -136,7 +149,9 @@ def health():
 @require_authenticated
 def access():
     return ok(
-        services.access(current_user_id())
+        services.access(
+            current_user_id()
+        )
     )
 
 
@@ -147,14 +162,20 @@ def bootstrap():
     Single startup request for the Android/Web Elimu entry point.
 
     The client must not guess whether the user is a school account.
+
     The service is the source of truth and returns either:
 
-        allowed=true  -> open Elimu dashboard
-        allowed=false -> navigate internally to elimu-school-setup
+        allowed=true
+            -> open Elimu dashboard
+
+        allowed=false
+            -> navigate internally to elimu-school-setup
     """
 
     return ok(
-        services.hub_bootstrap(current_user_id())
+        services.hub_bootstrap(
+            current_user_id()
+        )
     )
 
 
@@ -167,7 +188,9 @@ def bootstrap():
 @require_authenticated
 def get_school():
     return ok(
-        services.my_school(current_user_id())
+        services.my_school(
+            current_user_id()
+        )
     )
 
 
@@ -197,7 +220,9 @@ def save_school():
 @require_school_account
 def get_profile():
     return ok(
-        services.get_profile(current_user_id())
+        services.get_profile(
+            current_user_id()
+        )
     )
 
 
@@ -227,7 +252,9 @@ def save_profile():
 @require_school_account
 def get_dashboard():
     return ok(
-        services.dashboard(current_user_id())
+        services.dashboard(
+            current_user_id()
+        )
     )
 
 
@@ -240,7 +267,9 @@ def get_dashboard():
 @require_school_account
 def get_classes():
     return ok(
-        services.list_classes(current_user_id())
+        services.list_classes(
+            current_user_id()
+        )
     )
 
 
@@ -501,7 +530,9 @@ def add_fee():
 @require_school_account
 def get_projects():
     return ok(
-        services.student_projects(current_user_id())
+        services.student_projects(
+            current_user_id()
+        )
     )
 
 
@@ -593,108 +624,25 @@ def get_calendar():
 
 
 # =========================================================
-# REPORT CENTER / PRINT CENTER
+# REPORT MODULE REGISTRATION
+# =========================================================
+#
+# IMPORTANT:
+#
+# The reports blueprint is nested inside the Elimu blueprint.
+#
+# Final URLs become:
+#
+#   /api/jumuiya/elimu/reports/...
+#
+# The reports module is now the SINGLE OWNER of all
+# /reports/* routes.
+#
+# Do NOT keep another separate registration of reports_bp
+# at application level when elimu_bp is already registered.
+#
 # =========================================================
 
-
-@elimu_bp.get("/reports/catalog")
-@require_school_account
-def reports_catalog():
-    return ok(
-        services.report_catalog(current_user_id())
-    )
-
-
-@elimu_bp.get("/reports/school")
-@require_school_account
-def report_school():
-    return ok(
-        services.school_report(current_user_id())
-    )
-
-
-@elimu_bp.get("/reports/student/<student_id>")
-@require_school_account
-def report_student(student_id):
-    return ok(
-        services.student_report(
-            current_user_id(),
-            student_id,
-            academic_year=query_value("academic_year"),
-            term=query_value("term"),
-        )
-    )
-
-
-@elimu_bp.get("/reports/class/<path:class_name>")
-@require_school_account
-def report_class(class_name):
-    return ok(
-        services.class_report(
-            current_user_id(),
-            class_name,
-            academic_year=query_value("academic_year"),
-            term=query_value("term"),
-        )
-    )
-
-
-@elimu_bp.get("/reports/attendance")
-@require_school_account
-def report_attendance():
-    return ok(
-        services.attendance_report(
-            current_user_id(),
-            start_date=query_value("start_date"),
-            end_date=query_value("end_date"),
-        )
-    )
-
-
-@elimu_bp.get("/reports/fees")
-@require_school_account
-def report_fees():
-    return ok(
-        services.fees_report(
-            current_user_id(),
-            status=query_value("status"),
-        )
-    )
-
-
-@elimu_bp.get("/reports/events")
-@require_school_account
-def report_events():
-    return ok(
-        services.events_report(
-            current_user_id(),
-            year=query_value("year"),
-        )
-    )
-
-
-@elimu_bp.get("/reports/print/<report_type>")
-@require_school_account
-def print_report(report_type):
-    """
-    Unified Print Center endpoint.
-
-    Android receives a report package and renders it through the
-    native Android print/PDF/share pipeline. The backend does not
-    need a browser or external URL for printing.
-    """
-
-    package = services.print_report(
-        current_user_id(),
-        report_type,
-        student_id=query_value("student_id"),
-        class_name=query_value("class_name"),
-        academic_year=query_value("academic_year"),
-        term=query_value("term"),
-        start_date=query_value("start_date"),
-        end_date=query_value("end_date"),
-        status=query_value("status"),
-        year=query_value("year"),
-    )
-
-    return ok(package)
+elimu_bp.register_blueprint(
+    reports_bp
+)
