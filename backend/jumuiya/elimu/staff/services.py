@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Mapping
 
 from bson import ObjectId
 
@@ -20,10 +20,19 @@ from backend.jumuiya.elimu.permissions import (
 from .models import (
     COLLECTION,
     INVITATIONS,
+    TEACHER_ASSIGNMENTS,
     hash_invitation_token,
     invitation_doc,
     invitation_is_usable,
     membership_doc,
+    normalize_class_ids,
+    normalize_permissions,
+    normalize_text,
+    staff_assigned_class_ids,
+    staff_learning_area_ids,
+    staff_snapshot,
+    staff_subjects,
+    teacher_reference,
 )
 
 
@@ -33,11 +42,21 @@ from .models import (
 
 STAFF_COLLECTION = COLLECTION
 
-ASSIGNMENTS = "jumuiya_elimu_teacher_assignments"
+ASSIGNMENTS = TEACHER_ASSIGNMENTS
 
 SCHOOLS = "jumuiya_schools"
 
 CLASSES = "jumuiya_classes"
+
+
+# =========================================================
+# STATUS CATALOG
+# =========================================================
+
+STAFF_NON_REMOVED_STATUSES = {
+    "active",
+    "suspended",
+}
 
 
 # =========================================================
@@ -120,7 +139,7 @@ def _uid(
 
 
 def _school_id(
-    member: dict,
+    member: Mapping[str, Any],
 ) -> str:
     school_id = _uid(
         member.get(
@@ -159,7 +178,9 @@ def _school_exists(
     if ObjectId.is_valid(
         school_id
     ):
-        query["$or"].append(
+        query[
+            "$or"
+        ].append(
             {
                 "_id": ObjectId(
                     school_id
@@ -260,6 +281,30 @@ def _require_school_class(
     return document
 
 
+def _class_name(
+    class_document: Mapping[str, Any] | None,
+) -> str:
+    if not isinstance(
+        class_document,
+        Mapping,
+    ):
+        return ""
+
+    for key in (
+        "name",
+        "class_name",
+        "title",
+    ):
+        value = normalize_text(
+            class_document.get(key)
+        )
+
+        if value:
+            return value
+
+    return ""
+
+
 # =========================================================
 # STAFF LOOKUP
 # =========================================================
@@ -278,7 +323,9 @@ def _find_staff(
     }
 
     if not include_removed:
-        query["status"] = {
+        query[
+            "status"
+        ] = {
             "$ne": "removed"
         }
 
@@ -318,14 +365,14 @@ def _require_staff(
 # =========================================================
 
 def _protect_owner(
-    staff_document: dict,
+    staff_document: Mapping[str, Any],
 ) -> None:
-    target_role = str(
+    target_role = normalize_text(
         staff_document.get(
             "role",
             "",
         )
-    ).strip().lower()
+    ).lower()
 
     if target_role == ROLE_OWNER:
         raise APIError(
@@ -333,6 +380,428 @@ def _protect_owner(
             403,
             "owner_role_protected",
         )
+
+
+# =========================================================
+# TEACHER PROFILE HELPERS
+# =========================================================
+
+def _teacher_reference(
+    staff: Mapping[str, Any],
+) -> dict:
+    try:
+        return teacher_reference(
+            staff
+        )
+    except ValueError as exc:
+        raise APIError(
+            str(exc),
+            422,
+            "invalid_teacher_profile",
+        )
+
+
+def _teacher_is_active(
+    staff: Mapping[str, Any],
+) -> bool:
+    return (
+        normalize_text(
+            staff.get(
+                "role"
+            )
+        ).lower()
+        == ROLE_TEACHER
+        and normalize_text(
+            staff.get(
+                "status"
+            )
+        ).lower()
+        == "active"
+    )
+
+
+# =========================================================
+# PROFILE MERGING
+# =========================================================
+
+def _merge_mapping(
+    current: Any,
+    incoming: Any,
+) -> dict:
+    """
+    Shallow merge for API profile sections.
+
+    Existing nested fields survive when an update only supplies
+    part of a profile section.
+    """
+    current_dict = (
+        dict(current)
+        if isinstance(
+            current,
+            Mapping,
+        )
+        else {}
+    )
+
+    incoming_dict = (
+        dict(incoming)
+        if isinstance(
+            incoming,
+            Mapping,
+        )
+        else {}
+    )
+
+    current_dict.update(
+        incoming_dict
+    )
+
+    return current_dict
+
+
+def _profile_updates(
+    current: Mapping[str, Any],
+    payload: Mapping[str, Any],
+) -> dict:
+    """
+    Convert profile-level API changes into Mongo update fields.
+
+    Top-level aliases are maintained for compatibility with
+    existing code and older frontend clients.
+    """
+    updates: dict = {}
+
+    # -----------------------------------------------------
+    # Identity
+    # -----------------------------------------------------
+
+    if "identity" in payload:
+
+        identity = _merge_mapping(
+            current.get(
+                "identity"
+            ),
+            payload.get(
+                "identity"
+            ),
+        )
+
+        updates[
+            "identity"
+        ] = identity
+
+        if identity.get(
+            "display_name"
+        ):
+            updates[
+                "display_name"
+            ] = identity[
+                "display_name"
+            ]
+
+    # -----------------------------------------------------
+    # Employment
+    # -----------------------------------------------------
+
+    if "employment" in payload:
+
+        updates[
+            "employment"
+        ] = _merge_mapping(
+            current.get(
+                "employment"
+            ),
+            payload.get(
+                "employment"
+            ),
+        )
+
+    # -----------------------------------------------------
+    # Teaching
+    # -----------------------------------------------------
+
+    if "teaching" in payload:
+
+        updates[
+            "teaching"
+        ] = _merge_mapping(
+            current.get(
+                "teaching"
+            ),
+            payload.get(
+                "teaching"
+            ),
+        )
+
+    # -----------------------------------------------------
+    # Timetable
+    # -----------------------------------------------------
+
+    if "timetable" in payload:
+
+        updates[
+            "timetable"
+        ] = _merge_mapping(
+            current.get(
+                "timetable"
+            ),
+            payload.get(
+                "timetable"
+            ),
+        )
+
+    # -----------------------------------------------------
+    # Reporting
+    # -----------------------------------------------------
+
+    if "reporting" in payload:
+
+        updates[
+            "reporting"
+        ] = _merge_mapping(
+            current.get(
+                "reporting"
+            ),
+            payload.get(
+                "reporting"
+            ),
+        )
+
+    # -----------------------------------------------------
+    # Metadata
+    # -----------------------------------------------------
+
+    if "metadata" in payload:
+
+        updates[
+            "metadata"
+        ] = _merge_mapping(
+            current.get(
+                "metadata"
+            ),
+            payload.get(
+                "metadata"
+            ),
+        )
+
+    # -----------------------------------------------------
+    # Class scope
+    # -----------------------------------------------------
+
+    if "assigned_class_ids" in payload:
+
+        class_ids = normalize_class_ids(
+            payload.get(
+                "assigned_class_ids"
+            )
+        )
+
+        updates[
+            "assigned_class_ids"
+        ] = class_ids
+
+        teaching = _merge_mapping(
+            updates.get(
+                "teaching",
+                current.get(
+                    "teaching",
+                    {},
+                ),
+            ),
+            {},
+        )
+
+        teaching[
+            "assigned_class_ids"
+        ] = class_ids
+
+        updates[
+            "teaching"
+        ] = teaching
+
+    # -----------------------------------------------------
+    # Top-level subjects alias
+    # -----------------------------------------------------
+
+    if "subjects" in payload:
+
+        subjects = [
+            str(value).strip()
+            for value in (
+                payload.get(
+                    "subjects",
+                    [],
+                )
+                or []
+            )
+            if str(value).strip()
+        ]
+
+        subjects = list(
+            dict.fromkeys(
+                subjects
+            )
+        )
+
+        updates[
+            "subjects"
+        ] = subjects
+
+        teaching = _merge_mapping(
+            updates.get(
+                "teaching",
+                current.get(
+                    "teaching",
+                    {},
+                ),
+            ),
+            {},
+        )
+
+        teaching[
+            "subjects"
+        ] = subjects
+
+        updates[
+            "teaching"
+        ] = teaching
+
+    # -----------------------------------------------------
+    # Learning areas alias
+    # -----------------------------------------------------
+
+    if "learning_area_ids" in payload:
+
+        learning_area_ids = [
+            str(value).strip()
+            for value in (
+                payload.get(
+                    "learning_area_ids",
+                    [],
+                )
+                or []
+            )
+            if str(value).strip()
+        ]
+
+        learning_area_ids = list(
+            dict.fromkeys(
+                learning_area_ids
+            )
+        )
+
+        updates[
+            "learning_area_ids"
+        ] = learning_area_ids
+
+        teaching = _merge_mapping(
+            updates.get(
+                "teaching",
+                current.get(
+                    "teaching",
+                    {},
+                ),
+            ),
+            {},
+        )
+
+        teaching[
+            "learning_area_ids"
+        ] = learning_area_ids
+
+        updates[
+            "teaching"
+        ] = teaching
+
+    return updates
+
+
+# =========================================================
+# SYNC TEACHER CLASS SCOPE
+# =========================================================
+
+def _sync_teacher_scope(
+    school_id: str,
+    teacher_user_id: str,
+    *,
+    timestamp: datetime | None = None,
+) -> list[str]:
+    """
+    Rebuild teacher.assigned_class_ids from active assignments.
+
+    This is critical because Timetable authorization relies on
+    the membership class scope.
+    """
+    timestamp = timestamp or now_utc()
+
+    active_assignments = list(
+        collection(
+            ASSIGNMENTS
+        ).find(
+            {
+                "school_id": school_id,
+                "teacher_user_id": teacher_user_id,
+                "status": "active",
+            },
+            {
+                "class_id": 1,
+            },
+        )
+    )
+
+    class_ids = sorted(
+        {
+            _uid(
+                item.get(
+                    "class_id"
+                )
+            )
+            for item in active_assignments
+            if _uid(
+                item.get(
+                    "class_id"
+                )
+            )
+        }
+    )
+
+    teacher = _find_staff(
+        school_id,
+        teacher_user_id,
+        include_removed=True,
+    )
+
+    if teacher:
+
+        teaching = _merge_mapping(
+            teacher.get(
+                "teaching"
+            ),
+            {},
+        )
+
+        teaching[
+            "assigned_class_ids"
+        ] = class_ids
+
+        collection(
+            STAFF_COLLECTION
+        ).update_one(
+            {
+                "_id": teacher[
+                    "_id"
+                ]
+            },
+            {
+                "$set": {
+                    "assigned_class_ids": class_ids,
+                    "teaching": teaching,
+                    "updated_at": timestamp,
+                }
+            },
+        )
+
+    return class_ids
 
 
 # =========================================================
@@ -371,11 +840,16 @@ def list_staff(
         )
     )
 
+    staff = _many(
+        documents
+    )
+
     return {
         "school_id": school_id,
-        "staff": _many(
-            documents
+        "count": len(
+            staff
         ),
+        "staff": staff,
     }
 
 
@@ -401,9 +875,45 @@ def get_staff(
         staff_user_id,
     )
 
-    return _ser(
+    result = _ser(
         document
     )
+
+    # -----------------------------------------------------
+    # Attach live assignment summary for teachers.
+    # -----------------------------------------------------
+
+    if (
+        normalize_text(
+            document.get(
+                "role"
+            )
+        ).lower()
+        == ROLE_TEACHER
+    ):
+        assignments = list(
+            collection(
+                ASSIGNMENTS
+            ).find(
+                {
+                    "school_id": school_id,
+                    "teacher_user_id": _uid(
+                        staff_user_id
+                    ),
+                }
+            ).sort(
+                "created_at",
+                1,
+            )
+        )
+
+        result[
+            "teacher_assignments"
+        ] = _many(
+            assignments
+        )
+
+    return result
 
 
 # =========================================================
@@ -427,12 +937,12 @@ def invite_staff(
         school_id
     )
 
-    role = str(
+    role = normalize_text(
         payload.get(
             "role",
             "",
         )
-    ).strip().lower()
+    ).lower()
 
     if role == ROLE_OWNER:
         raise APIError(
@@ -440,6 +950,15 @@ def invite_staff(
             403,
             "owner_role_protected",
         )
+
+    if not role:
+        raise APIError(
+            "Staff role is required.",
+            422,
+            "staff_role_required",
+        )
+
+    timestamp = now_utc()
 
     # -----------------------------------------------------
     # Direct existing-user link
@@ -477,17 +996,51 @@ def invite_staff(
             assigned_class_ids=payload.get(
                 "assigned_class_ids"
             ),
+            identity=payload.get(
+                "identity"
+            ),
+            employment=payload.get(
+                "employment"
+            ),
+            teaching=payload.get(
+                "teaching"
+            ),
+            timetable=payload.get(
+                "timetable"
+            ),
+            reporting=payload.get(
+                "reporting"
+            ),
             metadata=payload.get(
                 "metadata"
             ) or {},
-            activated_at=now_utc(),
+            activated_at=timestamp,
         )
 
-        collection(
-            STAFF_COLLECTION
-        ).insert_one(
-            document
-        )
+        try:
+            result = collection(
+                STAFF_COLLECTION
+            ).insert_one(
+                document
+            )
+        except Exception as exc:
+            existing = _find_staff(
+                school_id,
+                target_user_id,
+            )
+
+            if existing:
+                raise APIError(
+                    "User is already linked to this school.",
+                    409,
+                    "staff_exists",
+                )
+
+            raise exc
+
+        document[
+            "_id"
+        ] = result.inserted_id
 
         return {
             "mode": "user_link",
@@ -500,12 +1053,12 @@ def invite_staff(
     # Email invitation
     # -----------------------------------------------------
 
-    email = str(
+    email = normalize_text(
         payload.get(
             "email",
             "",
         )
-    ).strip().lower()
+    ).lower()
 
     if not email:
         raise APIError(
@@ -549,6 +1102,21 @@ def invite_staff(
         assigned_class_ids=payload.get(
             "assigned_class_ids"
         ),
+        identity=payload.get(
+            "identity"
+        ),
+        employment=payload.get(
+            "employment"
+        ),
+        teaching=payload.get(
+            "teaching"
+        ),
+        timetable=payload.get(
+            "timetable"
+        ),
+        reporting=payload.get(
+            "reporting"
+        ),
         metadata=payload.get(
             "metadata"
         ) or {},
@@ -564,9 +1132,9 @@ def invite_staff(
         document
     )
 
-    document["_id"] = (
-        result.inserted_id
-    )
+    document[
+        "_id"
+    ] = result.inserted_id
 
     return {
         "mode": "email_invitation",
@@ -603,7 +1171,10 @@ def update_staff(
         user_id
     )
 
-    if target_user_id == requester_user_id:
+    if (
+        target_user_id
+        == requester_user_id
+    ):
         raise APIError(
             "Use account settings for your own identity.",
             400,
@@ -623,19 +1194,19 @@ def update_staff(
         payload
     )
 
-    current_role = str(
+    current_role = normalize_text(
         document.get(
             "role",
             "",
         )
-    ).strip().lower()
+    ).lower()
 
-    new_role = str(
+    new_role = normalize_text(
         updates.get(
             "role",
             current_role,
         )
-    ).strip().lower()
+    ).lower()
 
     if new_role == ROLE_OWNER:
         raise APIError(
@@ -649,14 +1220,32 @@ def update_staff(
     # -----------------------------------------------------
 
     if "permissions" in updates:
-        updates["permissions"] = sorted(
+
+        requested_permissions = updates.get(
+            "permissions"
+        )
+
+        updates[
+            "permissions"
+        ] = sorted(
             effective_permissions(
                 new_role,
-                updates[
-                    "permissions"
-                ],
+                requested_permissions,
             )
         )
+
+    # -----------------------------------------------------
+    # Profile updates
+    # -----------------------------------------------------
+
+    profile_updates = _profile_updates(
+        document,
+        payload,
+    )
+
+    updates.update(
+        profile_updates
+    )
 
     # -----------------------------------------------------
     # Assigned classes
@@ -664,24 +1253,16 @@ def update_staff(
 
     if "assigned_class_ids" in updates:
 
-        class_ids = [
-            _uid(value)
-            for value in updates.get(
-                "assigned_class_ids",
-                [],
-            )
-            if _uid(value)
-        ]
-
-        class_ids = list(
-            dict.fromkeys(
-                class_ids
+        class_ids = normalize_class_ids(
+            updates.get(
+                "assigned_class_ids"
             )
         )
 
         if (
             class_ids
-            and new_role != ROLE_TEACHER
+            and new_role
+            != ROLE_TEACHER
         ):
             raise APIError(
                 "Only teachers may have assigned classes.",
@@ -699,22 +1280,64 @@ def update_staff(
             "assigned_class_ids"
         ] = class_ids
 
+        teaching = _merge_mapping(
+            updates.get(
+                "teaching",
+                document.get(
+                    "teaching",
+                    {},
+                ),
+            ),
+            {},
+        )
+
+        teaching[
+            "assigned_class_ids"
+        ] = class_ids
+
+        updates[
+            "teaching"
+        ] = teaching
+
     # -----------------------------------------------------
     # Role transition away from Teacher
     # -----------------------------------------------------
 
     role_changed = (
-        new_role != current_role
+        new_role
+        != current_role
     )
 
     if (
         role_changed
-        and current_role == ROLE_TEACHER
-        and new_role != ROLE_TEACHER
+        and current_role
+        == ROLE_TEACHER
+        and new_role
+        != ROLE_TEACHER
     ):
+
         updates[
             "assigned_class_ids"
         ] = []
+
+        teaching = _merge_mapping(
+            updates.get(
+                "teaching",
+                document.get(
+                    "teaching",
+                    {},
+                ),
+            ),
+            {},
+        )
+
+        teaching[
+            "assigned_class_ids"
+        ] = []
+
+        updates[
+            "teaching"
+        ] = teaching
 
         collection(
             ASSIGNMENTS
@@ -736,7 +1359,7 @@ def update_staff(
     # Status transition
     # -----------------------------------------------------
 
-    new_status = str(
+    new_status = normalize_text(
         updates.get(
             "status",
             document.get(
@@ -744,15 +1367,35 @@ def update_staff(
                 "active",
             ),
         )
-    ).strip().lower()
+    ).lower()
 
     if new_status in {
         "suspended",
         "removed",
     }:
+
         updates[
             "assigned_class_ids"
         ] = []
+
+        teaching = _merge_mapping(
+            updates.get(
+                "teaching",
+                document.get(
+                    "teaching",
+                    {},
+                ),
+            ),
+            {},
+        )
+
+        teaching[
+            "assigned_class_ids"
+        ] = []
+
+        updates[
+            "teaching"
+        ] = teaching
 
         collection(
             ASSIGNMENTS
@@ -801,6 +1444,35 @@ def update_staff(
         ] = None
 
     # -----------------------------------------------------
+    # Protect immutable identity fields.
+    # -----------------------------------------------------
+
+    updates.pop(
+        "school_id",
+        None,
+    )
+
+    updates.pop(
+        "user_id",
+        None,
+    )
+
+    updates.pop(
+        "staff_id",
+        None,
+    )
+
+    updates.pop(
+        "invited_by",
+        None,
+    )
+
+    updates.pop(
+        "created_at",
+        None,
+    )
+
+    # -----------------------------------------------------
     # Save
     # -----------------------------------------------------
 
@@ -810,7 +1482,8 @@ def update_staff(
         {
             "_id": document[
                 "_id"
-            ]
+            ],
+            "school_id": school_id,
         },
         {
             "$set": updates
@@ -824,14 +1497,31 @@ def update_staff(
             "staff_update_failed",
         )
 
-    updated = collection(
-        STAFF_COLLECTION
-    ).find_one(
-        {
-            "_id": document[
-                "_id"
-            ]
-        }
+    # Rebuild teacher scope from assignments after any
+    # teacher membership mutation.
+    if (
+        new_role
+        == ROLE_TEACHER
+        and new_status
+        == "active"
+    ):
+        _sync_teacher_scope(
+            school_id,
+            target_user_id,
+            timestamp=timestamp,
+        )
+
+    updated = (
+        collection(
+            STAFF_COLLECTION
+        ).find_one(
+            {
+                "_id": document[
+                    "_id"
+                ],
+                "school_id": school_id,
+            }
+        )
     )
 
     return _ser(
@@ -864,7 +1554,10 @@ def remove_staff(
         user_id
     )
 
-    if target_user_id == requester_user_id:
+    if (
+        target_user_id
+        == requester_user_id
+    ):
         raise APIError(
             "You cannot remove your own school membership.",
             400,
@@ -882,6 +1575,17 @@ def remove_staff(
 
     timestamp = now_utc()
 
+    teaching = _merge_mapping(
+        document.get(
+            "teaching"
+        ),
+        {},
+    )
+
+    teaching[
+        "assigned_class_ids"
+    ] = []
+
     result = collection(
         STAFF_COLLECTION
     ).update_one(
@@ -889,6 +1593,7 @@ def remove_staff(
             "_id": document[
                 "_id"
             ],
+            "school_id": school_id,
             "status": {
                 "$ne": "removed"
             },
@@ -897,6 +1602,7 @@ def remove_staff(
             "$set": {
                 "status": "removed",
                 "assigned_class_ids": [],
+                "teaching": teaching,
                 "removed_at": timestamp,
                 "updated_at": timestamp,
             }
@@ -952,9 +1658,16 @@ def accept_invitation(
             "invitation_token_required",
         )
 
-    token_hash = hash_invitation_token(
-        raw_token
-    )
+    try:
+        token_hash = hash_invitation_token(
+            raw_token
+        )
+    except ValueError as exc:
+        raise APIError(
+            str(exc),
+            422,
+            "invalid_invitation_token",
+        )
 
     invitation = (
         collection(
@@ -978,7 +1691,7 @@ def accept_invitation(
         invitation
     ):
         raise APIError(
-            "This invitation has expired.",
+            "This invitation has expired or is no longer usable.",
             410,
             "invitation_expired",
         )
@@ -993,7 +1706,10 @@ def accept_invitation(
         user_id
     )
 
-    if not school_id or not current_user:
+    if (
+        not school_id
+        or not current_user
+    ):
         raise APIError(
             "Invalid invitation.",
             422,
@@ -1014,27 +1730,85 @@ def accept_invitation(
 
     timestamp = now_utc()
 
+    profile = (
+        invitation.get(
+            "profile",
+            {}
+        )
+        if isinstance(
+            invitation.get(
+                "profile",
+                {},
+            ),
+            Mapping,
+        )
+        else {}
+    )
+
+    teaching = (
+        profile.get(
+            "teaching",
+            {},
+        )
+        if isinstance(
+            profile.get(
+                "teaching",
+                {},
+            ),
+            Mapping,
+        )
+        else {}
+    )
+
+    # Top-level invitation class scope remains canonical.
+    assigned_class_ids = normalize_class_ids(
+        invitation.get(
+            "assigned_class_ids",
+            teaching.get(
+                "assigned_class_ids",
+                [],
+            ),
+        )
+    )
+
     document = membership_doc(
         school_id=school_id,
         user_id=current_user,
-        role=invitation[
+        role=invitation.get(
             "role"
-        ],
-        invited_by=invitation[
+        ),
+        invited_by=invitation.get(
             "invited_by"
-        ],
+        ),
         status="active",
         permissions=invitation.get(
             "permissions"
         ),
-        assigned_class_ids=invitation.get(
-            "assigned_class_ids"
+        assigned_class_ids=assigned_class_ids,
+        identity=profile.get(
+            "identity"
         ),
+        employment=profile.get(
+            "employment"
+        ),
+        teaching=profile.get(
+            "teaching"
+        ),
+        timetable=profile.get(
+            "timetable"
+        ),
+        reporting=profile.get(
+            "reporting"
+        ),
+        metadata=profile.get(
+            "metadata"
+        )
+        or invitation.get(
+            "metadata"
+        )
+        or {},
         accepted_at=timestamp,
         activated_at=timestamp,
-        metadata=invitation.get(
-            "metadata"
-        ) or {},
     )
 
     try:
@@ -1060,9 +1834,14 @@ def accept_invitation(
 
         raise
 
-    document["_id"] = (
-        result.inserted_id
-    )
+    document[
+        "_id"
+    ] = result.inserted_id
+
+    # -----------------------------------------------------
+    # Consume invitation atomically enough for the current
+    # Mongo implementation: token + status must still match.
+    # -----------------------------------------------------
 
     invitation_update = (
         collection(
@@ -1087,10 +1866,18 @@ def accept_invitation(
     )
 
     if not invitation_update.matched_count:
-        # The membership was created, but the invitation was
-        # already consumed by another request. The database
-        # transaction/unique constraints should be strengthened
-        # when we wire the final production invitation flow.
+        # Roll back the newly-created membership if this request
+        # lost the final invitation-consumption race.
+        collection(
+            STAFF_COLLECTION
+        ).delete_one(
+            {
+                "_id": result.inserted_id,
+                "school_id": school_id,
+                "user_id": current_user,
+            }
+        )
+
         raise APIError(
             "Invitation could not be finalized safely.",
             409,
@@ -1145,11 +1932,7 @@ def assign_teacher(
             "class_required",
         )
 
-    # -----------------------------------------------------
-    # Validate class
-    # -----------------------------------------------------
-
-    _require_school_class(
+    class_document = _require_school_class(
         school_id,
         class_id,
     )
@@ -1192,14 +1975,17 @@ def assign_teacher(
         )
 
     # -----------------------------------------------------
-    # Normalize subjects
+    # Subjects / learning areas
     # -----------------------------------------------------
 
     subjects = [
         str(value).strip()
-        for value in payload.get(
-            "subjects",
-            [],
+        for value in (
+            payload.get(
+                "subjects",
+                [],
+            )
+            or []
         )
         if str(value).strip()
     ]
@@ -1210,12 +1996,30 @@ def assign_teacher(
         )
     )
 
-    status = str(
+    learning_area_ids = [
+        str(value).strip()
+        for value in (
+            payload.get(
+                "learning_area_ids",
+                [],
+            )
+            or []
+        )
+        if str(value).strip()
+    ]
+
+    learning_area_ids = list(
+        dict.fromkeys(
+            learning_area_ids
+        )
+    )
+
+    status = normalize_text(
         payload.get(
             "status",
             "active",
         )
-    ).strip().lower()
+    ).lower()
 
     if status not in {
         "active",
@@ -1229,9 +2033,40 @@ def assign_teacher(
 
     timestamp = now_utc()
 
+    reference = _teacher_reference(
+        teacher
+    )
+
     # -----------------------------------------------------
     # Assignment document
     # -----------------------------------------------------
+
+    assignment_update = {
+        "school_id": school_id,
+        "teacher_user_id": teacher_user_id,
+        "class_id": class_id,
+
+        "class_name": _class_name(
+            class_document
+        ),
+
+        "teacher_name": reference.get(
+            "teacher_name",
+            "",
+        ),
+
+        "employee_number": reference.get(
+            "employee_number"
+        ),
+
+        "subjects": subjects,
+
+        "learning_area_ids": learning_area_ids,
+
+        "status": status,
+
+        "updated_at": timestamp,
+    }
 
     collection(
         ASSIGNMENTS
@@ -1242,15 +2077,8 @@ def assign_teacher(
             "class_id": class_id,
         },
         {
-            "$set": {
-                "subjects": subjects,
-                "status": status,
-                "updated_at": timestamp,
-            },
+            "$set": assignment_update,
             "$setOnInsert": {
-                "school_id": school_id,
-                "teacher_user_id": teacher_user_id,
-                "class_id": class_id,
                 "created_at": timestamp,
             },
         },
@@ -1258,26 +2086,63 @@ def assign_teacher(
     )
 
     # -----------------------------------------------------
-    # Keep membership class scope synchronized
+    # Sync staff teaching profile
     # -----------------------------------------------------
 
-    assigned_class_ids = {
-        _uid(value)
-        for value in teacher.get(
-            "assigned_class_ids",
-            [],
+    current_subjects = set(
+        staff_subjects(
+            teacher
         )
-        if _uid(value)
-    }
+    )
 
-    if status == "active":
-        assigned_class_ids.add(
-            class_id
+    current_subjects.update(
+        subjects
+    )
+
+    current_learning_area_ids = set(
+        staff_learning_area_ids(
+            teacher
         )
-    else:
-        assigned_class_ids.discard(
-            class_id
+    )
+
+    current_learning_area_ids.update(
+        learning_area_ids
+    )
+
+    teaching = dict(
+        teacher.get(
+            "teaching",
+            {},
         )
+        or {}
+    )
+
+    teaching[
+        "subjects"
+    ] = sorted(
+        current_subjects
+    )
+
+    teaching[
+        "learning_area_ids"
+    ] = sorted(
+        current_learning_area_ids
+    )
+
+    # -----------------------------------------------------
+    # Rebuild class scope from assignments instead of trusting
+    # the incoming class list.
+    # -----------------------------------------------------
+
+    assigned_class_ids = _sync_teacher_scope(
+        school_id,
+        teacher_user_id,
+        timestamp=timestamp,
+    )
+
+    teaching[
+        "assigned_class_ids"
+    ] = assigned_class_ids
 
     collection(
         STAFF_COLLECTION
@@ -1285,12 +2150,18 @@ def assign_teacher(
         {
             "_id": teacher[
                 "_id"
-            ]
+            ],
+            "school_id": school_id,
         },
         {
             "$set": {
-                "assigned_class_ids": sorted(
-                    assigned_class_ids
+                "teaching": teaching,
+                "assigned_class_ids": assigned_class_ids,
+                "subjects": sorted(
+                    current_subjects
+                ),
+                "learning_area_ids": sorted(
+                    current_learning_area_ids
                 ),
                 "updated_at": timestamp,
             }
@@ -1315,6 +2186,94 @@ def assign_teacher(
 
 
 # =========================================================
+# REMOVE / DEACTIVATE TEACHER ASSIGNMENT
+# =========================================================
+
+def deactivate_teacher_assignment(
+    user_id: Any,
+    teacher_user_id: Any,
+    class_id: Any,
+) -> dict:
+    """
+    Explicitly deactivate one teacher/class relationship.
+
+    Existing route files do not currently expose this operation,
+    but the service is ready for the later timetable/frontend layer.
+    """
+
+    member = authorize(
+        user_id,
+        "teacher_assignments.manage",
+    )
+
+    school_id = _school_id(
+        member
+    )
+
+    teacher_id = _uid(
+        teacher_user_id
+    )
+
+    target_class_id = _uid(
+        class_id
+    )
+
+    if not teacher_id:
+        raise APIError(
+            "teacher_user_id is required.",
+            422,
+            "teacher_required",
+        )
+
+    if not target_class_id:
+        raise APIError(
+            "class_id is required.",
+            422,
+            "class_required",
+        )
+
+    timestamp = now_utc()
+
+    result = collection(
+        ASSIGNMENTS
+    ).update_one(
+        {
+            "school_id": school_id,
+            "teacher_user_id": teacher_id,
+            "class_id": target_class_id,
+            "status": "active",
+        },
+        {
+            "$set": {
+                "status": "inactive",
+                "updated_at": timestamp,
+            }
+        },
+    )
+
+    if not result.matched_count:
+        raise APIError(
+            "Active teacher assignment not found.",
+            404,
+            "teacher_assignment_not_found",
+        )
+
+    assigned_class_ids = _sync_teacher_scope(
+        school_id,
+        teacher_id,
+        timestamp=timestamp,
+    )
+
+    return {
+        "updated": True,
+        "school_id": school_id,
+        "teacher_user_id": teacher_id,
+        "class_id": target_class_id,
+        "assigned_class_ids": assigned_class_ids,
+    }
+
+
+# =========================================================
 # LIST TEACHER ASSIGNMENTS
 # =========================================================
 
@@ -1335,12 +2294,12 @@ def list_assignments(
         user_id
     )
 
-    requester_role = str(
+    requester_role = normalize_text(
         member.get(
             "role",
             "",
         )
-    ).strip().lower()
+    ).lower()
 
     target_teacher_id = (
         _uid(
@@ -1382,21 +2341,230 @@ def list_assignments(
             "teacher_user_id"
         ] = target_teacher_id
 
-    documents = (
+    documents = list(
         collection(
             ASSIGNMENTS
         )
-        .find(query)
+        .find(
+            query
+        )
         .sort(
-            "created_at",
-            1,
+            [
+                (
+                    "created_at",
+                    1,
+                ),
+                (
+                    "teacher_user_id",
+                    1,
+                ),
+                (
+                    "class_id",
+                    1,
+                ),
+            ]
         )
     )
 
-    return {
+    # -----------------------------------------------------
+    # Return a useful teacher summary.
+    # -----------------------------------------------------
+
+    result = {
         "school_id": school_id,
         "teacher_user_id": target_teacher_id,
         "assignments": _many(
             documents
         ),
+    }
+
+    if target_teacher_id:
+
+        teacher = _find_staff(
+            school_id,
+            target_teacher_id,
+        )
+
+        if teacher:
+            result[
+                "teacher"
+            ] = staff_snapshot(
+                teacher,
+                include_contact=False,
+            )
+
+    return result
+
+
+# =========================================================
+# TEACHER DIRECTORY
+# =========================================================
+
+def list_teachers(
+    user_id: Any,
+) -> dict:
+    """
+    Teacher-focused directory for Timetable and assignment UIs.
+    """
+
+    member = authorize(
+        user_id,
+        "staff.view",
+    )
+
+    school_id = _school_id(
+        member
+    )
+
+    documents = list(
+        collection(
+            STAFF_COLLECTION
+        )
+        .find(
+            {
+                "school_id": school_id,
+                "role": ROLE_TEACHER,
+                "status": "active",
+            }
+        )
+        .sort(
+            [
+                (
+                    "display_name",
+                    1,
+                ),
+                (
+                    "created_at",
+                    1,
+                ),
+            ]
+        )
+    )
+
+    teachers = []
+
+    for document in documents:
+
+        item = staff_snapshot(
+            document,
+            include_contact=False,
+        )
+
+        reference = _teacher_reference(
+            document
+        )
+
+        item.update(
+            {
+                "teacher_user_id": (
+                    reference[
+                        "teacher_user_id"
+                    ]
+                ),
+                "teacher_name": (
+                    reference[
+                        "teacher_name"
+                    ]
+                ),
+                "employee_number": (
+                    reference[
+                        "employee_number"
+                    ]
+                ),
+                "subjects": (
+                    reference[
+                        "subjects"
+                    ]
+                ),
+                "learning_area_ids": (
+                    reference[
+                        "learning_area_ids"
+                    ]
+                ),
+                "assigned_class_ids": (
+                    reference[
+                        "assigned_class_ids"
+                    ]
+                ),
+            }
+        )
+
+        teachers.append(
+            item
+        )
+
+    return {
+        "school_id": school_id,
+        "count": len(
+            teachers
+        ),
+        "teachers": teachers,
+    }
+
+
+# =========================================================
+# REBUILD ALL TEACHER SCOPES
+# =========================================================
+
+def rebuild_teacher_scopes(
+    user_id: Any,
+) -> dict:
+    """
+    Repair/synchronize all teacher membership class scopes
+    from the authoritative assignment collection.
+
+    This will also be useful for data migration and Sync.
+    """
+
+    member = authorize(
+        user_id,
+        "teacher_assignments.manage",
+    )
+
+    school_id = _school_id(
+        member
+    )
+
+    teachers = list(
+        collection(
+            STAFF_COLLECTION
+        ).find(
+            {
+                "school_id": school_id,
+                "role": ROLE_TEACHER,
+            },
+            {
+                "_id": 1,
+                "user_id": 1,
+            },
+        )
+    )
+
+    timestamp = now_utc()
+
+    rebuilt = 0
+
+    for teacher in teachers:
+
+        teacher_id = _uid(
+            teacher.get(
+                "user_id"
+            )
+        )
+
+        if not teacher_id:
+            continue
+
+        _sync_teacher_scope(
+            school_id,
+            teacher_id,
+            timestamp=timestamp,
+        )
+
+        rebuilt += 1
+
+    return {
+        "school_id": school_id,
+        "teachers_rebuilt": rebuilt,
+        "rebuilt_at": timestamp.isoformat(),
     }
