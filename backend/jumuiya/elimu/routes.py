@@ -19,7 +19,16 @@ from backend.jumuiya.elimu import (
     schemas,
     services,
 )
+
+# =========================================================
+# ELIMU SUB-MODULE BLUEPRINTS
+# =========================================================
+
 from backend.jumuiya.elimu.reports.routes import reports_bp
+from backend.jumuiya.elimu.staff.routes import staff_bp
+from backend.jumuiya.elimu.timetable.routes import timetable_bp
+from backend.jumuiya.elimu.automation.routes import automation_bp
+from backend.jumuiya.elimu.sync.routes import sync_bp
 
 
 # =========================================================
@@ -128,6 +137,10 @@ def health():
             "annual_events",
             "calendar",
             "reports",
+            "staff",
+            "timetable",
+            "automation",
+            "sync",
             "curriculum_configuration",
             "exam_report_cards",
             "class_report_cards",
@@ -624,25 +637,42 @@ def get_calendar():
 
 
 # =========================================================
-# REPORT MODULE REGISTRATION
+# SUB-MODULE REGISTRATION
 # =========================================================
 #
-# IMPORTANT:
+# Elimu is the parent blueprint.
 #
-# The reports blueprint is nested inside the Elimu blueprint.
+# Each major subsystem owns its own routes:
 #
-# Final URLs become:
+#   reports
+#   staff
+#   timetable
+#   automation
+#   sync
+#
+# This keeps the main Elimu routes.py from becoming the
+# implementation owner for every subsystem.
+#
+# If the application registers elimu_bp under:
+#
+#   /api/jumuiya/elimu
+#
+# the resulting routes become:
 #
 #   /api/jumuiya/elimu/reports/...
-#
-# The reports module is now the SINGLE OWNER of all
-# /reports/* routes.
-#
-# Do NOT keep another separate registration of reports_bp
-# at application level when elimu_bp is already registered.
+#   /api/jumuiya/elimu/staff/...
+#   /api/jumuiya/elimu/timetable/...
+#   /api/jumuiya/elimu/automation/...
+#   /api/jumuiya/elimu/sync/...
 #
 # =========================================================
 
-elimu_bp.register_blueprint(
-    reports_bp
-)
+elimu_bp.register_blueprint(reports_bp)
+
+elimu_bp.register_blueprint(staff_bp)
+
+elimu_bp.register_blueprint(timetable_bp)
+
+elimu_bp.register_blueprint(automation_bp)
+
+elimu_bp.register_blueprint(sync_bp)

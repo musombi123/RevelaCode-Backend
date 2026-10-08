@@ -8,7 +8,19 @@ from bson import ObjectId
 
 from backend.jumuiya.core.database import collection
 
-from .services import RULES
+from .constants import (
+    DEFAULT_LOCK_SECONDS,
+    DEFAULT_MAX_ATTEMPTS,
+    DEFAULT_RETRY_DELAY_SECONDS,
+    JOB_CANCELLED,
+    JOB_FAILED,
+    JOB_PENDING,
+    JOB_RETRYING,
+    JOB_RUNNING,
+    JOB_SUCCEEDED,
+    JOBS,
+    RULES,
+)
 
 
 # ============================================================
@@ -18,27 +30,17 @@ from .services import RULES
 JOBS = "jumuiya_elimu_automation_jobs"
 
 
-# ============================================================
-# CONSTANTS
-# ============================================================
-
-STATUS_PENDING = "pending"
-STATUS_RUNNING = "running"
-STATUS_SUCCEEDED = "succeeded"
-STATUS_FAILED = "failed"
-STATUS_RETRYING = "retrying"
-STATUS_CANCELLED = "cancelled"
 
 ACTIVE_STATUSES = {
-    STATUS_PENDING,
-    STATUS_RUNNING,
-    STATUS_RETRYING,
+    JOB_PENDING,
+    JOB_RUNNING,
+    JOB_RETRYING,
 }
 
 TERMINAL_STATUSES = {
-    STATUS_SUCCEEDED,
-    STATUS_FAILED,
-    STATUS_CANCELLED,
+    JOB_SUCCEEDED,
+    JOB_FAILED,
+    JOB_CANCELLED,
 }
 
 DEFAULT_MAX_ATTEMPTS = 3

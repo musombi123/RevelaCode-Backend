@@ -10,6 +10,7 @@ from backend.jumuiya.core.database import collection
 from backend.jumuiya.elimu.permissions import authorize
 
 from . import jobs
+from .constants import LOGS, RULES
 
 
 # ============================================================
