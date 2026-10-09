@@ -9,7 +9,7 @@ import time
 from datetime import datetime
 
 from dotenv import load_dotenv
-from flask import Flask, jsonify
+from flask import Flask, jsonify, make_response, request
 from flask_cors import CORS
 
 
@@ -26,50 +26,93 @@ load_dotenv()
 
 logging.basicConfig(
     level=logging.INFO,
-    format=(
-        "%(asctime)s "
-        "[%(levelname)s] "
-        "%(name)s: %(message)s"
-    ),
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
 
-logger = logging.getLogger(
-    "revelacode.main"
-)
+logger = logging.getLogger("revelacode.main")
 
 
 # =========================================================
 # APP
 # =========================================================
 
-app = Flask(
-    __name__
+app = Flask(__name__)
+
+
+# =========================================================
+# CORS CONFIGURATION
+# =========================================================
+
+DEFAULT_FRONTEND_ORIGINS = {
+    "https://revelacode-frontend.onrender.com",
+    "https://www.revelacode-frontend.onrender.com",
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+    "http://localhost:4173",
+    "http://127.0.0.1:4173",
+    "http://localhost",
+    "https://localhost",
+}
+
+
+def configured_frontend_origins() -> set[str]:
+    """
+    Return explicitly approved frontend origins.
+
+    Optional Render environment variable:
+        FRONTEND_ORIGINS=https://example.com,https://another.example
+    """
+
+    origins = set(DEFAULT_FRONTEND_ORIGINS)
+
+    configured = os.getenv("FRONTEND_ORIGINS", "")
+
+    for item in configured.split(","):
+        origin = item.strip().rstrip("/")
+
+        if origin.startswith(("https://", "http://")):
+            origins.add(origin)
+
+    return origins
+
+
+FRONTEND_ORIGINS = configured_frontend_origins()
+
+CORS_ALLOWED_METHODS = (
+    "GET, POST, PUT, PATCH, DELETE, OPTIONS"
 )
 
+CORS_ALLOWED_METHODS_SET = {
+    method.strip().upper()
+    for method in CORS_ALLOWED_METHODS.split(",")
+}
 
-# =========================================================
-# CORS
-# =========================================================
+CORS_ALLOWED_HEADERS = (
+    "Accept, Content-Type, Authorization, "
+    "X-ADMIN-KEY, X-ADMIN-API-KEY, x-api-key"
+)
+
+CORS_ALLOWED_HEADERS_SET = {
+    header.strip().lower()
+    for header in CORS_ALLOWED_HEADERS.split(",")
+}
+
 
 CORS(
     app,
     resources={
         r"/*": {
-            "origins": [
-                "https://revelacode-frontend.onrender.com",
-                "https://www.revelacode-frontend.onrender.com",
-                "https://localhost",
-                "http://localhost",
-            ]
+            "origins": sorted(FRONTEND_ORIGINS),
         }
     },
     supports_credentials=True,
     allow_headers=[
+        "Accept",
         "Content-Type",
         "Authorization",
         "X-ADMIN-KEY",
-        "x-api-key",
         "X-ADMIN-API-KEY",
+        "x-api-key",
     ],
     methods=[
         "GET",
@@ -79,7 +122,127 @@ CORS(
         "DELETE",
         "OPTIONS",
     ],
+    max_age=600,
 )
+
+
+# =========================================================
+# EXPLICIT CORS PREFLIGHT
+# =========================================================
+
+@app.before_request
+def handle_cors_preflight():
+    """
+    Handle browser OPTIONS preflight requests before normal
+    authentication and route-specific processing.
+
+    This does not bypass authentication for actual API calls.
+    """
+
+    if request.method != "OPTIONS":
+        return None
+
+    origin = request.headers.get("Origin", "").strip().rstrip("/")
+
+    if origin not in FRONTEND_ORIGINS:
+        logger.warning(
+            "Rejected CORS preflight from origin: %s",
+            origin or "<missing>",
+        )
+
+        return jsonify({
+            "success": False,
+            "error": {
+                "code": "cors_origin_not_allowed",
+                "message": "This origin is not permitted.",
+            },
+        }), 403
+
+    requested_method = (
+        request.headers.get(
+            "Access-Control-Request-Method",
+            "",
+        )
+        .strip()
+        .upper()
+    )
+
+    if (
+        requested_method
+        and requested_method not in CORS_ALLOWED_METHODS_SET
+    ):
+        return jsonify({
+            "success": False,
+            "error": {
+                "code": "cors_method_not_allowed",
+                "message": "This request method is not permitted.",
+            },
+        }), 403
+
+    requested_headers = {
+        header.strip().lower()
+        for header in request.headers.get(
+            "Access-Control-Request-Headers",
+            "",
+        ).split(",")
+        if header.strip()
+    }
+
+    unsupported_headers = (
+        requested_headers - CORS_ALLOWED_HEADERS_SET
+    )
+
+    if unsupported_headers:
+        logger.warning(
+            "Rejected CORS preflight with unsupported headers: %s",
+            ", ".join(sorted(unsupported_headers)),
+        )
+
+        return jsonify({
+            "success": False,
+            "error": {
+                "code": "cors_header_not_allowed",
+                "message": "The request contains an unapproved header.",
+                "details": {
+                    "headers": sorted(unsupported_headers),
+                },
+            },
+        }), 403
+
+    # A successful preflight has no response body.
+    return make_response("", 204)
+
+
+# =========================================================
+# ENSURE CORS RESPONSE HEADERS
+# =========================================================
+
+@app.after_request
+def ensure_cors_response_headers(response):
+    """
+    Attach CORS headers to responses sent to approved origins,
+    including HTTP errors returned by the application.
+    """
+
+    origin = request.headers.get("Origin", "").strip().rstrip("/")
+
+    if origin not in FRONTEND_ORIGINS:
+        return response
+
+    response.headers["Access-Control-Allow-Origin"] = origin
+    response.headers["Access-Control-Allow-Credentials"] = "true"
+    response.headers["Access-Control-Allow-Methods"] = (
+        CORS_ALLOWED_METHODS
+    )
+    response.headers["Access-Control-Allow-Headers"] = (
+        CORS_ALLOWED_HEADERS
+    )
+    response.headers["Vary"] = "Origin"
+
+    if request.method == "OPTIONS":
+        response.headers["Access-Control-Max-Age"] = "600"
+
+    return response
 
 
 # =========================================================
@@ -87,98 +250,62 @@ CORS(
 # =========================================================
 
 try:
-
     from backend.db import db
 
-    logger.info(
-        "✅ MongoDB initialized successfully"
-    )
+    logger.info("MongoDB initialized successfully")
 
-except Exception as exc:
-
+except Exception:
     db = None
 
-    logger.exception(
-        "❌ MongoDB initialization failed: %s",
-        exc,
-    )
+    logger.exception("MongoDB initialization failed")
 
 
 # =========================================================
 # ROUTE REGISTRATION HELPER
 # =========================================================
 
-def register_bp(
-    import_path: str,
-    bp_name: str,
-):
+def register_bp(import_path: str, bp_name: str):
     """
-    Register a non-critical existing Flask blueprint.
-
-    Critical modules such as Study should NOT use this
-    helper because silently skipping them can leave the
-    application partially functional.
+    Register an existing, non-critical Flask blueprint.
+    Failed registrations are logged rather than hidden.
     """
 
     try:
-
         module = __import__(
             import_path,
             fromlist=[bp_name],
         )
 
-        blueprint = getattr(
-            module,
-            bp_name,
-        )
+        blueprint = getattr(module, bp_name)
 
-        app.register_blueprint(
-            blueprint
-        )
+        app.register_blueprint(blueprint)
 
         logger.info(
-            "✅ %s registered from %s",
+            "%s registered from %s",
             bp_name,
             import_path,
         )
 
         return True
 
-    except Exception as exc:
-
+    except Exception:
         logger.exception(
-            "❌ %s registration failed from %s: %s",
+            "Registration failed: %s from %s",
             bp_name,
             import_path,
-            exc,
         )
 
         return False
 
 
 # =========================================================
-# EXISTING REVELACODE AUTH & USER MODULES
+# EXISTING REVELACODE AUTH AND USER MODULES
 # =========================================================
 
-register_bp(
-    "backend.auth_gate",
-    "auth_bp",
-)
-
-register_bp(
-    "backend.user_data",
-    "user_bp",
-)
-
-register_bp(
-    "backend.account_management",
-    "accounts_bp",
-)
-
-register_bp(
-    "backend.history_bp",
-    "history_bp",
-)
+register_bp("backend.auth_gate", "auth_bp")
+register_bp("backend.user_data", "user_bp")
+register_bp("backend.account_management", "accounts_bp")
+register_bp("backend.history_bp", "history_bp")
 
 
 # =========================================================
@@ -186,25 +313,14 @@ register_bp(
 # =========================================================
 
 try:
+    from backend.jumuiya.integration.register import register_jumuiya
 
-    from backend.jumuiya.integration.register import (
-        register_jumuiya,
-    )
+    register_jumuiya(app)
 
-    register_jumuiya(
-        app
-    )
+    logger.info("Jumuiya platform registered")
 
-    logger.info(
-        "✅ Jumuiya platform registered"
-    )
-
-except Exception as exc:
-
-    logger.exception(
-        "❌ Jumuiya registration failed: %s",
-        exc,
-    )
+except Exception:
+    logger.exception("Jumuiya registration failed")
 
 
 # =========================================================
@@ -212,131 +328,57 @@ except Exception as exc:
 # =========================================================
 
 try:
+    from backend.ai_gateway import register_ai_gateway
 
-    from backend.ai_gateway import (
-        register_ai_gateway,
-    )
+    register_ai_gateway(app)
 
-    register_ai_gateway(
-        app
-    )
+    logger.info("RevelaAI AI Gateway registered")
 
-    logger.info(
-        "✅ RevelaAI AI Gateway registered"
-    )
-
-except Exception as exc:
-
-    logger.exception(
-        "❌ RevelaAI AI Gateway registration failed: %s",
-        exc,
-    )
+except Exception:
+    logger.exception("RevelaAI AI Gateway registration failed")
 
 
 # =========================================================
 # STUDY PLATFORM
 # =========================================================
-#
-# IMPORTANT:
-#
-# Study is a core RevelaCode module.
-#
-# DO NOT hide its import behind a generic try/except.
-#
-# If Study cannot load, we want Gunicorn/Render to fail
-# loudly so the deployment exposes the real import problem
-# instead of serving a partially functional backend with:
-#
-#     /api/study/... -> 404
-#
-# =========================================================
 
 try:
+    from backend.routes.study_routes import study_bp
 
-    from backend.routes.study_routes import (
-        study_bp,
-    )
-
-except Exception as exc:
-
-    logger.exception(
-        "❌ CRITICAL: Study blueprint import failed: %s",
-        exc,
-    )
-
+except Exception:
+    logger.exception("CRITICAL: Study blueprint import failed")
     raise
 
 
-# ---------------------------------------------------------
-# Register the Study blueprint.
-#
-# study_routes.py defines:
-#
-#     url_prefix="/study"
-#
-# The application-level prefix must therefore be:
-#
-#     /api/study
-#
-# because the registration prefix overrides the blueprint
-# prefix in Flask.
-# ---------------------------------------------------------
-
 try:
-
     app.register_blueprint(
         study_bp,
         url_prefix="/api/study",
     )
 
-except Exception as exc:
-
-    logger.exception(
-        "❌ CRITICAL: Study blueprint registration failed: %s",
-        exc,
-    )
-
+except Exception:
+    logger.exception("CRITICAL: Study blueprint registration failed")
     raise
 
 
-logger.info(
-    "✅ Study blueprint registered with /api prefix"
-)
+logger.info("Study blueprint registered with /api prefix")
 
 
 # =========================================================
-# STUDY ROUTE VERIFICATION
+# ROUTE DIAGNOSTICS HELPERS
 # =========================================================
 
-def get_registered_routes(
-    prefix: str | None = None,
-):
-    """
-    Return the application's registered routes.
-
-    Used during startup diagnostics.
-    """
-
+def get_registered_routes(prefix: str | None = None):
     routes = []
 
     for rule in app.url_map.iter_rules():
-
-        if (
-            prefix is not None
-            and not rule.rule.startswith(
-                prefix
-            )
-        ):
+        if prefix is not None and not rule.rule.startswith(prefix):
             continue
 
         methods = sorted(
             method
             for method in rule.methods
-            if method
-            not in {
-                "HEAD",
-                "OPTIONS",
-            }
+            if method not in {"HEAD", "OPTIONS"}
         )
 
         routes.append({
@@ -345,100 +387,51 @@ def get_registered_routes(
             "methods": methods,
         })
 
-    routes.sort(
-        key=lambda item:
-            item["rule"]
-    )
-
-    return routes
+    return sorted(routes, key=lambda item: item["rule"])
 
 
-def study_route_exists(
-    route: str,
-) -> bool:
-
+def study_route_exists(route: str) -> bool:
     return any(
         rule.rule == route
         for rule in app.url_map.iter_rules()
     )
 
 
-# ---------------------------------------------------------
-# Verify canonical Study endpoints.
-# ---------------------------------------------------------
+# =========================================================
+# STUDY ROUTE VERIFICATION
+# =========================================================
 
-STUDY_MATERIALS_ROUTE = (
-    "/api/study/materials"
-)
+STUDY_MATERIALS_ROUTE = "/api/study/materials"
+STUDY_HEALTH_ROUTE = "/api/study/health"
 
-STUDY_HEALTH_ROUTE = (
-    "/api/study/health"
+logger.info(
+    "Study materials route registered: %s",
+    study_route_exists(STUDY_MATERIALS_ROUTE),
 )
 
 logger.info(
-    "📚 Study materials route registered: %s",
-    study_route_exists(
-        STUDY_MATERIALS_ROUTE
-    ),
+    "Study health route registered: %s",
+    study_route_exists(STUDY_HEALTH_ROUTE),
 )
 
-logger.info(
-    "📚 Study health route registered: %s",
-    study_route_exists(
-        STUDY_HEALTH_ROUTE
-    ),
-)
-
-logger.info(
-    "📚 Registered Study routes:"
-)
-
-for route in get_registered_routes(
-    "/api/study"
-):
-
+for route in get_registered_routes("/api/study"):
     logger.info(
-        "    %s %s",
-        ",".join(
-            route["methods"]
-        ),
+        "Study route: %s %s",
+        ",".join(route["methods"]),
         route["rule"],
     )
 
 
 # =========================================================
-# APPLICATION ROUTES
+# OTHER APPLICATION ROUTES
 # =========================================================
 
-register_bp(
-    "backend.routes.events_routes",
-    "events_bp",
-)
-
-register_bp(
-    "backend.routes.docs_routes",
-    "docs_bp",
-)
-
-register_bp(
-    "backend.routes.prophecy_routes",
-    "prophecy_bp",
-)
-
-register_bp(
-    "backend.routes.domain_routes",
-    "domain_bp",
-)
-
-register_bp(
-    "backend.routes.notifications_routes",
-    "notifications_bp",
-)
-
-register_bp(
-    "backend.guest_decode_limiter",
-    "guest_bp",
-)
+register_bp("backend.routes.events_routes", "events_bp")
+register_bp("backend.routes.docs_routes", "docs_bp")
+register_bp("backend.routes.prophecy_routes", "prophecy_bp")
+register_bp("backend.routes.domain_routes", "domain_bp")
+register_bp("backend.routes.notifications_routes", "notifications_bp")
+register_bp("backend.guest_decode_limiter", "guest_bp")
 
 
 # =========================================================
@@ -446,26 +439,17 @@ register_bp(
 # =========================================================
 
 try:
-
-    from backend.routes.admin_routes import (
-        admin_bp,
-    )
+    from backend.routes.admin_routes import admin_bp
 
     app.register_blueprint(
         admin_bp,
         url_prefix="/api",
     )
 
-    logger.info(
-        "✅ admin_bp registered with /api prefix"
-    )
+    logger.info("Admin blueprint registered")
 
-except Exception as exc:
-
-    logger.exception(
-        "❌ admin_bp registration failed: %s",
-        exc,
-    )
+except Exception:
+    logger.exception("Admin blueprint registration failed")
 
 
 # =========================================================
@@ -473,53 +457,35 @@ except Exception as exc:
 # =========================================================
 
 try:
-
-    from backend.routes.support_routes import (
-        support_bp,
-    )
+    from backend.routes.support_routes import support_bp
 
     app.register_blueprint(
         support_bp,
         url_prefix="/api/support",
     )
 
-    logger.info(
-        "✅ support_bp registered with /api/support prefix"
-    )
+    logger.info("Support blueprint registered")
 
-except Exception as exc:
-
-    logger.exception(
-        "❌ support_bp registration failed: %s",
-        exc,
-    )
+except Exception:
+    logger.exception("Support blueprint registration failed")
 
 
 # =========================================================
 # PUBLIC ROUTES
 # =========================================================
 
-register_bp(
-    "backend.routes.public_routes",
-    "public_bp",
-)
+register_bp("backend.routes.public_routes", "public_bp")
 
 
 # =========================================================
 # ROOT
 # =========================================================
 
-@app.route(
-    "/",
-    methods=["GET"],
-)
+@app.route("/", methods=["GET"])
 def index():
-
     return jsonify({
-        "message":
-            "RevelaCode Backend is live",
-        "status":
-            "ok",
+        "message": "RevelaCode Backend is live",
+        "status": "ok",
     }), 200
 
 
@@ -527,43 +493,28 @@ def index():
 # HEALTH
 # =========================================================
 
-@app.route(
-    "/health",
-    methods=["GET"],
-)
+@app.route("/health", methods=["GET"])
 def health():
-
     return jsonify({
         "ok": True,
-
-        "mongo_connected":
-            db is not None,
-
-        "mongo_uri_set":
-            bool(
-                os.getenv(
-                    "MONGO_URI"
-                )
-            ),
-
-        "jumuiya":
-            True,
-
+        "mongo_connected": db is not None,
+        "mongo_uri_set": bool(os.getenv("MONGO_URI")),
+        "jumuiya": True,
+        "cors": {
+            "configured": True,
+            "origins": sorted(FRONTEND_ORIGINS),
+            "preflight_handler": True,
+        },
         "study": {
-            "registered":
-                study_route_exists(
-                    STUDY_MATERIALS_ROUTE
-                ),
-
-            "health_route":
-                study_route_exists(
-                    STUDY_HEALTH_ROUTE
-                ),
-
-            "materials_route":
-                study_route_exists(
-                    STUDY_MATERIALS_ROUTE
-                ),
+            "registered": study_route_exists(
+                STUDY_MATERIALS_ROUTE
+            ),
+            "health_route": study_route_exists(
+                STUDY_HEALTH_ROUTE
+            ),
+            "materials_route": study_route_exists(
+                STUDY_MATERIALS_ROUTE
+            ),
         },
     }), 200
 
@@ -572,39 +523,23 @@ def health():
 # ROUTE DIAGNOSTICS
 # =========================================================
 
-@app.route(
-    "/api/diagnostics/routes",
-    methods=["GET"],
-)
+@app.route("/api/diagnostics/routes", methods=["GET"])
 def diagnostics_routes():
-
     return jsonify({
         "success": True,
-
         "study": {
-            "registered":
-                study_route_exists(
-                    STUDY_MATERIALS_ROUTE
-                ),
-
-            "health":
-                study_route_exists(
-                    STUDY_HEALTH_ROUTE
-                ),
-
-            "materials":
-                study_route_exists(
-                    STUDY_MATERIALS_ROUTE
-                ),
-
-            "routes":
-                get_registered_routes(
-                    "/api/study"
-                ),
+            "registered": study_route_exists(
+                STUDY_MATERIALS_ROUTE
+            ),
+            "health": study_route_exists(
+                STUDY_HEALTH_ROUTE
+            ),
+            "materials": study_route_exists(
+                STUDY_MATERIALS_ROUTE
+            ),
+            "routes": get_registered_routes("/api/study"),
         },
-
-        "all_routes":
-            get_registered_routes(),
+        "all_routes": get_registered_routes(),
     }), 200
 
 
@@ -613,104 +548,56 @@ def diagnostics_routes():
 # =========================================================
 
 try:
+    from backend.study.import_sda_q3_2026 import import_q3
 
-    from backend.study.import_sda_q3_2026 import (
-        import_q3,
-    )
-
-except Exception as exc:
-
-    logger.exception(
-        "❌ SDA importer import failed: %s",
-        exc,
-    )
-
+except Exception:
+    logger.exception("SDA importer import failed")
     import_q3 = None
 
 
 def maybe_import_sda_q3_2026():
-
-    enabled = (
-        os.getenv(
-            "IMPORT_SDA_Q3_2026",
-            "false",
-        )
-        .strip()
-        .lower()
-    )
+    enabled = os.getenv(
+        "IMPORT_SDA_Q3_2026",
+        "false",
+    ).strip().lower()
 
     if enabled != "true":
-
-        logger.info(
-            "ℹ SDA Q3 2026 importer disabled."
-        )
-
+        logger.info("SDA Q3 2026 importer disabled")
         return
 
     if db is None:
-
         logger.error(
-            "❌ SDA importer cannot run because "
-            "MongoDB is not initialized."
+            "SDA importer cannot run because MongoDB is unavailable"
         )
-
         return
 
     if import_q3 is None:
-
-        logger.error(
-            "❌ SDA importer cannot run because "
-            "import_q3 failed to load."
-        )
-
+        logger.error("SDA importer could not be loaded")
         return
 
-    logger.info(
-        "🚀 Starting SDA Q3 2026 importer..."
-    )
+    logger.info("Starting SDA Q3 2026 importer")
 
     try:
-
         result = import_q3()
 
+        requested = result.get("lessons_requested", 0)
+        successful = result.get("successful", 0)
+        failed = result.get("failed", 0)
+
         logger.info(
-            "✅ SDA Q3 2026 import finished | "
-            "requested=%s | successful=%s | failed=%s",
-            result.get(
-                "lessons_requested",
-                0,
-            ),
-            result.get(
-                "successful",
-                0,
-            ),
-            result.get(
-                "failed",
-                0,
-            ),
+            "SDA import finished: requested=%s successful=%s failed=%s",
+            requested,
+            successful,
+            failed,
         )
 
-        if result.get(
-            "failed",
-            0,
-        ) > 0:
-
-            logger.warning(
-                "⚠ SDA Q3 2026 import completed "
-                "with failures."
-            )
-
+        if failed:
+            logger.warning("SDA import completed with failures")
         else:
-
-            logger.info(
-                "🎉 SDA Q3 2026 imported successfully."
-            )
+            logger.info("SDA Q3 2026 imported successfully")
 
     except Exception:
-
-        logger.exception(
-            "❌ SDA Q3 2026 importer failed."
-        )
+        logger.exception("SDA Q3 2026 importer failed")
 
 
 # =========================================================
@@ -718,7 +605,6 @@ def maybe_import_sda_q3_2026():
 # =========================================================
 
 def start_sda_importer():
-
     thread = threading.Thread(
         target=maybe_import_sda_q3_2026,
         name="SDA-Q3-2026-Importer",
@@ -727,9 +613,7 @@ def start_sda_importer():
 
     thread.start()
 
-    logger.info(
-        "🧵 SDA Q3 2026 importer thread started."
-    )
+    logger.info("SDA importer thread started")
 
 
 # =========================================================
@@ -737,59 +621,35 @@ def start_sda_importer():
 # =========================================================
 
 def daily_runner_loop():
-
     last_run_date = None
 
     backend_dir = os.path.abspath(
-        os.path.dirname(
-            __file__
-        )
+        os.path.dirname(__file__)
     )
 
     while True:
-
         today = datetime.now().date()
 
         if last_run_date != today:
-
             try:
+                from backend.daily_runner import run_pipeline
 
-                from backend.daily_runner import (
-                    run_pipeline,
-                )
-
-                logger.info(
-                    "⏰ Running daily_runner pipeline"
-                )
+                logger.info("Running daily_runner pipeline")
 
                 current_dir = os.getcwd()
 
                 try:
-
-                    os.chdir(
-                        backend_dir
-                    )
-
+                    os.chdir(backend_dir)
                     run_pipeline()
-
                     last_run_date = today
 
                 finally:
+                    os.chdir(current_dir)
 
-                    os.chdir(
-                        current_dir
-                    )
+            except Exception:
+                logger.exception("Daily runner failed")
 
-            except Exception as exc:
-
-                logger.exception(
-                    "❌ Daily runner failed: %s",
-                    exc,
-                )
-
-        time.sleep(
-            3600
-        )
+        time.sleep(3600)
 
 
 # =========================================================
@@ -797,37 +657,20 @@ def daily_runner_loop():
 # =========================================================
 
 _background_jobs_started = False
-
-_background_jobs_lock = (
-    threading.Lock()
-)
+_background_jobs_lock = threading.Lock()
 
 
 def start_background_jobs():
-
     global _background_jobs_started
 
     with _background_jobs_lock:
-
         if _background_jobs_started:
-
-            logger.info(
-                "ℹ Background jobs already started."
-            )
-
+            logger.info("Background jobs already started")
             return
 
         _background_jobs_started = True
 
-    # -----------------------------------------------------
-    # SDA IMPORTER
-    # -----------------------------------------------------
-
     start_sda_importer()
-
-    # -----------------------------------------------------
-    # DAILY RUNNER
-    # -----------------------------------------------------
 
     daily_thread = threading.Thread(
         target=daily_runner_loop,
@@ -837,9 +680,7 @@ def start_background_jobs():
 
     daily_thread.start()
 
-    logger.info(
-        "🧵 Daily runner thread started."
-    )
+    logger.info("Daily runner thread started")
 
 
 # =========================================================
@@ -854,26 +695,13 @@ start_background_jobs()
 # =========================================================
 
 if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 5000))
 
-    port = int(
-        os.environ.get(
-            "PORT",
-            5000,
-        )
-    )
-
-    logger.info(
-        "🚀 Starting server on port %s",
-        port,
-    )
+    logger.info("Starting server on port %s", port)
 
     app.run(
         host="0.0.0.0",
         port=port,
-        debug=(
-            os.getenv(
-                "FLASK_ENV"
-            ) != "production"
-        ),
+        debug=os.getenv("FLASK_ENV") != "production",
         use_reloader=False,
     )
