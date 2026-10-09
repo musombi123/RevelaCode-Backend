@@ -20,6 +20,13 @@ from backend.jumuiya.community import (
     services,
 )
 
+from backend.jumuiya.community import (
+    discovery,
+    group_services,
+    schemas,
+    services,
+)
+
 
 # =========================================================
 # BLUEPRINT
@@ -407,6 +414,92 @@ def get_pulse():
             limit=limit,
             mode=mode,
         )
+    )
+
+
+# =========================================================
+# COMMUNITY GROUPS
+# =========================================================
+
+@community_bp.get("/groups")
+@require_authenticated
+def get_groups():
+    result = group_services.list_groups(
+        current_user_id(),
+        category=request.args.get("category"),
+        search=request.args.get(
+            "q",
+            request.args.get("search", ""),
+        ),
+        mine=request.args.get(
+            "mine",
+            "",
+        ).strip().lower() in {
+            "1",
+            "true",
+            "yes",
+        },
+        limit=parse_limit(
+            default=100,
+            maximum=100,
+        ),
+    )
+
+    return ok(result)
+
+
+@community_bp.post("/groups")
+@require_authenticated
+def create_group():
+    result = group_services.create_group(
+        current_user_id(),
+        body(),
+    )
+
+    return created(
+        {"group": result},
+        "Community group created.",
+    )
+
+
+@community_bp.get("/groups/<group_id>")
+@require_authenticated
+def get_group(group_id):
+    result = group_services.get_group(
+        current_user_id(),
+        group_id,
+    )
+
+    return ok({
+        "group": result,
+    })
+
+
+@community_bp.post("/groups/<group_id>/join")
+@require_authenticated
+def join_group(group_id):
+    result = group_services.join_group(
+        current_user_id(),
+        group_id,
+    )
+
+    return ok(
+        {"group": result},
+        "You have joined the community group.",
+    )
+
+
+@community_bp.delete("/groups/<group_id>/join")
+@require_authenticated
+def leave_group(group_id):
+    result = group_services.leave_group(
+        current_user_id(),
+        group_id,
+    )
+
+    return ok(
+        {"group": result},
+        "You have left the community group.",
     )
 
 

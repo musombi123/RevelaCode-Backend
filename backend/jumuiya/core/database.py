@@ -242,6 +242,40 @@ INDEX_DEFINITIONS = {
         ),
     ],
 
+    "jumuiya_community_groups": [
+        (
+            [
+                ("status", ASCENDING),
+                ("category", ASCENDING),
+                ("created_at", DESCENDING),
+            ],
+            {"name": "ix_community_groups_status_category_created"},
+        ),
+        (
+            [
+                ("status", ASCENDING),
+                ("featured", DESCENDING),
+                ("created_at", DESCENDING),
+            ],
+            {"name": "ix_community_groups_status_featured_created"},
+        ),
+        (
+            [
+                ("status", ASCENDING),
+                ("member_user_ids", ASCENDING),
+                ("created_at", DESCENDING),
+            ],
+            {"name": "ix_community_groups_member_created"},
+        ),
+        (
+            [
+                ("created_by_user_id", ASCENDING),
+                ("created_at", DESCENDING),
+            ],
+            {"name": "ix_community_groups_creator_created"},
+        ),
+    ],
+
     # -----------------------------------------------------
     # MARKETPLACE
     # -----------------------------------------------------
