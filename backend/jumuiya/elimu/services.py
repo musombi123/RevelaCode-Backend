@@ -27,7 +27,7 @@ from backend.jumuiya.elimu.models import (
     school_document,
     student_document,
 )
-
+from backend.jumuiya.elimu import school_verification
 
 # =========================================================
 # COLLECTIONS
@@ -398,83 +398,48 @@ def access(
 
 
 # =========================================================
-# SCHOOL
+# SCHOOL ACCOUNT / REGISTRATION SECURITY BOUNDARY
 # =========================================================
 
-def save_school(
-    user_id,
-    data,
-):
-    uid = str(
-        user_id
-    )
+def my_school(user_id):
+    """
+    Return the owner's school record or pending application.
 
-    now = now_utc()
-    data = _normalize_school_payload(data)
+    A record being returned here does not grant dashboard access.
+    """
+    return school_verification.get_my_application(user_id)
 
-    existing = collection(
-        SCHOOLS
-    ).find_one(
-        {
-            "owner_user_id": uid
-        }
-    )
 
-    if existing:
+def _school_document(user_id):
+    """
+    Internal boundary used by all protected Elimu services.
 
-        document = collection(
-            SCHOOLS
-        ).find_one_and_update(
-            {
-                "_id": existing["_id"],
-                "owner_user_id": uid,
-            },
-            {
-                "$set": {
-                    **data,
-                    "owner_user_id": uid,
-                    "updated_at": now,
-                    "status": "active",
-                }
-            },
-            return_document=ReturnDocument.AFTER,
-        )
+    Only approved schools, or demos explicitly enabled in development,
+    may reach the operational school-management services.
+    """
+    return school_verification.require_accessible_school(user_id)
 
-        log_action(
-            uid,
-            "elimu.school.updated",
-            "school",
-            document["_id"],
-        )
 
-        return _ser(
-            document
-        )
-
-    document = school_document(
-        uid,
-        data,
-    )
-
-    result = collection(
-        SCHOOLS
-    ).insert_one(
-        document
-    )
-
-    document["_id"] = (
-        result.inserted_id
-    )
-
-    log_action(
-        uid,
-        "elimu.school.created",
-        "school",
-        result.inserted_id,
-    )
-
+def require_school(user_id):
     return _ser(
-        document
+        _school_document(user_id)
+    )
+
+
+def access(user_id):
+    return school_verification.access_status(user_id)
+
+
+def save_school(user_id, data):
+    """
+    Backwards-compatible function name.
+
+    It now submits an application instead of immediately activating
+    a new school.
+    """
+    return school_verification.submit_application(
+        user_id,
+        data,
     )
 
 

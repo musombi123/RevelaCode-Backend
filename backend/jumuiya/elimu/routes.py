@@ -20,6 +20,8 @@ from backend.jumuiya.elimu import (
     services,
 )
 
+from backend.jumuiya.elimu import school_verification
+
 # =========================================================
 # ELIMU SUB-MODULE BLUEPRINTS
 # =========================================================
@@ -193,15 +195,14 @@ def bootstrap():
 
 
 # =========================================================
-# SCHOOL
+# SCHOOL REGISTRATION
 # =========================================================
-
 
 @elimu_bp.get("/school")
 @require_authenticated
 def get_school():
     return ok(
-        services.my_school(
+        school_verification.get_my_application(
             current_user_id()
         )
     )
@@ -211,18 +212,36 @@ def get_school():
 @require_authenticated
 def save_school():
     payload = validate(
+        schemas.school_application_payload,
+        body(),
+    )
+
+    return created(
+        school_verification.submit_application(
+            current_user_id(),
+            payload,
+        ),
+        "School application submitted for verification.",
+    )
+
+
+@elimu_bp.post("/school/demo")
+@require_authenticated
+def create_demo_school():
+    # The server permits this only when both demo-mode environment
+    # requirements are satisfied.
+    payload = validate(
         schemas.school_payload,
         body(),
     )
 
     return created(
-        services.save_school(
+        school_verification.create_demo_school(
             current_user_id(),
             payload,
         ),
-        "School account saved.",
+        "Development demo school created.",
     )
-
 
 # =========================================================
 # PROFILE
@@ -676,3 +695,5 @@ elimu_bp.register_blueprint(timetable_bp)
 elimu_bp.register_blueprint(automation_bp)
 
 elimu_bp.register_blueprint(sync_bp)
+
+elimu_bp.register_blueprint(verification_bp)

@@ -571,6 +571,134 @@ def school_payload(data):
         ),
     }
 
+def school_application_payload(data):
+    """
+    Strict schema for a real-school registration application.
+
+    This deliberately requires more information than the normal school
+    profile schema. The server ignores client-provided verification states.
+    """
+    _object(data)
+
+    payload = school_payload(data)
+
+    registration_number = _text(
+        data,
+        "registration_number",
+        True,
+        100,
+    )
+
+    principal_name = _text(
+        data,
+        "principal_name",
+        True,
+        160,
+    )
+
+    phone = _text(
+        data,
+        "phone",
+        True,
+        40,
+    )
+
+    allowed_phone_characters = set(
+        "+0123456789 ()-."
+    )
+
+    if any(
+        character not in allowed_phone_characters
+        for character in phone
+    ):
+        raise ValueError(
+            "phone contains invalid characters."
+        )
+
+    phone_digits = "".join(
+        character
+        for character in phone
+        if character.isdigit()
+    )
+
+    if len(phone_digits) < 7 or len(phone_digits) > 15:
+        raise ValueError(
+            "phone must contain between 7 and 15 digits."
+        )
+
+    email = _email(
+        data,
+        "email",
+    )
+
+    if not email:
+        raise ValueError("email is required.")
+
+    county = _text(
+        data,
+        "county",
+        True,
+        100,
+    )
+
+    town = _text(
+        data,
+        "town",
+        True,
+        100,
+    )
+
+    location = _text(
+        data,
+        "location",
+        True,
+        200,
+    )
+
+    evidence_url = _url(
+        data,
+        "registration_evidence_url",
+        1000,
+    )
+
+    if not evidence_url:
+        raise ValueError(
+            "registration_evidence_url is required."
+        )
+
+    if not evidence_url.startswith("https://"):
+        raise ValueError(
+            "Registration evidence must use an HTTPS URL."
+        )
+
+    owner_declaration = _bool(
+        data,
+        "owner_declaration",
+        False,
+    )
+
+    if owner_declaration is not True:
+        raise ValueError(
+            (
+                "You must confirm that you are authorised to register "
+                "this school and that the supplied details are accurate."
+            )
+        )
+
+    payload.update({
+        "registration_number": registration_number,
+        "principal_name": principal_name,
+        "phone": phone,
+        "email": email,
+        "county": county,
+        "town": town,
+        "location": location,
+        "registration_evidence_url": evidence_url,
+        "owner_declaration": True,
+    })
+
+    return payload
+
 
 # =========================================================
 # EDUCATION PROFILE
