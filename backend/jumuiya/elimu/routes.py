@@ -31,7 +31,7 @@ from backend.jumuiya.elimu.staff.routes import staff_bp
 from backend.jumuiya.elimu.timetable.routes import timetable_bp
 from backend.jumuiya.elimu.automation.routes import automation_bp
 from backend.jumuiya.elimu.sync.routes import sync_bp
-
+from backend.jumuiya.elimu.verification_routes import verification_bp
 
 # =========================================================
 # BLUEPRINT
