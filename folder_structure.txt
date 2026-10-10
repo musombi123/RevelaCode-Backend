@@ -1,200 +1,223 @@
-Folder PATH listing
-Volume serial number is 16C3-6968
-C:.
-|   .env
-|   .gitignore
-|   CODE_OF_CONDUCT.md
-|   CONTRIBUTING.md
-|   folder_structure.txt
-|   index.js
-|   LICENSE
-|   main.py
-|   package-lock.json
-|   package.json
-|   README.md
-|   render.yaml
-|   requirements.txt
-|   test_notifications.py
-|   test_smtp.py
-+---archived
-+---backend
-|   |   ai_api.py
-|   |   api_events.py
-|   |   archive_old_events.py
-|   |   auth_gate.py
-|   |   bible_decoder.py
-|   |   categorize.py
-|   |   community.py
-|   |   daily_runner.py
-|   |   db.py
-|   |   decode_news.py
-|   |   events.json
-|   |   fetch_by_symbols.py
-|   |   fetch_news.py
-|   |   guest_decode_limiter.py
-|   |   LegalText.js
-|   |   list_users.py
-|   |   menu.py
-|   |   models.py
-|   |   notifications.json
-|   |   post_store.py
-|   |   seedLegalDocs.js
-|   |   seedMultiFaithTexts.js
-|   |   symbols_data.json
-|   |   symbols_keywords.json
-|   |   UpdateLegalDoc.js
-|   |   user_data.py
-|   |   verse_keywords.json
-|   |   __init__.py
-|   |   
-|   +---.zencoder
-|   |   \---workflows
-|   +---.zenflow
-|   |   \---workflows
-|   +---archived
-|   |       archive_log.json
-|   |       events_2025-07-09.json
-|   |       events_2025-07-15.json
-|   |       events_2025-07-16.json
-|   |       events_2025-07-25.json
-|   |       
-|   +---auth
-|   |       jwt_utils.py
-|   |       
-|   +---controllers
-|   |       legal.controller.js
-|   |       
-|   +---domains
-|   |   |   __init__.py
-|   |   |   
-|   |   +---business
-|   |   |       service.py
-|   |   |       
-|   |   +---culture
-|   |   |       service.py
-|   |   |       
-|   |   +---news_intel
-|   |   |       service.py
-|   |   |       
-|   |   +---prophetic
-|   |   |       service.py
-|   |   |       
-|   |   +---scholar
-|   |   |       service.py
-|   |   |       
-|   |   \---__pycache__
-|   |           __init__.cpython-313.pyc
-|   |           
-|   +---events
-|   |       events_digital_currency_2025-07-25.json
-|   |       events_prophecy_2025-07-25.json
-|   |       events_prophecy_2025-08-14.json
-|   |       events_prophecy_2025-08-16.json
-|   |       events_prophecy_2025-08-17.json
-|   |       events_prophecy_2025-09-11.json
-|   |       events_prophecy_2025-10-14.json
-|   |       events_prophecy_2025-12-29.json
-|   |       events_prophecy_2026-01-03.json
-|   |       
-|   +---events_decoded
-|   |       events_2025-07-15.json
-|   |       events_2025-07-16.json
-|   |       events_2025-07-25.json
-|   |       events_prophecy_2025-07-25.json
-|   |       events_prophecy_2025-08-14.json
-|   |       events_prophecy_2025-08-16.json
-|   |       events_prophecy_2025-08-17.json
-|   |       events_prophecy_2025-09-11.json
-|   |       events_prophecy_2025-10-14.json
-|   |       events_prophecy_2025-12-29.json
-|   |       events_prophecy_2026-01-03.json
-|   |       
-|   +---events_tagged
-|   |       events_2025-07-09.json
-|   |       events_2025-07-15.json
-|   |       events_2025-07-16.json
-|   |       events_2025-07-25.json
-|   |       events_prophecy_2025-07-25.json
-|   |       events_prophecy_2025-08-14.json
-|   |       events_prophecy_2025-08-16.json
-|   |       events_prophecy_2025-08-17.json
-|   |       events_prophecy_2025-09-11.json
-|   |       events_prophecy_2025-10-14.json
-|   |       events_prophecy_2025-12-29.json
-|   |       events_prophecy_2026-01-03.json
-|   |       
-|   +---models
-|   |   |   LegalDoc.js
-|   |   |   models.py
-|   |   |   MultiFaithText.js
-|   |   |   ScriptureText.js
-|   |   |   
-|   |   \---__pycache__
-|   |           models.cpython-313.pyc
-|   |           
-|   +---routes
-|   |   |   admin_routes.py
-|   |   |   docs_routes.py
-|   |   |   domain_routes.py
-|   |   |   events_routes.py
-|   |   |   legal.js
-|   |   |   legal.routes.js
-|   |   |   notifications_routes.py
-|   |   |   prophecy_routes.py
-|   |   |   public_routes.py
-|   |   |   support_routes.py
-|   |   |   user_routes.py
-|   |   |   verseRoutes.js
-|   |   |   
-|   |   \---__pycache__
-|   |           admin_routes.cpython-313.pyc
-|   |           decoder_routes.cpython-313.pyc
-|   |           docs_routes.cpython-313.pyc
-|   |           domain_routes.cpython-313.pyc
-|   |           events_routes.cpython-313.pyc
-|   |           guest_routes.cpython-313.pyc
-|   |           notifications_routes.cpython-313.pyc
-|   |           prophecy_routes.cpython-313.pyc
-|   |           public_routes.cpython-313.pyc
-|   |           support_routes.cpython-313.pyc
-|   |           
-|   +---seeds
-|   |       seed_legal_docs.py
-|   |       
-|   +---services
-|   |   |   ai_router.py
-|   |   |   audit_logger.py
-|   |   |   billing_guard.py
-|   |   |   domain_registry.py
-|   |   |   verseService.js
-|   |   |   
-|   |   \---__pycache__
-|   |           audit_logger.cpython-313.pyc
-|   |           domain_registry.cpython-313.pyc
-|   |           
-|   +---tools
-|   |       generate_domain.py
-|   |       
-|   +---user_data
-|   |   |   history.json
-|   |   |   settings.json
-|   |   |   users.json
-|   |   |   user_bp.py
-|   |   |   user_functions.py
-|   |   |   __init__.py
-|   |   |   
-|   |   \---__pycache__
-|   |           user_bp.cpython-313.pyc
-|   |           user_functions.cpython-313.pyc
-|   |           __init__.cpython-313.pyc
-|   |           
-|   +---utils
-|   |   |   audit_logger.py
-|   |   |   auth_keys.py
-|   |   |   roles.py
-|   |   |   
-|   |   \---__pycache__
-|   |           audit_logger.cpython-313.pyc
-|   |           auth_keys.cpython-313.pyc
-|   |           
-| 
+we have not yet entere inside the elimu dashboard remember we make the private to add all the details of the school
+so wee need all private modules by this hour add all models recquired, images, media and uploads will be made later, becouse schools has documents like, admision later, and also transfer laters all we will add when we finish this existing ones first
+look at all imports we have now we need to add another dashboards 
+every admin role with his duty
+exam council, school will also add at their own pleasure non staff members
+so we complete this ones the we upgrade later, dont add any remarks drop files one by one and not downlaodable 
+
+jumuiya_elimu.access                                              GET                /api/jumuiya/elimu/access         
+                           
+jumuiya_elimu.get_assessments                                     GET                /api/jumuiya/elimu/assessments    
+                           
+jumuiya_elimu.add_assessment                                      POST               /api/jumuiya/elimu/assessments    
+                           
+jumuiya_elimu.get_assignments                                     GET                /api/jumuiya/elimu/assignments    
+                           
+jumuiya_elimu.add_assignment                                      POST               /api/jumuiya/elimu/assignments    
+                           
+jumuiya_elimu.get_attendance                                      GET                /api/jumuiya/elimu/attendance     
+                           
+jumuiya_elimu.add_attendance                                      POST               /api/jumuiya/elimu/attendance     
+                           
+jumuiya_elimu.jumuiya_elimu_automation.actions                    GET                
+/api/jumuiya/elimu/automation/actions                        
+jumuiya_elimu.jumuiya_elimu_automation.list_jobs                  GET                
+/api/jumuiya/elimu/automation/jobs                           
+jumuiya_elimu.jumuiya_elimu_automation.get_job                    GET                
+/api/jumuiya/elimu/automation/jobs/<job_id>                  
+jumuiya_elimu.jumuiya_elimu_automation.cancel_job                 POST               
+/api/jumuiya/elimu/automation/jobs/<job_id>/cancel           
+jumuiya_elimu.jumuiya_elimu_automation.retry_job                  POST               
+/api/jumuiya/elimu/automation/jobs/<job_id>/retry            
+jumuiya_elimu.jumuiya_elimu_automation.recover_jobs               POST               
+/api/jumuiya/elimu/automation/jobs/recover                   
+jumuiya_elimu.jumuiya_elimu_automation.logs                       GET                
+/api/jumuiya/elimu/automation/logs                           
+jumuiya_elimu.jumuiya_elimu_automation.rules                      GET                
+/api/jumuiya/elimu/automation/rules                          
+jumuiya_elimu.jumuiya_elimu_automation.create_rule                POST               
+/api/jumuiya/elimu/automation/rules                          
+jumuiya_elimu.jumuiya_elimu_automation.get_rule                   GET                
+/api/jumuiya/elimu/automation/rules/<rule_id>                
+jumuiya_elimu.jumuiya_elimu_automation.update_rule                PATCH              
+/api/jumuiya/elimu/automation/rules/<rule_id>                
+jumuiya_elimu.jumuiya_elimu_automation.delete_rule                DELETE             
+/api/jumuiya/elimu/automation/rules/<rule_id>                
+jumuiya_elimu.jumuiya_elimu_automation.disable_rule               POST               
+/api/jumuiya/elimu/automation/rules/<rule_id>/disable        
+jumuiya_elimu.jumuiya_elimu_automation.enable_rule                POST               
+/api/jumuiya/elimu/automation/rules/<rule_id>/enable         
+jumuiya_elimu.jumuiya_elimu_automation.run_rule                   POST               
+/api/jumuiya/elimu/automation/rules/<rule_id>/run            
+jumuiya_elimu.jumuiya_elimu_automation.run                        POST               /api/jumuiya/elimu/automation/run 
+                           
+jumuiya_elimu.jumuiya_elimu_automation.status                     GET                
+/api/jumuiya/elimu/automation/status                         
+jumuiya_elimu.bootstrap                                           GET                /api/jumuiya/elimu/bootstrap      
+                           
+jumuiya_elimu.get_calendar                                        GET                /api/jumuiya/elimu/calendar       
+                           
+jumuiya_elimu.get_projects                                        GET                /api/jumuiya/elimu/cbc/projects   
+                           
+jumuiya_elimu.add_project                                         POST               /api/jumuiya/elimu/cbc/projects   
+                           
+jumuiya_elimu.get_classes                                         GET                /api/jumuiya/elimu/classes        
+                           
+jumuiya_elimu.add_class                                           POST               /api/jumuiya/elimu/classes        
+                           
+jumuiya_elimu.get_dashboard                                       GET                /api/jumuiya/elimu/dashboard      
+                           
+jumuiya_elimu.get_events                                          GET                /api/jumuiya/elimu/events         
+                           
+jumuiya_elimu.add_event                                           POST               /api/jumuiya/elimu/events         
+                           
+jumuiya_elimu.edit_event                                          PUT                
+/api/jumuiya/elimu/events/<event_id>                         
+jumuiya_elimu.remove_event                                        DELETE             
+/api/jumuiya/elimu/events/<event_id>                         
+jumuiya_elimu.get_fees                                            GET                /api/jumuiya/elimu/fees           
+                           
+jumuiya_elimu.add_fee                                             POST               /api/jumuiya/elimu/fees           
+                           
+jumuiya_elimu.health                                              GET                /api/jumuiya/elimu/health         
+                           
+jumuiya_elimu.get_lessons                                         GET                /api/jumuiya/elimu/lessons        
+                           
+jumuiya_elimu.add_lesson                                          POST               /api/jumuiya/elimu/lessons        
+                           
+jumuiya_elimu.get_profile                                         GET                /api/jumuiya/elimu/profile        
+                           
+jumuiya_elimu.save_profile                                        POST               /api/jumuiya/elimu/profile        
+                           
+jumuiya_elimu.jumuiya_elimu_reports.attendance                    GET                
+/api/jumuiya/elimu/reports/attendance                        
+jumuiya_elimu.jumuiya_elimu_reports.curricula                     GET                
+/api/jumuiya/elimu/reports/curricula                         
+jumuiya_elimu.jumuiya_elimu_reports.save_curriculum               POST               
+/api/jumuiya/elimu/reports/curricula                         
+jumuiya_elimu.jumuiya_elimu_reports.get_curriculum                GET                
+/api/jumuiya/elimu/reports/curricula/<curriculum_id>         
+jumuiya_elimu.jumuiya_elimu_reports.dashboard                     GET                
+/api/jumuiya/elimu/reports/dashboard                         
+jumuiya_elimu.jumuiya_elimu_reports.exam_reports                  GET                
+/api/jumuiya/elimu/reports/exam-reports                      
+jumuiya_elimu.jumuiya_elimu_reports.get_exam_report               GET                
+/api/jumuiya/elimu/reports/exam-reports/<report_id>          
+jumuiya_elimu.jumuiya_elimu_reports.publish_exam_report           POST               
+/api/jumuiya/elimu/reports/exam-reports/<report_id>/publish  
+jumuiya_elimu.jumuiya_elimu_reports.generate_class_exam_reports   POST               
+/api/jumuiya/elimu/reports/exam-reports/class                
+jumuiya_elimu.jumuiya_elimu_reports.generate_student_exam_report  POST               
+/api/jumuiya/elimu/reports/exam-reports/student              
+jumuiya_elimu.jumuiya_elimu_reports.fees                          GET                /api/jumuiya/elimu/reports/fees   
+                           
+jumuiya_elimu.jumuiya_elimu_reports.overview                      GET                
+/api/jumuiya/elimu/reports/overview                          
+jumuiya_elimu.jumuiya_elimu_reports.programmes                    GET                
+/api/jumuiya/elimu/reports/programmes                        
+jumuiya_elimu.jumuiya_elimu_reports.generate_programme            POST               
+/api/jumuiya/elimu/reports/programmes                        
+jumuiya_elimu.jumuiya_elimu_reports.get_programme                 GET                
+/api/jumuiya/elimu/reports/programmes/<programme_id>         
+jumuiya_elimu.jumuiya_elimu_reports.publish_programme             POST               
+/api/jumuiya/elimu/reports/programmes/<programme_id>/publish 
+jumuiya_elimu.jumuiya_elimu_reports.timetable                     GET                
+/api/jumuiya/elimu/reports/timetable                         
+jumuiya_elimu.get_school                                          GET                /api/jumuiya/elimu/school         
+                           
+jumuiya_elimu.save_school                                         POST               /api/jumuiya/elimu/school         
+                           
+jumuiya_elimu.jumuiya_elimu_staff.list_staff                      GET                /api/jumuiya/elimu/staff          
+                           
+jumuiya_elimu.jumuiya_elimu_staff.get_staff                       GET                
+/api/jumuiya/elimu/staff/<user_id>                           
+jumuiya_elimu.jumuiya_elimu_staff.update                          PUT                
+/api/jumuiya/elimu/staff/<user_id>                           
+jumuiya_elimu.jumuiya_elimu_staff.remove                          DELETE             
+/api/jumuiya/elimu/staff/<user_id>                           
+jumuiya_elimu.jumuiya_elimu_staff.assignment                      POST               
+/api/jumuiya/elimu/staff/assignments                         
+jumuiya_elimu.jumuiya_elimu_staff.deactivate_assignment           DELETE             
+/api/jumuiya/elimu/staff/assignments                         
+jumuiya_elimu.jumuiya_elimu_staff.assignments                     GET                
+/api/jumuiya/elimu/staff/assignments/list                    
+jumuiya_elimu.jumuiya_elimu_staff.accept                          POST               
+/api/jumuiya/elimu/staff/invitations/accept                  
+jumuiya_elimu.jumuiya_elimu_staff.invite                          POST               /api/jumuiya/elimu/staff/invite   
+                           
+jumuiya_elimu.jumuiya_elimu_staff.rebuild_teacher_scopes          POST               
+/api/jumuiya/elimu/staff/maintenance/rebuild-teacher-scopes  
+jumuiya_elimu.jumuiya_elimu_staff.get_my_staff_profile            GET                /api/jumuiya/elimu/staff/me       
+                           
+jumuiya_elimu.jumuiya_elimu_staff.list_teachers                   GET                /api/jumuiya/elimu/staff/teachers 
+                           
+jumuiya_elimu.get_students                                        GET                /api/jumuiya/elimu/students       
+                           
+jumuiya_elimu.add_student                                         POST               /api/jumuiya/elimu/students       
+                           
+jumuiya_elimu.get_student                                         GET                
+/api/jumuiya/elimu/students/<student_id>                     
+jumuiya_elimu.edit_student                                        PUT                
+/api/jumuiya/elimu/students/<student_id>                     
+jumuiya_elimu.jumuiya_elimu_sync.conflicts                        GET                /api/jumuiya/elimu/sync/conflicts 
+                           
+jumuiya_elimu.jumuiya_elimu_sync.resolve_conflict                 POST               
+/api/jumuiya/elimu/sync/conflicts/<conflict_id>/resolve      
+jumuiya_elimu.jumuiya_elimu_sync.connections                      GET                
+/api/jumuiya/elimu/sync/connections                          
+jumuiya_elimu.jumuiya_elimu_sync.create_connection                POST               
+/api/jumuiya/elimu/sync/connections                          
+jumuiya_elimu.jumuiya_elimu_sync.get_connection                   GET                
+/api/jumuiya/elimu/sync/connections/<connection_id>          
+jumuiya_elimu.jumuiya_elimu_sync.activate_connection              POST               
+/api/jumuiya/elimu/sync/connections/<connection_id>/activate 
+jumuiya_elimu.jumuiya_elimu_sync.connection_heartbeat             POST               
+/api/jumuiya/elimu/sync/connections/<connection_id>/heartbeat
+jumuiya_elimu.jumuiya_elimu_sync.pause_connection                 POST               
+/api/jumuiya/elimu/sync/connections/<connection_id>/pause    
+jumuiya_elimu.jumuiya_elimu_sync.revoke_connection                POST               
+/api/jumuiya/elimu/sync/connections/<connection_id>/revoke   
+jumuiya_elimu.jumuiya_elimu_sync.devices                          GET                /api/jumuiya/elimu/sync/devices   
+                           
+jumuiya_elimu.jumuiya_elimu_sync.register_device                  POST               /api/jumuiya/elimu/sync/devices   
+                           
+jumuiya_elimu.jumuiya_elimu_sync.export_entity                    GET                
+/api/jumuiya/elimu/sync/export/<entity_type>                 
+jumuiya_elimu.jumuiya_elimu_sync.ingest                           POST               /api/jumuiya/elimu/sync/ingest    
+                           
+jumuiya_elimu.jumuiya_elimu_sync.jobs                             GET                /api/jumuiya/elimu/sync/jobs      
+                           
+jumuiya_elimu.jumuiya_elimu_sync.get_job                          GET                
+/api/jumuiya/elimu/sync/jobs/<job_id>                        
+jumuiya_elimu.jumuiya_elimu_sync.cancel_job                       POST               
+/api/jumuiya/elimu/sync/jobs/<job_id>/cancel                 
+jumuiya_elimu.jumuiya_elimu_sync.pause_job                        POST               
+/api/jumuiya/elimu/sync/jobs/<job_id>/pause                  
+jumuiya_elimu.jumuiya_elimu_sync.resume_job                       POST               
+/api/jumuiya/elimu/sync/jobs/<job_id>/resume                 
+jumuiya_elimu.jumuiya_elimu_sync.retry_job                        POST               
+/api/jumuiya/elimu/sync/jobs/<job_id>/retry                  
+jumuiya_elimu.jumuiya_elimu_sync.recover_jobs                     POST               
+/api/jumuiya/elimu/sync/jobs/recover                         
+jumuiya_elimu.jumuiya_elimu_sync.sync_status                      GET                /api/jumuiya/elimu/sync/status    
+                           
+jumuiya_elimu.jumuiya_elimu_timetable.list_all                    GET                /api/jumuiya/elimu/timetable      
+                           
+jumuiya_elimu.jumuiya_elimu_timetable.create                      POST               /api/jumuiya/elimu/timetable      
+                           
+jumuiya_elimu.jumuiya_elimu_timetable.get_one                     GET                
+/api/jumuiya/elimu/timetable/<timetable_id>                  
+jumuiya_elimu.jumuiya_elimu_timetable.generate                    POST               
+/api/jumuiya/elimu/timetable/<timetable_id>/generate         
+jumuiya_elimu.jumuiya_elimu_timetable.optimize                    POST               
+/api/jumuiya/elimu/timetable/<timetable_id>/optimize         
+jumuiya_elimu.jumuiya_elimu_timetable.publish                     POST               
+/api/jumuiya/elimu/timetable/<timetable_id>/publish          
+jumuiya_elimu.jumuiya_elimu_timetable.class_view                  GET                
+/api/jumuiya/elimu/timetable/class/<class_id>                
+jumuiya_elimu.jumuiya_elimu_timetable.edit_entry                  PATCH              
+/api/jumuiya/elimu/timetable/entries/<entry_id>              
+jumuiya_elimu.jumuiya_elimu_timetable.teacher_view                GET                
+/api/jumuiya/elimu/timetable/teacher/me                      
+
+
