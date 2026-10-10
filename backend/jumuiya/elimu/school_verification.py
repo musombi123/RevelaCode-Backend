@@ -14,9 +14,16 @@ from backend.jumuiya.core.audit import log_action
 from backend.jumuiya.core.database import collection
 from backend.jumuiya.core.errors import APIError
 from backend.jumuiya.elimu.models import school_document
+from backend.jumuiya.elimu.permissions import (
+    ROLE_OWNER,
+    effective_permissions,
+    role_description,
+    role_label,
+)
 
 
 SCHOOLS = "jumuiya_schools"
+MEMBERS = "jumuiya_elimu_school_members"
 
 PENDING = "pending"
 NEEDS_INFORMATION = "needs_information"
@@ -127,6 +134,116 @@ def _real_school_for_owner(user_id):
             ("created_at", -1),
         ],
     )
+
+
+
+def _school_for_membership(member):
+    """Resolve a non-owner's school using its active Elimu membership."""
+    school_id = _text((member or {}).get("school_id"))
+
+    if not school_id:
+        return None
+
+    candidates = [school_id]
+    if ObjectId.is_valid(school_id):
+        candidates.append(ObjectId(school_id))
+
+    matches = [{"_id": value} for value in candidates]
+    matches.append({"school_id": school_id})
+
+    return collection(SCHOOLS).find_one({
+        "$or": matches,
+        "is_demo": {"$ne": True},
+    })
+
+
+def _real_school_context_for_user(user_id):
+    """
+    Resolve a real school and the authenticated user's Elimu role.
+
+    Owners retain owner access. Other users must have an active school
+    membership. A verified school is preferred if several memberships exist.
+    """
+    uid = _text(user_id)
+
+    if not uid:
+        return None, None, False
+
+    owned_school = _real_school_for_owner(uid)
+
+    if owned_school:
+        owner_member = {
+            "user_id": uid,
+            "school_id": str(
+                owned_school.get("_id")
+                or owned_school.get("school_id")
+                or ""
+            ),
+            "role": ROLE_OWNER,
+            "permissions": None,
+            "status": "active",
+        }
+        return owned_school, owner_member, True
+
+    memberships = list(
+        collection(MEMBERS)
+        .find({
+            "user_id": uid,
+            "status": "active",
+        })
+        .sort([
+            ("updated_at", -1),
+            ("created_at", -1),
+        ])
+        .limit(50)
+    )
+
+    fallback = None
+
+    for member in memberships:
+        school = _school_for_membership(member)
+
+        if not school:
+            continue
+
+        context = (school, member, False)
+
+        if _is_verified_school(school):
+            return context
+
+        if fallback is None:
+            fallback = context
+
+    return fallback or (None, None, False)
+
+
+def _role_access_data(member, is_owner=False):
+    """Return the recognized role and its effective permissions."""
+    role = (
+        ROLE_OWNER
+        if is_owner
+        else _text((member or {}).get("role")).lower()
+    )
+
+    if not role:
+        raise APIError(
+            "The school membership has no assigned role.",
+            403,
+            "school_membership_role_missing",
+        )
+
+    permissions = effective_permissions(
+        role,
+        None if is_owner else (member or {}).get("permissions"),
+    )
+
+    return {
+        "role": role,
+        "role_label": role_label(role),
+        "role_description": role_description(role),
+        "permissions": sorted(permissions),
+        "is_school_owner": bool(is_owner),
+    }
 
 
 def _application_for_owner(user_id):
@@ -481,19 +598,34 @@ def create_demo_school(user_id, data):
 
 def access_status(user_id):
     """
-    The backend is the source of truth for access.
+    Return authoritative school-verification and role access.
 
-    Legacy active schools without verification metadata are NOT implicitly
-    trusted; they are presented for review instead.
+    Owners and active members of a verified real school may enter Elimu.
+    Membership alone never bypasses the school verification requirement.
     """
-    document = _real_school_for_owner(user_id)
+    document, member, is_owner = _real_school_context_for_user(user_id)
 
     if _is_verified_school(document):
+        try:
+            role_data = _role_access_data(member, is_owner)
+        except APIError:
+            return {
+                "allowed": False,
+                "has_school": True,
+                "school": _serialize_school(document),
+                "reason": "school_membership_role_invalid",
+                "redirect": {
+                    "screen": "elimu-school-verification-pending",
+                    "mode": "contact_support",
+                },
+            }
+
         return {
             "allowed": True,
             "has_school": True,
             "school": _serialize_school(document),
             "verification_status": VERIFIED,
+            **role_data,
             "redirect": None,
         }
 
@@ -511,6 +643,13 @@ def access_status(user_id):
                 "has_school": True,
                 "school": _serialize_school(demo),
                 "verification_status": DEMO,
+                "role": ROLE_OWNER,
+                "role_label": role_label(ROLE_OWNER),
+                "role_description": role_description(ROLE_OWNER),
+                "permissions": sorted(
+                    effective_permissions(ROLE_OWNER)
+                ),
+                "is_school_owner": True,
                 "demo_mode": True,
                 "redirect": None,
             }
@@ -530,12 +669,7 @@ def access_status(user_id):
     verification_status = document.get("verification_status")
     school_status = document.get("status")
 
-    # Legacy active records that have never been reviewed are treated as
-    # unverified and appear in the review queue.
-    if (
-        school_status == "active"
-        and not verification_status
-    ):
+    if school_status == "active" and not verification_status:
         verification_status = PENDING
 
     if (
@@ -581,35 +715,41 @@ def access_status(user_id):
 
 def require_accessible_school(user_id):
     """
-    Return the raw school document only if the owner is allowed to use Elimu.
-    Used by services.py as the common backend access boundary.
+    Return a verified real school for its owner or active school member.
+    Demo access remains development-only and owner-only.
     """
-    uid = str(user_id)
+    uid = _text(user_id)
 
-    conditions = [
-        {"verification_status": VERIFIED, "is_demo": {"$ne": True}},
-    ]
+    school, member, is_owner = _real_school_context_for_user(uid)
 
-    if demo_mode_enabled():
-        conditions.append({
-            "verification_status": DEMO,
+    if _is_verified_school(school):
+        try:
+            _role_access_data(member, is_owner)
+        except APIError as exc:
+            raise APIError(
+                "Your Elimu school membership role is invalid.",
+                403,
+                "school_membership_role_invalid",
+            ) from exc
+
+        return school
+
+    if not school and demo_mode_enabled():
+        demo = collection(SCHOOLS).find_one({
+            "owner_user_id": uid,
             "is_demo": True,
+            "verification_status": DEMO,
+            "status": "active",
         })
 
-    school = collection(SCHOOLS).find_one({
-        "owner_user_id": uid,
-        "status": "active",
-        "$or": conditions,
-    })
+        if demo:
+            return demo
 
-    if not school:
-        raise APIError(
-            "A verified school account is required to access the Elimu hub.",
-            403,
-            "school_required",
-        )
-
-    return school
+    raise APIError(
+        "A verified school account or active membership is required to access Elimu.",
+        403,
+        "school_required",
+    )
 
 
 def pending_applications(limit=50):
