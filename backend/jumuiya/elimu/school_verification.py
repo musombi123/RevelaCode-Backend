@@ -118,6 +118,7 @@ def demo_mode_enabled():
         "local",
         "test",
         "testing",
+        "demo",
     }
 
     return enabled and environment in allowed_environments
