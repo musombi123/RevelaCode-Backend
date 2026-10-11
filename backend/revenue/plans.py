@@ -1,12 +1,18 @@
+"""Pricing catalogue for Jumuiya OS Revenue Engine.
 
-"""Draft pricing catalog for Jumuiya OS.
-
-These plans are proposals. They must not activate paid entitlements
-until pricing is approved and payment verification is implemented.
+Static entries are safe defaults. Platform-admin-approved catalogue edits and
+new plans are stored in MongoDB, but do not enable billing or entitlements.
 """
 
-PRICING_STATUS = "draft"
+from __future__ import annotations
 
+from backend.jumuiya.core.database import collection
+
+PRICING_STATUS = "draft"
+PLANS_COLLECTION = "jumuiya_revenue_plans"
+
+# These are draft/proposed catalogue values, not proof that a plan can be paid
+# for. Paid checkout remains disabled until payment verification is implemented.
 PLANS = [
     {
         "code": "free",
@@ -59,10 +65,7 @@ PLANS = [
         "currency": "KES",
         "interval": "month",
         "status": "proposed",
-        "features": [
-            "Enhanced farm records",
-            "Additional farm alerts",
-        ],
+        "features": ["Enhanced farm records", "Additional farm alerts"],
     },
     {
         "code": "shamba_pro",
@@ -146,27 +149,74 @@ PLANS = [
     },
 ]
 
+_EDITABLE_FIELDS = ("name", "amount", "interval", "status", "features")
 
-def list_plans(hub=None):
-    """Return copies of plans, optionally filtered by hub."""
-    selected = PLANS
 
-    if hub:
-        normalized_hub = str(hub).strip().lower()
-        selected = [
-            plan for plan in PLANS
-            if plan["hub"] in {normalized_hub, "all"}
-        ]
+def _load_overrides():
+    """Load admin-managed plan documents by code."""
+    rows = collection(PLANS_COLLECTION).find({})
+    return {
+        str(row.get("code")): row
+        for row in rows
+        if row.get("code")
+    }
 
-    return [dict(plan, features=list(plan["features"])) for plan in selected]
+
+def list_plans(hub=None, *, include_retired=False):
+    """Return merged plan defaults and database-managed plans.
+
+    The ``hub`` filter still includes the shared ``all`` plan. Retired plans
+    are hidden from public catalogues by default but remain visible to admins.
+    """
+    normalized_hub = str(hub or "").strip().lower()
+    overrides = _load_overrides()
+    output = []
+    known_codes = set()
+
+    for base in PLANS:
+        code = base["code"]
+        known_codes.add(code)
+        item = dict(base)
+        override = overrides.get(code, {})
+
+        for key in _EDITABLE_FIELDS:
+            if key in override:
+                item[key] = override[key]
+
+        item["features"] = list(item.get("features") or [])
+        if not include_retired and item.get("status") == "retired":
+            continue
+        if normalized_hub and item["hub"] not in {normalized_hub, "all"}:
+            continue
+        output.append(item)
+
+    # Admin-created plans not present in the static seed catalogue.
+    for code, stored in overrides.items():
+        if code in known_codes:
+            continue
+        item = {
+            "code": code,
+            "name": stored.get("name", code),
+            "hub": stored.get("hub", "all"),
+            "amount": stored.get("amount", "0.00"),
+            "currency": "KES",
+            "interval": stored.get("interval", "month"),
+            "status": stored.get("status", "proposed"),
+            "features": list(stored.get("features") or []),
+        }
+        if not include_retired and item["status"] == "retired":
+            continue
+        if normalized_hub and item["hub"] not in {normalized_hub, "all"}:
+            continue
+        output.append(item)
+
+    return output
 
 
 def get_plan(plan_code):
-    """Find a plan by its stable code."""
+    """Find a plan by stable code, including plans marked retired."""
     normalized_code = str(plan_code or "").strip().lower()
-
-    for plan in PLANS:
+    for plan in list_plans(include_retired=True):
         if plan["code"] == normalized_code:
-            return dict(plan, features=list(plan["features"]))
-
+            return plan
     return None
