@@ -1,4 +1,4 @@
-
+﻿
 """Secure transaction-intent ledger for the Jumuiya OS Revenue Engine.
 
 This module records pending payment intents only. It does not charge
@@ -24,6 +24,7 @@ from backend.revenue.constants import (
     SUPPORTED_REVENUE_STREAMS,
 )
 from backend.revenue.money import MoneyValidationError, to_money
+from backend.revenue.plans import get_plan
 
 
 COLLECTION_NAME = "jumuiya_revenue_transactions"
@@ -114,85 +115,112 @@ def _validate_idempotency_key(value):
 
 
 def _normalize_payload(payload):
-    """Validate and normalize client-controlled intent fields."""
+    """Validate an intent, using server-managed pricing when plan_code is supplied."""
 
     if not isinstance(payload, dict):
+        raise RevenueIntentError("A JSON object is required.")
+
+    allowed_fields = {"stream", "amount", "currency", "description", "plan_code"}
+    unexpected = set(payload) - allowed_fields
+    if unexpected:
         raise RevenueIntentError(
-            "A JSON object is required."
+            "Unsupported intent fields: " + ", ".join(sorted(unexpected))
         )
 
-    allowed_fields = {
-        "stream",
-        "amount",
-        "currency",
-        "description",
-    }
+    # Subscription/upgrade interest must use the price currently stored in the
+    # platform-admin-managed catalogue. Never trust a browser-supplied amount.
+    if "plan_code" in payload:
+        if set(payload) - {"plan_code", "stream", "description"}:
+            raise RevenueIntentError(
+                "Plan intents accept only plan_code, stream, and description. The plan price is server-managed."
+            )
 
-    if set(payload) - allowed_fields:
-        raise RevenueIntentError(
-            "Only stream, amount, currency, and description are accepted."
-        )
+        code_value = payload.get("plan_code")
+        if not isinstance(code_value, str) or not code_value.strip():
+            raise RevenueIntentError("A valid plan_code is required.")
+        plan_code = code_value.strip().lower()
+        if len(plan_code) > 60:
+            raise RevenueIntentError("Plan code cannot exceed 60 characters.")
 
+        plan = get_plan(plan_code)
+        if not plan:
+            raise RevenueIntentError("The requested plan does not exist.", 404, "plan_not_found")
+        if str(plan.get("status", "proposed")).strip().lower() == "retired":
+            raise RevenueIntentError("The requested plan has been retired.", 409, "plan_retired")
+
+        plan_hub = str(plan.get("hub", "")).strip().lower()
+        requested_stream = payload.get("stream")
+        if requested_stream is None or requested_stream == "":
+            requested_stream = plan_hub
+        if not isinstance(requested_stream, str):
+            raise RevenueIntentError("A valid revenue stream is required.")
+        stream = requested_stream.strip().lower()
+        if stream not in SUPPORTED_REVENUE_STREAMS:
+            raise RevenueIntentError("Unsupported revenue stream.")
+        if plan_hub != "all" and plan_hub != stream:
+            raise RevenueIntentError("The selected plan does not belong to this revenue stream.", 400, "plan_stream_mismatch")
+
+        try:
+            amount = to_money(plan.get("amount"), allow_zero=False)
+        except MoneyValidationError as exc:
+            raise RevenueIntentError(
+                "This plan has no positive price configured for an intent request."
+            ) from None
+
+        currency_value = str(plan.get("currency", CURRENCY_DEFAULT)).strip().upper()
+        if currency_value != CURRENCY_DEFAULT:
+            raise RevenueIntentError(f"Only {CURRENCY_DEFAULT} is currently supported.")
+
+        description_value = payload.get("description", "")
+        if description_value is None:
+            description_value = ""
+        if not isinstance(description_value, str):
+            raise RevenueIntentError("Description must be text.")
+        description = description_value.strip() or f"Plan interest: {plan_code}"
+        if len(description) > 240:
+            raise RevenueIntentError("Description cannot exceed 240 characters.")
+        if any(ord(character) < 32 or ord(character) == 127 for character in description):
+            raise RevenueIntentError("Description contains invalid control characters.")
+
+        return {
+            "plan_code": plan_code,
+            "stream": stream,
+            "amount": f"{amount:.2f}",
+            "currency": currency_value,
+            "description": description,
+        }
+
+    # Compatibility path for non-plan intents. These are still unverified
+    # intents only; the values are not payment evidence or recognized revenue.
     stream_value = payload.get("stream")
-
     if not isinstance(stream_value, str):
-        raise RevenueIntentError(
-            "A valid revenue stream is required."
-        )
-
+        raise RevenueIntentError("A valid revenue stream is required.")
     stream = stream_value.strip().lower()
-
     if stream not in SUPPORTED_REVENUE_STREAMS:
-        raise RevenueIntentError(
-            "Unsupported revenue stream."
-        )
+        raise RevenueIntentError("Unsupported revenue stream.")
 
     try:
-        amount = to_money(
-            payload.get("amount"),
-            allow_zero=False,
-        )
+        amount = to_money(payload.get("amount"), allow_zero=False)
     except MoneyValidationError as exc:
         raise RevenueIntentError(str(exc)) from None
 
     currency_value = payload.get("currency", CURRENCY_DEFAULT)
-
     if not isinstance(currency_value, str):
-        raise RevenueIntentError(
-            "A valid currency is required."
-        )
-
+        raise RevenueIntentError("A valid currency is required.")
     currency = currency_value.strip().upper()
-
     if currency != CURRENCY_DEFAULT:
-        raise RevenueIntentError(
-            f"Only {CURRENCY_DEFAULT} is currently supported."
-        )
+        raise RevenueIntentError(f"Only {CURRENCY_DEFAULT} is currently supported.")
 
     description_value = payload.get("description", "")
-
     if description_value is None:
         description_value = ""
-
     if not isinstance(description_value, str):
-        raise RevenueIntentError(
-            "Description must be text."
-        )
-
+        raise RevenueIntentError("Description must be text.")
     description = description_value.strip()
-
     if len(description) > 240:
-        raise RevenueIntentError(
-            "Description cannot exceed 240 characters."
-        )
-
-    if any(
-        ord(character) < 32 or ord(character) == 127
-        for character in description
-    ):
-        raise RevenueIntentError(
-            "Description contains invalid control characters."
-        )
+        raise RevenueIntentError("Description cannot exceed 240 characters.")
+    if any(ord(character) < 32 or ord(character) == 127 for character in description):
+        raise RevenueIntentError("Description contains invalid control characters.")
 
     return {
         "stream": stream,
@@ -200,7 +228,6 @@ def _normalize_payload(payload):
         "currency": currency,
         "description": description,
     }
-
 
 def _fingerprint(normalized_payload):
     """Produce a deterministic fingerprint for idempotency comparison."""
@@ -228,6 +255,7 @@ def serialize_intent(document):
     return {
         "id": str(document.get("_id", "")),
         "stream": document.get("stream"),
+        "plan_code": document.get("plan_code"),
         "amount": document.get("amount"),
         "currency": document.get("currency", CURRENCY_DEFAULT),
         "description": document.get("description", ""),

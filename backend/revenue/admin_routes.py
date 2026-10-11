@@ -1,4 +1,4 @@
-"""Platform-admin controls for the shared Jumuiya Revenue Engine.
+﻿"""Platform-admin controls for the shared Jumuiya Revenue Engine.
 
 This blueprint is attached to the existing /api/revenue blueprint. It exposes
 admin-only intent reporting and pricing catalogue management. It never marks an
@@ -70,6 +70,7 @@ def _intent_for_admin(document):
         "id": str(document.get("_id", "")),
         "user_id": str(document.get("user_id", "")),
         "stream": document.get("stream", "unknown"),
+        "plan_code": document.get("plan_code"),
         "amount": document.get("amount", "0.00"),
         "currency": document.get("currency", "KES"),
         "description": document.get("description", ""),
