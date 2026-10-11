@@ -34,7 +34,7 @@ from backend.jumuiya.biashara.intelligence.routes.economic import (
 
 from backend.jumuiya.elimu.routes import elimu_bp
 from backend.jumuiya.community.routes import community_bp
-
+from backend.jumuiya.platform_admin_routes import platform_admin_bp
 
 # =========================================================
 # JUMUIYA REGISTRATION
@@ -247,6 +247,19 @@ def register_jumuiya(app):
 
     logger.info(
         "✅ Jumuiya Community registered."
+    )
+
+    # =====================================================
+    # PLATFORM ADMIN — CROSS-HUB PROFILE DIRECTORY
+    # =====================================================
+
+    app.register_blueprint(
+        platform_admin_bp,
+        url_prefix="/api/jumuiya/admin",
+    )
+
+    logger.info(
+        "Jumuiya Platform Admin routes registered."
     )
 
     # =====================================================
