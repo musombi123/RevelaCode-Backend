@@ -1,4 +1,4 @@
-# main.py
+﻿# main.py
 
 from __future__ import annotations
 
@@ -324,6 +324,21 @@ except Exception:
 
 
 # =========================================================
+# =========================================================
+# JUMUIYA REVENUE ENGINE
+# =========================================================
+
+try:
+    from backend.revenue import revenue_bp
+
+    app.register_blueprint(revenue_bp)
+
+    logger.info("Jumuiya Revenue Engine registered at /api/revenue")
+
+except Exception:
+    logger.exception("Jumuiya Revenue Engine registration failed")
+    raise
+
 # REVELAAI AI GATEWAY
 # =========================================================
 
