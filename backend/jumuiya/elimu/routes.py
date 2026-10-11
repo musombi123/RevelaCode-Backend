@@ -32,6 +32,8 @@ from backend.jumuiya.elimu.timetable.routes import timetable_bp
 from backend.jumuiya.elimu.automation.routes import automation_bp
 from backend.jumuiya.elimu.sync.routes import sync_bp
 from backend.jumuiya.elimu.verification_routes import verification_bp
+from backend.jumuiya.elimu.public_routes import public_bp
+from backend.jumuiya.elimu.media.routes import media_bp
 
 # =========================================================
 # BLUEPRINT
@@ -697,3 +699,7 @@ elimu_bp.register_blueprint(automation_bp)
 elimu_bp.register_blueprint(sync_bp)
 
 elimu_bp.register_blueprint(verification_bp)
+
+elimu_bp.register_blueprint(public_bp)
+
+elimu_bp.register_blueprint(media_bp)

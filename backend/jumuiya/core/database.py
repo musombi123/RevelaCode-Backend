@@ -876,6 +876,38 @@ INDEX_DEFINITIONS = {
             {"name": "ix_events_school_type_status_start"},
         ),
     ],
+
+    "jumuiya_elimu_media": [
+        (
+            [
+                ("school_id", ASCENDING),
+                ("is_published", ASCENDING),
+                ("sort_order", ASCENDING),
+                ("created_at", DESCENDING),
+            ],
+            {
+                "name": "ix_elimu_media_school_published_order"
+            },
+        ),
+        (
+            [
+                ("school_id", ASCENDING),
+                ("created_at", DESCENDING),
+            ],
+            {
+                "name": "ix_elimu_media_school_created"
+            },
+        ),
+        (
+            [
+                ("public_id", ASCENDING),
+            ],
+            {
+                "unique": True,
+                "name": "uq_elimu_media_public_id"
+            },
+        ),
+    ],
 }
 
 
