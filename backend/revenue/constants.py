@@ -1,14 +1,18 @@
-
 """Shared constants for the Jumuiya OS Revenue Engine."""
 
 from decimal import Decimal
 
 CURRENCY_DEFAULT = "KES"
 
+# These streams are request/intent categories, not proof that a payment
+# provider has collected money. Billing remains disabled until payment
+# verification and settlement are implemented.
 SUPPORTED_REVENUE_STREAMS = frozenset({
     "shamba",
     "elimu",
     "biashara",
+    "community",
+    "marketplace",
     "smart_ai",
     "advertising",
     "transaction_fees",

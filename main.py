@@ -89,7 +89,7 @@ CORS_ALLOWED_METHODS_SET = {
 
 CORS_ALLOWED_HEADERS = (
     "Accept, Content-Type, Authorization, "
-    "X-ADMIN-KEY, X-ADMIN-API-KEY, x-api-key"
+    "X-ADMIN-KEY, X-ADMIN-API-KEY, x-api-key, Idempotency-Key"
 )
 
 CORS_ALLOWED_HEADERS_SET = {
@@ -113,6 +113,7 @@ CORS(
         "X-ADMIN-KEY",
         "X-ADMIN-API-KEY",
         "x-api-key",
+        "Idempotency-Key",
     ],
     methods=[
         "GET",
@@ -720,3 +721,4 @@ if __name__ == "__main__":
         debug=os.getenv("FLASK_ENV") != "production",
         use_reloader=False,
     )
+
