@@ -148,25 +148,114 @@ def _school_slug(school) -> str:
 
 def _owned_school(user_id):
     """
-    Media management is restricted to the owner of an
-    active school account.
+    Resolve the active school that the authenticated user is
+    authorized to manage through Elimu media.
 
-    The client cannot supply or override school ownership.
+    Authorized roles:
+      - Owner of an active school.
+      - Principal with an active membership in an active school.
+
+    School identity is resolved exclusively from server-side
+    ownership or membership records. Client-supplied school IDs
+    never grant access.
     """
 
-    school = collection(SCHOOLS).find_one({
-        "owner_user_id": str(user_id),
+    uid = str(user_id or "").strip()
+
+    if not uid:
+        raise APIError(
+            "Authentication is required to manage school media.",
+            401,
+            "authentication_required",
+        )
+
+    schools = collection(SCHOOLS)
+
+    # ---------------------------------------------------------
+    # 1. School owner
+    # ---------------------------------------------------------
+    school = schools.find_one({
+        "owner_user_id": uid,
         "status": "active",
     })
 
-    if not school:
-        raise APIError(
-            "An active school account owned by your user is required.",
-            403,
-            "school_required",
-        )
+    if school:
+        return school
 
-    return school
+    # ---------------------------------------------------------
+    # 2. Active principal membership
+    # ---------------------------------------------------------
+    members = collection(
+        "jumuiya_elimu_school_members"
+    )
+
+    memberships = members.find({
+        "user_id": uid,
+        "status": "active",
+    }).limit(20)
+
+    for member in memberships:
+        role = str(member.get("role") or "").strip().lower()
+
+        # Only principals receive this additional authorization.
+        # Teachers, bursars and registrars do not inherit media
+        # management privileges from this helper.
+        if role not in {
+            "principal",
+            "school_principal",
+        }:
+            continue
+
+        membership_school_id = str(
+            member.get("school_id") or ""
+        ).strip()
+
+        if not membership_school_id:
+            continue
+
+        # Existing Elimu records may identify a school through
+        # MongoDB's ObjectId or through its string school_id.
+        school_identifiers = [
+            {"_id": membership_school_id},
+            {"school_id": membership_school_id},
+        ]
+
+        if ObjectId.is_valid(membership_school_id):
+            school_identifiers.append({
+                "_id": ObjectId(membership_school_id)
+            })
+            school_identifiers.append({
+                "school_id": ObjectId(membership_school_id)
+            })
+
+        school = schools.find_one({
+            "status": "active",
+            "$or": school_identifiers,
+        })
+
+        if not school:
+            continue
+
+        # Ensure the membership references the school actually
+        # resolved by the database query.
+        resolved_school_id = _school_id(school)
+
+        if resolved_school_id != membership_school_id:
+            school_field_id = str(
+                school.get("school_id") or ""
+            ).strip()
+
+            if school_field_id != membership_school_id:
+                continue
+
+        return school
+
+    raise APIError(
+        "An active school owner account or an active principal "
+        "membership in an active school is required to manage media.",
+        403,
+        "school_media_permission_denied",
+    )
 
 
 def _configure_cloudinary():
