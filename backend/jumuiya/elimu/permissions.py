@@ -33,12 +33,14 @@ CLASSES = "jumuiya_classes"
 # =========================================================
 
 ROLE_OWNER = "owner"
+ROLE_PRINCIPAL = "principal"
 ROLE_BURSAR = "bursar"
 ROLE_REGISTRAR = "registrar"
 ROLE_TEACHER = "teacher"
 
 ROLES = (
     ROLE_OWNER,
+    ROLE_PRINCIPAL,
     ROLE_BURSAR,
     ROLE_REGISTRAR,
     ROLE_TEACHER,
@@ -47,6 +49,7 @@ ROLES = (
 
 ROLE_LABELS = {
     ROLE_OWNER: "School Owner",
+    ROLE_PRINCIPAL: "School Principal",
     ROLE_BURSAR: "Bursar",
     ROLE_REGISTRAR: "Registrar",
     ROLE_TEACHER: "Teacher",
@@ -57,7 +60,15 @@ ROLE_DESCRIPTIONS = {
     ROLE_OWNER: (
         "Full control of the school's Elimu administration, "
         "staff, academics, finance, settings, synchronization "
-        "and automation."
+        "and automation. Ownership-specific actions remain "
+        "reserved for the School Owner."
+    ),
+    ROLE_PRINCIPAL: (
+        "School-wide operational leadership with the same "
+        "default Elimu operational permissions as the School "
+        "Owner, including staff, academics, finance, settings, "
+        "synchronization and automation. Ownership-specific "
+        "actions remain reserved for the School Owner."
     ),
     ROLE_BURSAR: (
         "School finance and fee administration with controlled "
@@ -210,7 +221,20 @@ ROLE_PERMISSIONS = {
     # OWNER
     # ---------------------------------------------------------
 
-    ROLE_OWNER: set[str](PERMISSIONS),
+    ROLE_OWNER: set(PERMISSIONS),
+
+    # ---------------------------------------------------------
+    # PRINCIPAL
+    #
+    # The principal receives the same default operational
+    # permissions as the owner.
+    #
+    # Ownership-specific endpoints must continue to use
+    # require_owner() rather than relying on this permission
+    # mapping.
+    # ---------------------------------------------------------
+
+    ROLE_PRINCIPAL: set(PERMISSIONS),
 
     # ---------------------------------------------------------
     # BURSAR
@@ -1159,6 +1183,14 @@ def require_role(
 # =========================================================
 
 def require_owner(fn):
+    """
+    Restrict an endpoint to the actual School Owner role.
+
+    A Principal has owner-equivalent default operational
+    permissions but does not automatically satisfy this
+    owner-only role check.
+    """
+
     return require_role(
         ROLE_OWNER
     )(fn)
