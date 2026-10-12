@@ -21,6 +21,7 @@ POST_TYPES = {
     "discussion",
     "question",
     "announcement",
+    "advertisement",
     "opportunity",
     "job",
     "event",
@@ -234,6 +235,11 @@ def post_document(
     if post_type not in POST_TYPES:
         raise ValueError(
             "Invalid community post type."
+        )
+
+    if post_type == "advertisement" and hub != "community":
+        raise ValueError(
+            "Advertisements can only be published in the Community hub."
         )
 
     # -----------------------------------------------------

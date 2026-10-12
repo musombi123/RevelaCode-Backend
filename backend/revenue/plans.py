@@ -147,6 +147,34 @@ PLANS = [
             "Expanded reporting and controls",
         ],
     },
+    {
+        "code": "marketplace_starter",
+        "name": "Marketplace Starter",
+        "hub": "marketplace",
+        "amount": "99.00",
+        "currency": "KES",
+        "interval": "month",
+        "status": "proposed",
+        "features": [
+            "Marketplace seller profile and listing tools",
+            "Product and service listing management",
+            "Buyer inquiry handling",
+        ],
+    },
+    {
+        "code": "community_ads_campaign",
+        "name": "Community Ads Campaign",
+        "hub": "advertising",
+        "amount": "100.00",
+        "currency": "KES",
+        "interval": "one_time",
+        "status": "proposed",
+        "features": [
+            "Community advertising campaign request",
+            "Ad creative and campaign details submitted for review",
+            "Placement is not automatic; billing remains disabled",
+        ],
+    },
 ]
 
 _EDITABLE_FIELDS = ("name", "amount", "interval", "status", "features")
