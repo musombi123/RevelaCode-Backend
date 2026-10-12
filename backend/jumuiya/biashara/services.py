@@ -76,6 +76,15 @@ def serialise_many(docs):
     ]
 
 
+def _bounded_list_limit(value=50):
+    """Clamp list sizes even when a service is called without a route validator."""
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        parsed = 50
+    return min(max(parsed, 1), 100)
+
+
 # =========================================================
 # SLUGS
 # =========================================================
@@ -308,36 +317,34 @@ def list_products(
     user_id,
     status=None,
     category=None,
+    search=None,
+    limit=50,
 ):
-
-    business = _require_business(
-        user_id
-    )
-
-    query = {
-        "business_id": business["id"]
-    }
+    """List this business's products with filtering and a bounded limit."""
+    business = _require_business(user_id)
+    query = {"business_id": business["id"]}
 
     if status:
         query["status"] = status
-
     if category:
         query["category"] = category
 
-    documents = (
-        collection(
-            "jumuiya_products"
-        )
-        .find(query)
-        .sort(
-            "created_at",
-            -1,
-        )
-    )
+    search_text = str(search or "").strip()
+    if search_text:
+        expression = {"$regex": re.escape(search_text), "$options": "i"}
+        query["$or"] = [
+            {"name": expression},
+            {"sku": expression},
+            {"category": expression},
+        ]
 
-    return serialise_many(
-        documents
+    documents = (
+        collection("jumuiya_products")
+        .find(query)
+        .sort("created_at", -1)
+        .limit(_bounded_list_limit(limit))
     )
+    return serialise_many(documents)
 
 
 def update_product(
@@ -689,68 +696,34 @@ def create_customer(
 def list_customers(
     user_id,
     search=None,
+    limit=50,
 ):
+    """List this business's customers with search and bounded pagination."""
+    business = _require_business(user_id)
+    query = {"business_id": business["id"]}
 
-    business = _require_business(
-        user_id
-    )
-
-    query = {
-        "business_id": business["id"]
-    }
-
-    if search:
-
-        search = search.strip()
-
-        if search:
-
-            query["$or"] = [
-                {
-                    "name": {
-                        "$regex": re.escape(
-                            search
-                        ),
-                        "$options": "i",
-                    }
-                },
-                {
-                    "phone": {
-                        "$regex": re.escape(
-                            search
-                        ),
-                        "$options": "i",
-                    }
-                },
-                {
-                    "email": {
-                        "$regex": re.escape(
-                            search
-                        ),
-                        "$options": "i",
-                    }
-                },
-            ]
+    search_text = str(search or "").strip()
+    if search_text:
+        expression = {"$regex": re.escape(search_text), "$options": "i"}
+        query["$or"] = [
+            {"name": expression},
+            {"phone": expression},
+            {"email": expression},
+        ]
 
     documents = (
-        collection(
-            "jumuiya_customers"
-        )
+        collection("jumuiya_customers")
         .find(query)
-        .sort(
-            "created_at",
-            -1,
-        )
+        .sort("created_at", -1)
+        .limit(_bounded_list_limit(limit))
     )
-
-    return serialise_many(
-        documents
-    )
+    return serialise_many(documents)
 
 
 # =========================================================
 # ORDERS
 # =========================================================
+
 
 def create_order(
     user_id,
@@ -847,33 +820,22 @@ def create_order(
 def list_orders(
     user_id,
     status=None,
+    limit=50,
 ):
-
-    business = _require_business(
-        user_id
-    )
-
-    query = {
-        "business_id": business["id"]
-    }
+    """List this business's orders with optional status and bounded limit."""
+    business = _require_business(user_id)
+    query = {"business_id": business["id"]}
 
     if status:
         query["status"] = status
 
     documents = (
-        collection(
-            "jumuiya_orders"
-        )
+        collection("jumuiya_orders")
         .find(query)
-        .sort(
-            "created_at",
-            -1,
-        )
+        .sort("created_at", -1)
+        .limit(_bounded_list_limit(limit))
     )
-
-    return serialise_many(
-        documents
-    )
+    return serialise_many(documents)
 
 
 def get_order(

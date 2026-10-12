@@ -4,7 +4,10 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, jsonify, request, g
+
+from bson import ObjectId
+from bson.errors import InvalidId
 from flask_cors import cross_origin
 
 from backend.db import db
@@ -217,191 +220,149 @@ def find_user_by_contact(
     )
 
 
+def find_user_by_id(user_id):
+    """Resolve a known authenticated user ID against the users collection."""
+    if user_id is None:
+        return None
+
+    value = str(user_id).strip()
+    if not value:
+        return None
+
+    try:
+        object_id = ObjectId(value)
+    except (InvalidId, TypeError, ValueError):
+        object_id = None
+
+    if object_id is not None:
+        user = users_col.find_one({"_id": object_id})
+        if user:
+            return user
+
+    user = users_col.find_one({"user_id": value})
+    if user:
+        return user
+
+    return users_col.find_one({"id": value})
+
+
+def history_update_filter(user, identity=None):
+    """Build the update selector from the actual matched user document."""
+    identity = identity if isinstance(identity, dict) else {}
+    if isinstance(user, dict) and user.get("_id") is not None:
+        return {"_id": user["_id"]}
+
+    for key in ("user_id", "id", "contact", "email"):
+        value = (user or {}).get(key) or identity.get(key)
+        if value:
+            return {key: value}
+
+    raise ValueError("Cannot safely identify the history owner document.")
+
+
 # =========================================================
 # COMMON HANDLER
 # =========================================================
 
 def handle_history_request():
+    """Handle history using the verified Jumuiya identity for Bearer JWTs.
+
+    The old raw-contact authorization style remains supported only for
+    legacy clients that do not send a Bearer token.
     """
-    Shared implementation for:
+    authorization = request.headers.get("Authorization", "").strip()
+    identity = getattr(g, "jumuiya_user", None)
 
-        GET    /api/user/history
-        POST   /api/user/history
-        DELETE /api/user/history
+    if isinstance(identity, dict) and identity.get("id"):
+        user = find_user_by_id(identity.get("id"))
+        if not user:
+            return jsonify({
+                "success": False,
+                "history": [],
+                "message": "Authenticated user record was not found.",
+            }), 404
+        user_filter = history_update_filter(user, identity)
+    else:
+        # Never reinterpret a failed/expired Bearer JWT as a legacy contact.
+        if authorization.lower().startswith("bearer "):
+            return jsonify({
+                "success": False,
+                "history": [],
+                "message": "Unauthorized",
+            }), 401
 
-    and the legacy compatibility route:
+        contact = authorization
+        if not contact:
+            return jsonify({
+                "success": False,
+                "history": [],
+                "message": "Unauthorized",
+            }), 401
 
-        GET    /history
-        POST   /history
-        DELETE /history
-    """
+        user = find_user_by_contact(contact)
+        if not user:
+            return jsonify({
+                "success": False,
+                "history": [],
+                "message": "User not found",
+            }), 404
+        user_filter = history_update_filter(user, {"contact": contact})
 
-    # -----------------------------------------------------
-    # AUTHORIZATION
-    # -----------------------------------------------------
-
-    contact = get_authorized_contact()
-
-    if not contact:
-
-        return jsonify({
-            "success": False,
-            "history": [],
-            "message": "Unauthorized",
-        }), 401
-
-    # -----------------------------------------------------
-    # USER LOOKUP
-    # -----------------------------------------------------
-
-    user = find_user_by_contact(
-        contact
-    )
-
-    if not user:
-
-        return jsonify({
-            "success": False,
-            "history": [],
-            "message": "User not found",
-        }), 404
-
-    # -----------------------------------------------------
-    # SANITIZE USER
-    # -----------------------------------------------------
-
-    user = sanitize_user_doc(
-        user
-    )
-
-    current_history = user.get(
-        "history",
-        [],
-    )
-
-    if not isinstance(
-        current_history,
-        list,
-    ):
+    # Capture the selector before sanitizing `_id` for JSON serialization.
+    user = sanitize_user_doc(user)
+    current_history = user.get("history", [])
+    if not isinstance(current_history, list):
         current_history = []
 
-    # =====================================================
-    # GET
-    # =====================================================
-
     if request.method == "GET":
-
         return jsonify({
             "success": True,
             "history": current_history,
         }), 200
 
-    # =====================================================
-    # POST
-    # =====================================================
-
     if request.method == "POST":
-
-        entry = request.get_json(
-            silent=True
-        )
-
-        if not isinstance(
-            entry,
-            dict,
-        ) or not entry:
-
+        entry = request.get_json(silent=True)
+        if not isinstance(entry, dict) or not entry:
             return jsonify({
                 "success": False,
                 "history": current_history,
-                "message": (
-                    "No history entry provided"
-                ),
+                "message": "No history entry provided",
             }), 400
 
-        # -----------------------------------------------
-        # Copy the existing list so Mongo/user state is
-        # not mutated unexpectedly.
-        # -----------------------------------------------
-
-        history_list = list(
-            current_history
-        )
-
-        # -----------------------------------------------
-        # Timestamp
-        # -----------------------------------------------
-
         timestamp = (
-            request.headers.get(
-                "X-Timestamp"
-            )
-            or entry.get(
-                "timestamp"
-            )
+            request.headers.get("X-Timestamp")
+            or entry.get("timestamp")
             or utc_now()
         )
-
-        new_entry = {
-            **entry,
-            "timestamp": timestamp,
-        }
-
-        history_list.append(
-            new_entry
-        )
-
-        # -----------------------------------------------
-        # Persist
-        # -----------------------------------------------
+        new_entry = {**entry, "timestamp": timestamp}
+        history_list = list(current_history)
+        history_list.append(new_entry)
 
         users_col.update_one(
-            {
-                "contact": contact
-            },
-            {
-                "$set": {
-                    "history": history_list
-                }
-            },
+            user_filter,
+            {"$set": {"history": history_list}},
         )
-
         return jsonify({
             "success": True,
             "history": history_list,
         }), 201
 
-    # =====================================================
-    # DELETE
-    # =====================================================
-
     if request.method == "DELETE":
-
         users_col.update_one(
-            {
-                "contact": contact
-            },
-            {
-                "$set": {
-                    "history": []
-                }
-            },
+            user_filter,
+            {"$set": {"history": []}},
         )
-
         return jsonify({
             "success": True,
             "history": [],
         }), 200
-
-    # =====================================================
-    # METHOD FALLBACK
-    # =====================================================
 
     return jsonify({
         "success": False,
         "history": current_history,
         "message": "Method not allowed",
     }), 405
+
 
 
 # =========================================================
