@@ -135,6 +135,33 @@ def _list(
     )
 
 
+def _media_attachments(data):
+    raw = data.get("attachments", [])
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        raise ValueError("attachments must be a list.")
+    if len(raw) > 4:
+        raise ValueError("A post can contain no more than 4 media attachments.")
+
+    cleaned = []
+    seen = set()
+    for index, item in enumerate(raw):
+        if not isinstance(item, dict):
+            raise ValueError(f"attachments[{index}] must be an object.")
+        media_id = item.get("media_id") or item.get("id")
+        if not isinstance(media_id, str) or not media_id.strip():
+            raise ValueError(f"attachments[{index}].media_id is required.")
+        media_id = media_id.strip()
+        if len(media_id) > 100:
+            raise ValueError(f"attachments[{index}].media_id is invalid.")
+        if media_id in seen:
+            continue
+        seen.add(media_id)
+        cleaned.append({"media_id": media_id})
+    return cleaned
+
+
 # =========================================================
 # CREATE POST
 # =========================================================
@@ -223,6 +250,8 @@ def create_post_payload(data):
         "source": source,
 
         "action": action,
+
+        "attachments": _media_attachments(data),
     }
 
 

@@ -2,9 +2,20 @@
 
 from __future__ import annotations
 
+import os
+import tempfile
+from datetime import datetime, timezone
+from pathlib import Path
+from uuid import uuid4
+
+import cloudinary
+from cloudinary import uploader
+from PIL import Image, UnidentifiedImageError
 from flask import Blueprint, request
 
 from backend.jumuiya.core.errors import APIError
+from backend.jumuiya.core.audit import log_action
+from backend.jumuiya.core.database import collection
 from backend.jumuiya.core.permissions import (
     require_authenticated,
     current_user_id,
@@ -415,6 +426,214 @@ def get_pulse():
             mode=mode,
         )
     )
+
+
+# =========================================================
+# COMMUNITY MEDIA UPLOAD
+# =========================================================
+
+COMMUNITY_MEDIA_COLLECTION = "jumuiya_community_media"
+COMMUNITY_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
+COMMUNITY_VIDEO_EXTENSIONS = {".mp4", ".mov", ".m4v", ".webm"}
+COMMUNITY_IMAGE_MAX_BYTES = 12 * 1024 * 1024
+COMMUNITY_VIDEO_MAX_BYTES = 50 * 1024 * 1024
+
+
+def _configure_community_cloudinary():
+    cloudinary_url = os.getenv("CLOUDINARY_URL", "").strip()
+    if cloudinary_url:
+        cloudinary.config(secure=True)
+        return
+
+    cloud_name = os.getenv("CLOUDINARY_CLOUD_NAME", "").strip()
+    api_key = os.getenv("CLOUDINARY_API_KEY", "").strip()
+    api_secret = os.getenv("CLOUDINARY_API_SECRET", "").strip()
+    if not all((cloud_name, api_key, api_secret)):
+        raise APIError(
+            "Community media storage is not configured. Configure Cloudinary on the backend.",
+            503,
+            "media_storage_not_configured",
+        )
+
+    cloudinary.config(
+        cloud_name=cloud_name,
+        api_key=api_key,
+        api_secret=api_secret,
+        secure=True,
+    )
+
+
+def _community_media_response(document):
+    return {
+        "id": str(document["_id"]),
+        "url": document.get("secure_url", ""),
+        "file_name": document.get("file_name", "media"),
+        "kind": document.get("kind", "image"),
+        "mime_type": document.get("mime_type", ""),
+        "format": document.get("format", ""),
+        "size_bytes": int(document.get("size_bytes", 0) or 0),
+        "created_at": document.get("created_at").isoformat()
+        if isinstance(document.get("created_at"), datetime)
+        else None,
+    }
+
+
+@community_bp.post("/media/upload")
+@require_authenticated
+def upload_community_media():
+    """Upload an image/video for an authenticated Community post."""
+    user_id = str(current_user_id())
+    upload = request.files.get("file")
+
+    if not upload or not upload.filename:
+        raise APIError("Choose an image or video to upload.", 400, "media_file_required")
+
+    file_name = Path(upload.filename.replace("\\", "/")).name[:180]
+    extension = Path(file_name).suffix.lower()
+    if extension in COMMUNITY_IMAGE_EXTENSIONS:
+        kind = "image"
+        resource_type = "image"
+        max_bytes = COMMUNITY_IMAGE_MAX_BYTES
+    elif extension in COMMUNITY_VIDEO_EXTENSIONS:
+        kind = "video"
+        resource_type = "video"
+        max_bytes = COMMUNITY_VIDEO_MAX_BYTES
+    else:
+        raise APIError(
+            "Supported files are JPG, PNG, WEBP, GIF, MP4, MOV, M4V and WEBM.",
+            422,
+            "unsupported_media_type",
+        )
+
+    if request.content_length and request.content_length > max_bytes + 1024 * 1024:
+        raise APIError("The uploaded file is too large.", 413, "media_file_too_large")
+
+    _configure_community_cloudinary()
+    temp_path = None
+    cloud_public_id = None
+    cloud_resource_type = resource_type
+
+    try:
+        with tempfile.NamedTemporaryFile(
+            prefix="community-media-",
+            suffix=extension,
+            delete=False,
+        ) as temporary:
+            temp_path = temporary.name
+            total_bytes = 0
+            while True:
+                chunk = upload.stream.read(1024 * 1024)
+                if not chunk:
+                    break
+                total_bytes += len(chunk)
+                if total_bytes > max_bytes:
+                    raise APIError(
+                        "The uploaded file exceeds the allowed size.",
+                        413,
+                        "media_file_too_large",
+                    )
+                temporary.write(chunk)
+
+        if not total_bytes:
+            raise APIError("The uploaded file is empty.", 422, "empty_media_file")
+
+        if kind == "image":
+            try:
+                with Image.open(temp_path) as image:
+                    detected = str(image.format or "").upper()
+                    permitted = {
+                        "JPEG": {".jpg", ".jpeg"},
+                        "PNG": {".png"},
+                        "WEBP": {".webp"},
+                        "GIF": {".gif"},
+                    }
+                    if extension not in permitted.get(detected, set()):
+                        raise APIError(
+                            "Image content does not match its file extension.",
+                            422,
+                            "invalid_image_format",
+                        )
+                    image.verify()
+            except APIError:
+                raise
+            except (UnidentifiedImageError, OSError, ValueError):
+                raise APIError("The uploaded image is invalid.", 422, "invalid_image_file")
+
+        cloud_result = uploader.upload(
+            temp_path,
+            resource_type=resource_type,
+            folder="revelacode/community",
+            public_id=uuid4().hex,
+            overwrite=False,
+            unique_filename=False,
+            use_filename=False,
+        )
+        secure_url = str(cloud_result.get("secure_url") or "")
+        cloud_public_id = cloud_result.get("public_id")
+        if not secure_url.startswith("https://") or not cloud_public_id:
+            raise APIError(
+                "The media provider returned an invalid upload result.",
+                502,
+                "media_storage_invalid_response",
+            )
+
+        document = {
+            "uploaded_by_user_id": user_id,
+            "file_name": file_name,
+            "kind": kind,
+            "mime_type": str(upload.mimetype or ""),
+            "format": str(cloud_result.get("format") or extension.lstrip(".")),
+            "size_bytes": int(cloud_result.get("bytes") or total_bytes),
+            "secure_url": secure_url,
+            "public_id": cloud_public_id,
+            "resource_type": resource_type,
+            "created_at": datetime.now(timezone.utc),
+        }
+
+        inserted = collection(COMMUNITY_MEDIA_COLLECTION).insert_one(document)
+        document["_id"] = inserted.inserted_id
+
+        try:
+            log_action(
+                user_id,
+                "community.media.uploaded",
+                "community_media",
+                inserted.inserted_id,
+                {"kind": kind, "size_bytes": document["size_bytes"]},
+            )
+        except Exception:
+            # Audit failure must not invalidate a successful, already-persisted upload.
+            pass
+
+        from backend.jumuiya.core.responses import created
+        return created(
+            {"attachment": _community_media_response(document)},
+            "Community media uploaded.",
+        )
+
+    except APIError:
+        raise
+    except Exception as exc:
+        if cloud_public_id:
+            try:
+                uploader.destroy(
+                    cloud_public_id,
+                    resource_type=cloud_resource_type,
+                    invalidate=True,
+                )
+            except Exception:
+                pass
+        raise APIError(
+            "Community media upload failed. Check Cloudinary configuration and try again.",
+            502,
+            "media_upload_failed",
+        ) from exc
+    finally:
+        if temp_path:
+            try:
+                os.unlink(temp_path)
+            except OSError:
+                pass
 
 
 # =========================================================

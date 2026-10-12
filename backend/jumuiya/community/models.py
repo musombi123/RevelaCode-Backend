@@ -432,6 +432,8 @@ def post_document(
 
         "action": action_document,
 
+        "attachments": data.get("attachments", []),
+
         "status": "published",
 
         # Engagement counters.

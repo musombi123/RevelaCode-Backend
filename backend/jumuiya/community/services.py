@@ -31,6 +31,7 @@ from backend.jumuiya.notifications import (
 # =========================================================
 
 POSTS = "jumuiya_community_posts"
+COMMUNITY_MEDIA = "jumuiya_community_media"
 COMMENTS = "jumuiya_community_comments"
 REACTIONS = "jumuiya_community_reactions"
 PROFILES = "jumuiya_profiles"
@@ -1052,6 +1053,51 @@ def _published_post(
     )
 
 
+def _validate_community_attachments(
+    user_id: str,
+    attachments: Any,
+) -> list[dict[str, Any]]:
+    """Resolve uploaded media IDs and enforce per-user ownership."""
+    if not attachments:
+        return []
+    if not isinstance(attachments, list) or len(attachments) > 4:
+        raise APIError(
+            "A post can contain no more than 4 media attachments.",
+            422,
+            "invalid_attachments",
+        )
+
+    validated = []
+    for item in attachments:
+        if not isinstance(item, dict):
+            raise APIError("Invalid media attachment.", 422, "invalid_attachments")
+        media_id = item.get("media_id") or item.get("id")
+        media = collection(COMMUNITY_MEDIA).find_one({
+            "_id": cid(media_id),
+            "uploaded_by_user_id": str(user_id),
+        })
+        if not media:
+            raise APIError(
+                "A media attachment was not found or was not uploaded by your account.",
+                403,
+                "media_attachment_access_denied",
+            )
+        url = str(media.get("secure_url") or "")
+        if not url.startswith("https://"):
+            raise APIError("The uploaded media URL is invalid.", 422, "invalid_media_url")
+
+        validated.append({
+            "id": str(media["_id"]),
+            "url": url,
+            "file_name": str(media.get("file_name") or "Community media"),
+            "kind": str(media.get("kind") or "image"),
+            "mime_type": str(media.get("mime_type") or ""),
+            "format": str(media.get("format") or ""),
+            "size_bytes": int(media.get("size_bytes", 0) or 0),
+        })
+    return validated
+
+
 # =========================================================
 # CREATE POST
 # =========================================================
@@ -1074,6 +1120,11 @@ def create_post(
 
     payload = _ensure_post_type(
         data
+    )
+
+    payload["attachments"] = _validate_community_attachments(
+        user_id,
+        payload.get("attachments", []),
     )
 
     hub = str(
