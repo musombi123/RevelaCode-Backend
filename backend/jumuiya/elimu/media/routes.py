@@ -34,12 +34,14 @@ from backend.jumuiya.core.responses import (
     ok,
     updated,
 )
+from backend.jumuiya.elimu import school_verification
 
 
 logger = logging.getLogger("jumuiya.elimu.media")
 
 SCHOOLS = "jumuiya_schools"
 MEDIA = "jumuiya_elimu_media"
+SCHOOL_DOCUMENTS = "jumuiya_elimu_public_documents"
 
 media_bp = Blueprint(
     "jumuiya_elimu_media",
@@ -84,6 +86,15 @@ CATEGORIES = {
 
 IMAGE_MAX_BYTES = 12 * 1024 * 1024
 VIDEO_MAX_BYTES = 80 * 1024 * 1024
+DOCUMENT_MAX_BYTES = 25 * 1024 * 1024
+DOCUMENT_EXTENSIONS = {
+    ".pdf", ".doc", ".docx", ".xls", ".xlsx",
+    ".ppt", ".pptx", ".csv", ".txt",
+}
+DOCUMENT_CATEGORIES = {
+    "fees", "forms", "calendar", "handbook",
+    "admissions", "notices", "other",
+}
 
 
 # =========================================================
@@ -884,6 +895,168 @@ def upload_school_media():
                 logger.warning(
                     "Could not remove temporary media file."
                 )
+
+
+# =========================================================
+# SCHOOL MEMBER: UPLOAD A DOCUMENT FOR REVIEW
+# =========================================================
+
+@media_bp.post("/upload-document")
+@require_authenticated
+def upload_school_document():
+    """Upload a school document and register it as a private draft."""
+    user_id = str(current_user_id() or "").strip()
+    school = school_verification.require_accessible_school(user_id)
+
+    if (
+        not school
+        or school.get("status") != "active"
+        or school.get("verification_status") != "verified"
+        or school.get("is_demo") is True
+    ):
+        raise APIError(
+            "A verified, active school account is required to submit documents.",
+            403,
+            "verified_school_required",
+        )
+
+    upload = request.files.get("file")
+    if not upload or not upload.filename:
+        raise APIError(
+            "Choose a document file to upload.",
+            400,
+            "document_file_required",
+        )
+
+    filename = Path(upload.filename.replace("\\", "/")).name
+    extension = Path(filename).suffix.lower()
+    if extension not in DOCUMENT_EXTENSIONS:
+        raise APIError(
+            "Supported documents are PDF, Word, Excel, PowerPoint, CSV and TXT files.",
+            422,
+            "unsupported_document_type",
+        )
+
+    title = _required_text(
+        request.form.get("title") or Path(filename).stem.replace("_", " "),
+        "title",
+        200,
+    )
+    description = _optional_text(
+        request.form.get("description", ""),
+        "description",
+        2000,
+    )
+    category = str(request.form.get("category") or "other").strip().lower()
+    if category not in DOCUMENT_CATEGORIES:
+        raise APIError(
+            "Choose a supported school document category.",
+            422,
+            "invalid_document_category",
+        )
+
+    school_id = _school_id(school)
+    now = now_utc()
+    temp_path = None
+    cloud_result = None
+
+    try:
+        _configure_cloudinary()
+        temp_path, byte_count = _copy_upload_to_temp(
+            upload,
+            extension,
+            DOCUMENT_MAX_BYTES,
+        )
+
+        # Raw delivery keeps PDFs and office documents downloadable as files.
+        raw_public_id = f"{uuid4().hex}{extension}"
+        cloud_result = uploader.upload(
+            temp_path,
+            resource_type="raw",
+            folder=f"revelacode/elimu/schools/{school_id}/documents",
+            public_id=raw_public_id,
+            overwrite=False,
+            unique_filename=False,
+            use_filename=False,
+        )
+        secure_url = cloud_result.get("secure_url")
+        public_id = cloud_result.get("public_id")
+        if not secure_url or not public_id:
+            raise APIError(
+                "The storage provider returned an incomplete document URL.",
+                502,
+                "document_storage_invalid_response",
+            )
+
+        document = {
+            "school_id": school_id,
+            "title": title,
+            "description": description,
+            "category": category,
+            "filename": filename,
+            "file_type": extension.lstrip("."),
+            "file_size": int(cloud_result.get("bytes", byte_count)),
+            "download_url": secure_url,
+            "cloudinary_public_id": public_id,
+            "cloudinary_resource_type": "raw",
+            "status": "draft",
+            "is_public": False,
+            "created_by_user_id": user_id,
+            "created_at": now,
+            "updated_at": now,
+            "published_at": None,
+        }
+
+        try:
+            result = collection(SCHOOL_DOCUMENTS).insert_one(document)
+        except Exception as db_error:
+            try:
+                uploader.destroy(
+                    public_id,
+                    resource_type="raw",
+                    invalidate=True,
+                )
+            except Exception:
+                logger.exception("Cloudinary cleanup failed after document metadata save failed.")
+            raise APIError(
+                "The file uploaded, but the school document record could not be saved.",
+                500,
+                "document_metadata_save_failed",
+            ) from db_error
+
+        return created(
+            {
+                "document": {
+                    "id": str(result.inserted_id),
+                    "title": title,
+                    "description": description,
+                    "category": category,
+                    "filename": filename,
+                    "file_type": extension.lstrip("."),
+                    "file_size": int(cloud_result.get("bytes", byte_count)),
+                    "status": "draft",
+                    "is_public": False,
+                    "created_at": now.isoformat(),
+                }
+            },
+            "Document uploaded and submitted as a private draft for review.",
+        )
+
+    except APIError:
+        raise
+    except Exception as exc:
+        logger.exception("Elimu document upload failed for school %s.", school_id)
+        raise APIError(
+            "Document upload failed. Check the file and storage configuration.",
+            502,
+            "document_upload_failed",
+        ) from exc
+    finally:
+        if temp_path:
+            try:
+                os.unlink(temp_path)
+            except OSError:
+                logger.warning("Could not remove temporary school document file.")
 
 
 # =========================================================

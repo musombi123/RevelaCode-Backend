@@ -342,6 +342,33 @@ def _verified_school_by_id(school_id):
     })
 
 
+def _current_school_document_context():
+    """Resolve the current verified school and whether the requester owns it."""
+    user_id = str(current_user_id() or "").strip()
+    if not user_id:
+        raise APIError(
+            "Authentication is required.",
+            401,
+            "authentication_required",
+        )
+
+    school = school_verification.require_accessible_school(user_id)
+    if (
+        not school
+        or school.get("status") != "active"
+        or school.get("verification_status") != VERIFIED
+        or school.get("is_demo") is True
+    ):
+        raise APIError(
+            "A verified, active school account is required for document submissions.",
+            403,
+            "verified_school_required",
+        )
+
+    is_owner = str(school.get("owner_user_id", "")) == user_id
+    return school, is_owner
+
+
 def _current_owner_school():
     """
     Require an authenticated owner of a verified real school.
@@ -485,12 +512,13 @@ def _document_host_allowlist():
     }
 
     # Same-host files can be used without adding the backend hostname
-    # separately. Other storage hosts must be explicitly configured.
+    # separately. Cloudinary is trusted because Elimu uploads documents there.
     request_host = (request.host or "").split(":", 1)[0].strip().lower()
 
     if request_host:
         hosts.add(request_host)
 
+    hosts.add("res.cloudinary.com")
     return hosts
 
 
@@ -1217,7 +1245,7 @@ def save_owner_website_settings():
 @public_bp.get("/documents/manage")
 @require_authenticated
 def list_managed_documents():
-    school = _current_owner_school()
+    school, _is_owner = _current_school_document_context()
 
     documents = list(
         collection(DOCUMENTS)
@@ -1238,14 +1266,8 @@ def list_managed_documents():
 @public_bp.post("/documents/manage")
 @require_authenticated
 def create_managed_document():
-    """
-    Register an already-hosted file as a school document.
-
-    This endpoint stores metadata and an approved HTTPS storage URL;
-    it does not upload the PDF bytes. Actual uploads require a configured
-    storage provider or an additional upload endpoint.
-    """
-    school = _current_owner_school()
+    """Register an HTTPS-hosted document as a draft for school review."""
+    school, is_owner = _current_school_document_context()
     payload = _json_body()
     now = datetime.now(timezone.utc)
 
@@ -1263,6 +1285,11 @@ def create_managed_document():
     data.setdefault("file_size", None)
     data.setdefault("is_public", False)
     data.setdefault("status", "draft")
+
+    # Staff may submit resources, but only the owner can decide to publish them.
+    if not is_owner:
+        data["is_public"] = False
+        data["status"] = "draft"
 
     if data["status"] == PUBLISHED and not data["is_public"]:
         raise APIError(
@@ -1285,7 +1312,7 @@ def create_managed_document():
 
     return ok({
         "document": _document_metadata(document),
-    }, "School document registered.")
+    }, "School document registered for review.")
 
 
 @public_bp.patch("/documents/manage/<document_id>")
