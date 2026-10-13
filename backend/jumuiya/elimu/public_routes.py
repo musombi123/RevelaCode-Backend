@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import re
 from datetime import date, datetime, timezone
 from urllib.parse import urlparse
 
@@ -195,6 +196,14 @@ def _public_school_profile(school):
         "name",
         "school_type",
         "description",
+        "public_description",
+        "about",
+        "about_school",
+        "homepage_title",
+        "cover_image_url",
+        "curriculum",
+        "established_year",
+        "address",
         "motto",
         "mission",
         "vision",
@@ -1035,6 +1044,171 @@ def update_public_profile_setting():
         },
     }, "Public school profile setting updated.")
 
+
+# ============================================================
+# SCHOOL OWNER: PUBLIC WEBSITE SETTINGS
+# ============================================================
+
+_WEBSITE_TEXT_LIMITS = {
+    "public_slug": 80,
+    "description": 3000,
+    "public_description": 3000,
+    "about": 4000,
+    "about_school": 4000,
+    "homepage_title": 180,
+    "motto": 300,
+    "mission": 2000,
+    "vision": 2000,
+    "principal_name": 160,
+    "phone": 50,
+    "email": 254,
+    "website": 500,
+    "postal_address": 300,
+    "location": 200,
+    "county": 100,
+    "town": 100,
+    "country": 100,
+    "logo_url": 1000,
+    "cover_image_url": 1000,
+    "curriculum": 160,
+    "academic_year": 50,
+    "current_term": 50,
+    "calendar_year": 20,
+    "established_year": 20,
+    "address": 300,
+}
+
+_WEBSITE_URL_FIELDS = {"website", "logo_url", "cover_image_url"}
+
+
+def _website_slug(value):
+    slug = re.sub(r"[^a-z0-9]+", "-", str(value or "").strip().lower()).strip("-")
+    return slug[:80].strip("-")
+
+
+def _owner_website_projection(school):
+    fields = tuple(_WEBSITE_TEXT_LIMITS.keys())
+    result = {
+        "id": str(school["_id"]),
+        "name": school.get("name", ""),
+        "school_type": school.get("school_type", ""),
+        "code": school.get("code", ""),
+        "verification_status": school.get("verification_status", ""),
+        "public_profile_enabled": school.get("public_profile_enabled") is True,
+    }
+    for field in fields:
+        result[field] = school.get(field, "")
+    result["public_slug"] = result.get("public_slug") or _website_slug(school.get("name"))
+    return result
+
+
+@public_bp.get("/school/website-settings")
+@require_authenticated
+def get_owner_website_settings():
+    school = _current_owner_school()
+    return ok({"school": _owner_website_projection(school)})
+
+
+@public_bp.patch("/school/website-settings")
+@require_authenticated
+def save_owner_website_settings():
+    school = _current_owner_school()
+    payload = _json_body()
+    updates = {}
+
+    for field, maximum in _WEBSITE_TEXT_LIMITS.items():
+        if field not in payload:
+            continue
+        value = payload.get(field)
+        if value is None:
+            value = ""
+        if not isinstance(value, str):
+            raise APIError(
+                f"{field} must be text.",
+                422,
+                "validation_error",
+            )
+        value = value.strip()
+        if len(value) > maximum:
+            raise APIError(
+                f"{field} must be {maximum} characters or fewer.",
+                422,
+                "validation_error",
+            )
+        updates[field] = value
+
+    requested_slug = updates.get("public_slug")
+    slug_source = requested_slug or school.get("public_slug") or school.get("name")
+    slug = _website_slug(slug_source)
+    if not slug:
+        raise APIError(
+            "A public website slug could not be generated. Add the school name first.",
+            422,
+            "website_slug_required",
+        )
+
+    collision = collection(SCHOOLS).find_one({
+        "public_slug": slug,
+        "_id": {"$ne": school["_id"]},
+    })
+    if collision:
+        raise APIError(
+            "That public website address is already used by another school. Choose a different slug.",
+            409,
+            "website_slug_taken",
+        )
+
+    for field in _WEBSITE_URL_FIELDS:
+        value = updates.get(field, school.get(field, ""))
+        if not value:
+            continue
+        parsed = urlparse(value)
+        if parsed.scheme not in {"https", "http"} or not parsed.netloc:
+            raise APIError(
+                f"{field} must be a valid HTTP or HTTPS URL.",
+                422,
+                "validation_error",
+            )
+
+    publish = payload.get(
+        "publish",
+        school.get("public_profile_enabled") is True,
+    )
+    if not isinstance(publish, bool):
+        raise APIError(
+            "publish must be a boolean.",
+            422,
+            "validation_error",
+        )
+
+    updates["public_slug"] = slug
+    updates["public_profile_enabled"] = publish
+    updates["public_profile_updated_at"] = datetime.now(timezone.utc)
+    updates["public_website_updated_at"] = datetime.now(timezone.utc)
+
+    result = collection(SCHOOLS).find_one_and_update(
+        {
+            "_id": school["_id"],
+            "owner_user_id": str(current_user_id()),
+            "status": "active",
+            "verification_status": VERIFIED,
+            "is_demo": {"$ne": True},
+        },
+        {"$set": updates},
+        return_document=True,
+    )
+
+    if not result:
+        raise APIError(
+            "The verified school website settings could not be saved.",
+            409,
+            "website_settings_update_failed",
+        )
+
+    return ok(
+        {"school": _owner_website_projection(result)},
+        "School website settings saved.",
+    )
 
 # ============================================================
 # SCHOOL OWNER: DOCUMENT MANAGEMENT
