@@ -220,6 +220,10 @@ def _public_school_profile(school):
         "academic_year",
         "current_term",
         "calendar_year",
+        "courses",
+        "departments",
+        "co_curricular_activities",
+        "teacher_services",
     )
 
     result = {
@@ -227,7 +231,11 @@ def _public_school_profile(school):
     }
 
     for field in allowed_fields:
-        result[field] = school.get(field, "")
+        if field in {"courses", "departments", "co_curricular_activities", "teacher_services"}:
+            value = school.get(field, [])
+            result[field] = value if isinstance(value, list) else []
+        else:
+            result[field] = school.get(field, "")
 
     result["public"] = True
 
@@ -1108,6 +1116,98 @@ _WEBSITE_TEXT_LIMITS = {
 
 _WEBSITE_URL_FIELDS = {"website", "logo_url", "cover_image_url"}
 
+# These are curated public-facing offerings managed by the verified school owner.
+# Only allowlisted fields are stored/returned; student records and internal staff
+# membership documents are never used as a public directory.
+_WEBSITE_LIST_SCHEMAS = {
+    "courses": {
+        "name": 180,
+        "description": 1500,
+        "duration": 120,
+        "requirements": 500,
+        "level": 100,
+    },
+    "departments": {
+        "name": 180,
+        "description": 1500,
+        "subjects": 500,
+    },
+    "co_curricular_activities": {
+        "name": 180,
+        "category": 100,
+        "description": 1500,
+        "schedule": 180,
+    },
+    "teacher_services": {
+        "teacher_name": 180,
+        "subject": 180,
+        "service": 180,
+        "description": 1500,
+        "availability": 180,
+    },
+}
+_WEBSITE_LIST_REQUIRED = {
+    "courses": ("name",),
+    "departments": ("name",),
+    "co_curricular_activities": ("name",),
+    "teacher_services": ("teacher_name", "service"),
+}
+_MAX_WEBSITE_LIST_ENTRIES = 100
+
+
+def _validated_website_entries(field, value):
+    schema = _WEBSITE_LIST_SCHEMAS[field]
+    if not isinstance(value, list):
+        raise APIError(
+            f"{field} must be a list of records.",
+            422,
+            "validation_error",
+        )
+    if len(value) > _MAX_WEBSITE_LIST_ENTRIES:
+        raise APIError(
+            f"{field} cannot contain more than {_MAX_WEBSITE_LIST_ENTRIES} records.",
+            422,
+            "validation_error",
+        )
+
+    result = []
+    required = _WEBSITE_LIST_REQUIRED[field]
+    for index, item in enumerate(value, start=1):
+        if not isinstance(item, dict):
+            raise APIError(
+                f"{field} record {index} must be an object.",
+                422,
+                "validation_error",
+            )
+        record = {}
+        for key, maximum in schema.items():
+            raw = item.get(key, "")
+            if raw is None:
+                raw = ""
+            if not isinstance(raw, str):
+                raise APIError(
+                    f"{field} record {index} field {key} must be text.",
+                    422,
+                    "validation_error",
+                )
+            value_text = raw.strip()
+            if len(value_text) > maximum:
+                raise APIError(
+                    f"{field} record {index} field {key} must be {maximum} characters or fewer.",
+                    422,
+                    "validation_error",
+                )
+            record[key] = value_text
+        missing = [key for key in required if not record.get(key)]
+        if missing:
+            raise APIError(
+                f"{field} record {index} requires: {', '.join(missing)}.",
+                422,
+                "validation_error",
+            )
+        result.append(record)
+    return result
+
 
 def _website_slug(value):
     slug = re.sub(r"[^a-z0-9]+", "-", str(value or "").strip().lower()).strip("-")
@@ -1126,6 +1226,9 @@ def _owner_website_projection(school):
     }
     for field in fields:
         result[field] = school.get(field, "")
+    for field in _WEBSITE_LIST_SCHEMAS:
+        value = school.get(field, [])
+        result[field] = value if isinstance(value, list) else []
     result["public_slug"] = result.get("public_slug") or _website_slug(school.get("name"))
     return result
 
@@ -1164,6 +1267,10 @@ def save_owner_website_settings():
                 "validation_error",
             )
         updates[field] = value
+
+    for field in _WEBSITE_LIST_SCHEMAS:
+        if field in payload:
+            updates[field] = _validated_website_entries(field, payload[field])
 
     requested_slug = updates.get("public_slug")
     slug_source = requested_slug or school.get("public_slug") or school.get("name")
