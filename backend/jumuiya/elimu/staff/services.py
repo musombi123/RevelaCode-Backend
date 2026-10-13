@@ -12,6 +12,7 @@ from backend.jumuiya.core.database import collection
 from backend.jumuiya.core.errors import APIError
 from backend.jumuiya.elimu.permissions import (
     ROLE_OWNER,
+    ROLE_PRINCIPAL,
     ROLE_TEACHER,
     authorize,
     effective_permissions,
@@ -1113,6 +1114,38 @@ def invite_staff(
             422,
             "staff_role_required",
         )
+
+    # Only the School Owner may appoint the single designated Principal.
+    # This applies to both email invitations and direct links to an existing account.
+    if role == ROLE_PRINCIPAL:
+        inviter_role = normalize_text(member.get("role")).lower()
+        if inviter_role != ROLE_OWNER:
+            raise APIError(
+                "Only the School Owner can appoint the school's designated Principal.",
+                403,
+                "principal_owner_required",
+            )
+
+        existing_principal = collection(STAFF_COLLECTION).find_one({
+            "school_id": school_id,
+            "role": ROLE_PRINCIPAL,
+            "status": {"$nin": ["removed", "suspended"]},
+        })
+        pending_principal = None
+        for candidate in collection(INVITATIONS).find({
+            "school_id": school_id,
+            "role": ROLE_PRINCIPAL,
+            "status": "invited",
+        }).limit(500):
+            if invitation_is_usable(candidate):
+                pending_principal = candidate
+                break
+        if existing_principal or pending_principal:
+            raise APIError(
+                "This school already has a Principal or a valid pending Principal invitation. Revoke the pending invitation or resolve the existing membership before appointing another.",
+                409,
+                "principal_already_assigned",
+            )
 
     timestamp = now_utc()
 

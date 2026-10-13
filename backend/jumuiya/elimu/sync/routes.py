@@ -1,13 +1,15 @@
 # backend/jumuiya/elimu/sync/routes.py
 from __future__ import annotations
 
+import json
+
 from flask import Blueprint, request
 
 from backend.jumuiya.core.errors import APIError
 from backend.jumuiya.core.permissions import current_user_id
 from backend.jumuiya.core.responses import ok, created
 
-from . import schemas, services
+from . import bulk_import, schemas, services
 
 
 # ============================================================
@@ -204,6 +206,72 @@ def register_device():
         ),
         "Sync device registered.",
     )
+
+
+# ============================================================
+# STAGED LEGACY IMPORT
+# ============================================================
+
+@sync_bp.post("/import/preview")
+def preview_legacy_import():
+    upload = request.files.get("file")
+    if upload is None:
+        raise APIError("Choose a ZIP, JSON, CSV or XLSX export file.", 422, "import_file_required")
+    # Enforce the per-file limit while reading. Do not load an unbounded
+    # upload into memory before the importer can validate its size.
+    max_upload_bytes = bulk_import.MAX_UPLOAD_BYTES
+    raw = upload.stream.read(max_upload_bytes + 1)
+    if len(raw) > max_upload_bytes:
+        raise APIError(
+            "Import files must be 25 MB or smaller. Split larger exports into smaller ZIP packages.",
+            413,
+            "import_file_too_large",
+        )
+    if not raw:
+        raise APIError("The selected import file is empty.", 422, "empty_import_file")
+    raw_mappings = request.form.get("field_mappings", "").strip()
+    try:
+        field_mappings = json.loads(raw_mappings) if raw_mappings else {}
+    except json.JSONDecodeError as exc:
+        raise APIError("Field mappings must be valid JSON.", 422, "invalid_field_mappings") from exc
+    result = bulk_import.preview_upload(
+        current_user_id(),
+        filename=upload.filename or "school-export",
+        data=raw,
+        content_type=upload.mimetype,
+        entity_type=request.form.get("entity_type"),
+        field_mappings=field_mappings,
+    )
+    return created(result, "Legacy import preview created. No school records have been changed yet.")
+
+
+@sync_bp.post("/import/start")
+def start_legacy_import():
+    payload = body()
+    import_id = str(payload.get("import_id") or "").strip()
+    if not import_id:
+        raise APIError("import_id is required.", 422, "import_id_required")
+    return ok(bulk_import.start_import(current_user_id(), import_id), "Legacy import started.")
+
+
+@sync_bp.post("/import/process")
+def process_legacy_import_batch():
+    payload = body()
+    import_id = str(payload.get("import_id") or "").strip()
+    if not import_id:
+        raise APIError("import_id is required.", 422, "import_id_required")
+    return ok(
+        bulk_import.process_next_batch(
+            current_user_id(),
+            import_id,
+            retry_failed=bool(payload.get("retry_failed", False)),
+        )
+    )
+
+
+@sync_bp.get("/import/status/<import_id>")
+def legacy_import_status(import_id):
+    return ok(bulk_import.import_status(current_user_id(), import_id))
 
 
 # ============================================================
