@@ -12,6 +12,7 @@ from backend.jumuiya.elimu.permissions import (
     PERMISSIONS,
     ROLE_BURSAR,
     ROLE_OWNER,
+    ROLE_PRINCIPAL,
     ROLE_REGISTRAR,
     ROLE_TEACHER,
 )
@@ -39,6 +40,7 @@ STAFF_MODEL_VERSION = "2.0"
 
 ROLES = (
     ROLE_OWNER,
+    ROLE_PRINCIPAL,
     ROLE_BURSAR,
     ROLE_REGISTRAR,
     ROLE_TEACHER,

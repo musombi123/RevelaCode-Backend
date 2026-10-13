@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+import secrets
 from typing import Any, Mapping
 
 from bson import ObjectId
@@ -34,6 +35,8 @@ from .models import (
     staff_subjects,
     teacher_reference,
 )
+
+from .invitation_email import send_staff_invitation_email
 
 
 # =========================================================
@@ -100,6 +103,7 @@ def _ser(
         "suspended_at",
         "removed_at",
         "cancelled_at",
+        "email_sent_at",
     ):
         value = data.get(
             key
@@ -359,6 +363,158 @@ def _require_staff(
 
     return document
 
+
+# =========================================================
+# INVITATION DELIVERY / SERIALIZATION
+# =========================================================
+
+def _school_document(school_id: str) -> dict | None:
+    conditions = [
+        {"_id": school_id},
+        {"school_id": school_id},
+    ]
+    if ObjectId.is_valid(school_id):
+        conditions.append({"_id": ObjectId(school_id)})
+    return collection(SCHOOLS).find_one({"$or": conditions})
+
+
+def _display_name(document: Mapping[str, Any] | None) -> str:
+    if not isinstance(document, Mapping):
+        return ""
+    identity = document.get("identity")
+    identity = identity if isinstance(identity, Mapping) else {}
+    for value in (
+        identity.get("display_name"),
+        identity.get("preferred_name"),
+        document.get("display_name"),
+        document.get("full_name"),
+        document.get("name"),
+        identity.get("email"),
+        document.get("email"),
+    ):
+        normalized = normalize_text(value)
+        if normalized:
+            return normalized
+    return ""
+
+
+def _invitation_snapshot(document: Mapping[str, Any] | None) -> dict:
+    """Return only safe invitation fields; never expose the token or its hash."""
+    data = _ser(dict(document)) if isinstance(document, Mapping) else {}
+    data = data or {}
+    profile = data.get("profile") if isinstance(data.get("profile"), Mapping) else {}
+    identity = profile.get("identity") if isinstance(profile.get("identity"), Mapping) else {}
+    invitation_id = data.get("_id") or data.get("id") or data.get("invitation_id")
+    return {
+        "_id": str(invitation_id or ""),
+        "id": str(invitation_id or ""),
+        "school_id": data.get("school_id"),
+        "email": data.get("email"),
+        "display_name": identity.get("display_name") or identity.get("preferred_name") or "",
+        "role": data.get("role"),
+        "status": data.get("status"),
+        "email_status": data.get("email_status", "pending"),
+        "email_error": data.get("email_error"),
+        "created_at": data.get("created_at"),
+        "updated_at": data.get("updated_at"),
+        "expires_at": data.get("expires_at"),
+        "email_sent_at": data.get("email_sent_at"),
+        "accepted_at": data.get("accepted_at"),
+        "cancelled_at": data.get("cancelled_at"),
+        "invited_by": data.get("invited_by"),
+        "accepted_by": data.get("accepted_by"),
+    }
+
+
+def _deliver_invitation_email(
+    school_id: str,
+    invitation: dict,
+    raw_token: str,
+) -> bool:
+    """Deliver the one-time link without returning the raw token to the browser."""
+    timestamp = now_utc()
+    invitation_id = invitation.get("_id")
+    target = {"_id": invitation_id, "school_id": school_id}
+    collection(INVITATIONS).update_one(
+        target,
+        {"$set": {"email_status": "pending", "updated_at": timestamp}},
+    )
+    invitation["email_status"] = "pending"
+    invitation["updated_at"] = timestamp
+
+    school = _school_document(school_id) or {}
+    inviter = _find_staff(
+        school_id,
+        invitation.get("invited_by"),
+        include_removed=True,
+    )
+    profile = invitation.get("profile") if isinstance(invitation.get("profile"), Mapping) else {}
+    identity = profile.get("identity") if isinstance(profile.get("identity"), Mapping) else {}
+    inviter_identity = (inviter or {}).get("identity") if isinstance((inviter or {}).get("identity"), Mapping) else {}
+    school_name = (
+        school.get("name")
+        or school.get("school_name")
+        or school.get("institution_name")
+        or "your school"
+    )
+    inviter_email = inviter_identity.get("email") or (inviter or {}).get("email") or ""
+
+    try:
+        send_staff_invitation_email(
+            recipient=invitation.get("email", ""),
+            invitee_name=identity.get("display_name") or identity.get("preferred_name") or "",
+            school_name=school_name,
+            inviter_name=_display_name(inviter) or "the school owner",
+            inviter_email=inviter_email,
+            role=invitation.get("role", ""),
+            token=raw_token,
+            expires_at=invitation.get("expires_at"),
+        )
+    except Exception:
+        message = "Email delivery failed. Check RESEND_API_KEY, EMAIL_FROM and FRONTEND_URL, then resend the invitation."
+        collection(INVITATIONS).update_one(
+            target,
+            {
+                "$set": {
+                    "email_status": "failed",
+                    "email_error": message,
+                    "updated_at": now_utc(),
+                },
+                "$unset": {"email_sent_at": ""},
+            },
+        )
+        invitation["email_status"] = "failed"
+        invitation["email_error"] = message
+        invitation.pop("email_sent_at", None)
+        return False
+
+    sent_at = now_utc()
+    collection(INVITATIONS).update_one(
+        target,
+        {
+            "$set": {
+                "email_status": "sent",
+                "email_sent_at": sent_at,
+                "updated_at": sent_at,
+            },
+            "$unset": {"email_error": ""},
+        },
+    )
+    invitation["email_status"] = "sent"
+    invitation["email_sent_at"] = sent_at
+    invitation["updated_at"] = sent_at
+    invitation.pop("email_error", None)
+    return True
+
+
+def _find_invitation(school_id: str, invitation_id: Any) -> dict | None:
+    normalized_id = _uid(invitation_id)
+    if not normalized_id:
+        return None
+    conditions = [{"_id": normalized_id}, {"invitation_id": normalized_id}]
+    if ObjectId.is_valid(normalized_id):
+        conditions.insert(0, {"_id": ObjectId(normalized_id)})
+    return collection(INVITATIONS).find_one({"school_id": school_id, "$or": conditions})
 
 # =========================================================
 # OWNER PROTECTION
@@ -1136,14 +1292,90 @@ def invite_staff(
         "_id"
     ] = result.inserted_id
 
+    email_sent = _deliver_invitation_email(
+        school_id,
+        document,
+        raw_token,
+    )
+
     return {
         "mode": "email_invitation",
-        "invitation": _ser(
-            document
-        ),
-        "invitation_token": raw_token,
+        "invitation": _invitation_snapshot(document),
+        "email_sent": email_sent,
     }
 
+
+# =========================================================
+# INVITATION MANAGEMENT
+# =========================================================
+
+def list_invitations(user_id: Any) -> dict:
+    member = authorize(user_id, "staff.view")
+    school_id = _school_id(member)
+    documents = list(
+        collection(INVITATIONS)
+        .find({"school_id": school_id})
+        .sort("created_at", -1)
+        .limit(200)
+    )
+    invitations = [_invitation_snapshot(document) for document in documents]
+    return {"school_id": school_id, "count": len(invitations), "invitations": invitations}
+
+
+def resend_invitation(user_id: Any, invitation_id: Any) -> dict:
+    member = authorize(user_id, "staff.invite")
+    school_id = _school_id(member)
+    document = _find_invitation(school_id, invitation_id)
+    if not document or normalize_text(document.get("status")).lower() != "invited":
+        raise APIError("Pending invitation not found.", 404, "invitation_not_found")
+
+    timestamp = now_utc()
+    raw_token = secrets.token_urlsafe(32)
+    token_hash = hash_invitation_token(raw_token)
+    expires_at = timestamp + timedelta(days=7)
+    result = collection(INVITATIONS).update_one(
+        {"_id": document["_id"], "school_id": school_id, "status": "invited"},
+        {
+            "$set": {
+                "token_hash": token_hash,
+                "expires_at": expires_at,
+                "email_status": "pending",
+                "updated_at": timestamp,
+            },
+            "$unset": {"email_error": "", "email_sent_at": ""},
+        },
+    )
+    if not result.matched_count:
+        raise APIError("Invitation changed before it could be resent. Refresh and try again.", 409, "invitation_changed")
+
+    document["token_hash"] = token_hash
+    document["expires_at"] = expires_at
+    document["email_status"] = "pending"
+    document["updated_at"] = timestamp
+    document.pop("email_error", None)
+    document.pop("email_sent_at", None)
+    email_sent = _deliver_invitation_email(school_id, document, raw_token)
+    return {"invitation": _invitation_snapshot(document), "email_sent": email_sent}
+
+
+def revoke_invitation(user_id: Any, invitation_id: Any) -> dict:
+    member = authorize(user_id, "staff.invite")
+    school_id = _school_id(member)
+    document = _find_invitation(school_id, invitation_id)
+    if not document or normalize_text(document.get("status")).lower() != "invited":
+        raise APIError("Pending invitation not found.", 404, "invitation_not_found")
+
+    timestamp = now_utc()
+    result = collection(INVITATIONS).update_one(
+        {"_id": document["_id"], "school_id": school_id, "status": "invited"},
+        {"$set": {"status": "cancelled", "cancelled_at": timestamp, "updated_at": timestamp}},
+    )
+    if not result.matched_count:
+        raise APIError("Invitation changed before it could be revoked. Refresh and try again.", 409, "invitation_changed")
+    document["status"] = "cancelled"
+    document["cancelled_at"] = timestamp
+    document["updated_at"] = timestamp
+    return {"invitation": _invitation_snapshot(document), "revoked": True}
 
 # =========================================================
 # UPDATE STAFF
@@ -1646,6 +1878,7 @@ def remove_staff(
 def accept_invitation(
     user_id: Any,
     token: str,
+    user_email: str | None = None,
 ) -> dict:
     raw_token = str(
         token or ""
@@ -1694,6 +1927,15 @@ def accept_invitation(
             "This invitation has expired or is no longer usable.",
             410,
             "invitation_expired",
+        )
+
+    invited_email = normalize_text(invitation.get("email")).lower()
+    authenticated_email = normalize_text(user_email).lower()
+    if not authenticated_email or authenticated_email != invited_email:
+        raise APIError(
+            "Sign in with the verified email address this invitation was sent to.",
+            403,
+            "invitation_email_mismatch",
         )
 
     school_id = _uid(

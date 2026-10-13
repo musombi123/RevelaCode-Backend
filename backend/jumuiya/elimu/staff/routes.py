@@ -6,6 +6,7 @@ from flask import Blueprint, request
 
 from backend.jumuiya.core.errors import APIError
 from backend.jumuiya.core.permissions import (
+    current_user,
     current_user_id,
     require_authenticated,
 )
@@ -275,6 +276,29 @@ def invite():
     )
 
 
+@staff_bp.get("/invitations")
+@require_authenticated
+def list_invitations():
+    return ok(services.list_invitations(current_user_id()))
+
+
+@staff_bp.post("/invitations/<invitation_id>/resend")
+@require_authenticated
+def resend_invitation(invitation_id: str):
+    return ok(
+        services.resend_invitation(current_user_id(), invitation_id),
+        "Invitation email resent.",
+    )
+
+
+@staff_bp.delete("/invitations/<invitation_id>")
+@require_authenticated
+def revoke_invitation(invitation_id: str):
+    return ok(
+        services.revoke_invitation(current_user_id(), invitation_id),
+        "Invitation revoked.",
+    )
+
 @staff_bp.post("/invitations/accept")
 @require_authenticated
 def accept():
@@ -293,6 +317,7 @@ def accept():
             payload[
                 "token"
             ],
+            current_user().get("email") or current_user().get("contact", ""),
         ),
         "School staff invitation accepted.",
     )

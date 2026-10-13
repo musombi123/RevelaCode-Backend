@@ -8,6 +8,7 @@ from typing import Any
 from backend.jumuiya.elimu.permissions import (
     PERMISSIONS,
     ROLE_BURSAR,
+    ROLE_PRINCIPAL,
     ROLE_REGISTRAR,
     ROLE_TEACHER,
     ROLE_PERMISSIONS,
@@ -26,6 +27,7 @@ from .models import (
 
 ROLES = {
     ROLE_BURSAR,
+    ROLE_PRINCIPAL,
     ROLE_REGISTRAR,
     ROLE_TEACHER,
 }
@@ -33,6 +35,7 @@ ROLES = {
 ALL_ROLES = {
     "owner",
     ROLE_BURSAR,
+    ROLE_PRINCIPAL,
     ROLE_REGISTRAR,
     ROLE_TEACHER,
 }
