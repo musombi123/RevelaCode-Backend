@@ -34,6 +34,7 @@ from backend.jumuiya.elimu.sync.routes import sync_bp
 from backend.jumuiya.elimu.verification_routes import verification_bp
 from backend.jumuiya.elimu.public_routes import public_bp
 from backend.jumuiya.elimu.media.routes import media_bp
+from backend.jumuiya.elimu.portal_routes import parent_bp, student_bp, portal_review_bp
 
 # =========================================================
 # BLUEPRINT
@@ -703,3 +704,9 @@ elimu_bp.register_blueprint(verification_bp)
 elimu_bp.register_blueprint(public_bp)
 
 elimu_bp.register_blueprint(media_bp)
+
+elimu_bp.register_blueprint(parent_bp)
+
+elimu_bp.register_blueprint(student_bp)
+
+elimu_bp.register_blueprint(portal_review_bp)
