@@ -1503,7 +1503,7 @@ def get_public_biashara_website(slug):
 
     business = collection("jumuiya_businesses").find_one({
         "slug": normalized_slug,
-        "status": {"$ne": "inactive"},
+        "status": "active",
         "website.published": True,
     })
     if not business:
@@ -1514,8 +1514,8 @@ def get_public_biashara_website(slug):
         "name": business.get("name", ""),
         "slug": business.get("slug", ""),
         "description": business.get("description", ""),
-        "phone": business.get("phone", ""),
-        "email": business.get("email", ""),
+        "phone": business.get("phone", "") if website.get("contact_enabled", True) is True else "",
+        "email": business.get("email", "") if website.get("contact_enabled", True) is True else "",
         "location": business.get("location", ""),
         "county": business.get("county", ""),
         "currency": business.get("currency", "KES") or "KES",
@@ -1584,7 +1584,7 @@ def submit_public_biashara_inquiry(slug, payload):
     normalized_slug = str(slug or "").strip().lower()
     business = collection("jumuiya_businesses").find_one({
         "slug": normalized_slug,
-        "status": {"$ne": "inactive"},
+        "status": "active",
         "website.published": True,
         "website.contact_enabled": True,
     })
