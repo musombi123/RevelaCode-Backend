@@ -3,8 +3,9 @@ from __future__ import annotations
 
 import os
 import re
+import requests
 from datetime import date, datetime, timezone
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 from bson import ObjectId
 from bson.errors import InvalidId
@@ -49,6 +50,10 @@ SCHOOLS = "jumuiya_schools"
 EVENTS = "jumuiya_school_events"
 CBC = "jumuiya_cbc_projects"
 DOCUMENTS = "jumuiya_elimu_public_documents"
+SCHOOL_DOMAINS = "jumuiya_elimu_school_domains"
+
+REVELACODE_DEFAULT_RENDER_HOST = "revelacode-frontend.onrender.com"
+_RENDER_DOMAINS_INDEX_READY = False
 
 VERIFIED = "verified"
 PUBLISHED = "published"
@@ -1456,6 +1461,289 @@ def save_owner_website_settings():
         {"school": _owner_website_projection(result)},
         "School website settings saved.",
     )
+
+# ============================================================
+# SCHOOL OWNER: CUSTOM DOMAIN MANAGEMENT
+# ============================================================
+
+def _domain_host(value):
+    raw = str(value or "").strip().lower().rstrip(".")
+    if not raw or "://" in raw or "/" in raw or ":" in raw or "*" in raw or "@" in raw:
+        raise APIError("Enter a hostname only, for example www.school.ac.ke.", 422, "invalid_hostname")
+    try:
+        hostname = raw.encode("idna").decode("ascii")
+    except UnicodeError as exc:
+        raise APIError("The hostname is not a valid DNS name.", 422, "invalid_hostname") from exc
+    if len(hostname) > 253 or "." not in hostname or hostname.endswith(".onrender.com"):
+        raise APIError("Use an independently registered domain, not a Render platform hostname.", 422, "invalid_hostname")
+    labels = hostname.split(".")
+    if any(not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", label) for label in labels):
+        raise APIError("The hostname contains an invalid DNS label.", 422, "invalid_hostname")
+    if len(labels[-1]) < 2 or not re.fullmatch(r"[a-z]{2,63}", labels[-1]):
+        raise APIError("The hostname must have a valid public DNS suffix.", 422, "invalid_hostname")
+    if hostname == REVELACODE_DEFAULT_RENDER_HOST:
+        raise APIError("The RevelaCode platform hostname cannot be registered as a school domain.", 422, "platform_hostname")
+    return hostname
+
+def _render_config():
+    api_key = str(os.getenv("RENDER_API_KEY", "")).strip()
+    service_id = str(os.getenv("ELIMU_RENDER_SERVICE_ID", "")).strip()
+    target_host = str(os.getenv("ELIMU_RENDER_SERVICE_HOSTNAME", REVELACODE_DEFAULT_RENDER_HOST)).strip().lower()
+    missing = [name for name, value in (("RENDER_API_KEY", api_key), ("ELIMU_RENDER_SERVICE_ID", service_id)) if not value]
+    if missing:
+        raise APIError(
+            "Custom-domain management is not configured on this backend. Set " + ", ".join(missing) + " in the backend environment before adding or verifying domains.",
+            503,
+            "domain_infrastructure_not_configured",
+        )
+    if not re.fullmatch(r"[a-z0-9.-]+", target_host) or not target_host.endswith(".onrender.com"):
+        raise APIError("ELIMU_RENDER_SERVICE_HOSTNAME must be the actual Render onrender.com service hostname.", 503, "domain_infrastructure_not_configured")
+    return api_key, service_id, target_host
+
+def _render_request(method, path, *, body=None):
+    api_key, _service_id, _target_host = _render_config()
+    try:
+        response = requests.request(
+            method,
+            "https://api.render.com/v1" + path,
+            headers={"Authorization": "Bearer " + api_key, "Accept": "application/json", "Content-Type": "application/json"},
+            json=body,
+            timeout=(4, 12),
+        )
+    except requests.RequestException as exc:
+        raise APIError("Render could not be reached to manage this domain. Try again later.", 502, "render_api_unavailable") from exc
+    if response.status_code < 200 or response.status_code >= 300:
+        if response.status_code == 404:
+            status = 404
+        elif response.status_code in (401, 403):
+            status = 503
+        elif response.status_code == 409:
+            status = 409
+        elif response.status_code == 429 or response.status_code >= 500:
+            status = 503
+        else:
+            status = 502
+        code = "render_domain_conflict" if response.status_code == 409 else "render_domain_operation_failed"
+        message = "The hostname is already registered with the hosting service." if response.status_code == 409 else "The hosting service could not complete the domain operation (HTTP " + str(response.status_code) + ")."
+        raise APIError(message, status, code)
+    if response.status_code == 204 or not response.content:
+        return None
+    try:
+        return response.json()
+    except ValueError:
+        return None
+
+def _render_domain_items(payload):
+    if isinstance(payload, dict):
+        payload = payload.get("items", payload.get("domains", payload.get("data", [])))
+    if not isinstance(payload, list):
+        return []
+    result = []
+    for entry in payload:
+        if not isinstance(entry, dict):
+            continue
+        item = entry.get("value", entry.get("item", entry))
+        if isinstance(item, dict) and item.get("name"):
+            result.append(item)
+    return result
+
+def _render_domain_path(service_id, hostname=None):
+    base = "/services/" + quote(service_id, safe="") + "/custom-domains"
+    return base if hostname is None else base + "/" + quote(hostname, safe=".-")
+
+def _render_list_domains():
+    _api_key, service_id, _target_host = _render_config()
+    payload = _render_request("GET", _render_domain_path(service_id) + "?limit=100")
+    return _render_domain_items(payload)
+
+def _domain_dns_instructions(hostname, target_host):
+    labels = hostname.split(".")
+    apex = len(labels) == 2 or (len(labels) == 3 and labels[-2] in {"ac", "co", "org", "com", "gov", "edu"} and labels[-1] == "ke")
+    if apex:
+        return {
+            "record_type": "ALIAS / ANAME / CNAME flattening where supported",
+            "host": "@",
+            "value": target_host,
+            "note": "Root/apex record support varies by DNS provider. Follow your provider’s instructions for pointing an apex domain to the Render target; do not create conflicting A or AAAA records.",
+        }
+    return {
+        "record_type": "CNAME",
+        "host": labels[0],
+        "value": target_host,
+        "note": "Create a CNAME for this hostname pointing to the exact Render service hostname above. Remove conflicting AAAA records if present.",
+    }
+
+def _domain_projection(document, school=None, target_host=None):
+    hostname = document.get("hostname", "")
+    primary = bool(school and school.get("primary_domain") == hostname)
+    target = target_host or REVELACODE_DEFAULT_RENDER_HOST
+    return {
+        "id": str(document.get("_id", "")),
+        "hostname": hostname,
+        "status": document.get("status", "pending_dns"),
+        "verification_status": document.get("verification_status", "unverified"),
+        "https_status": document.get("https_status", "pending"),
+        "is_primary": primary,
+        "dns": _domain_dns_instructions(hostname, target),
+        "created_at": _serialize(document.get("created_at")),
+        "updated_at": _serialize(document.get("updated_at")),
+    }
+
+def _sync_domain_status(document, remote):
+    hostname = document.get("hostname", "")
+    verification = str(remote.get("verificationStatus", remote.get("verification_status", "unverified"))).lower()
+    now = datetime.now(timezone.utc)
+    updates = {
+        "render_domain_id": str(remote.get("id") or document.get("render_domain_id") or ""),
+        "verification_status": verification,
+        "updated_at": now,
+    }
+    if verification != "verified":
+        updates.update({"status": "pending_dns", "https_status": "pending"})
+    else:
+        try:
+            response = requests.get("https://" + hostname + "/", timeout=(3, 7), allow_redirects=False, stream=True)
+            response_status = response.status_code
+            location = str(response.headers.get("Location", ""))
+            response.close()
+            if response_status >= 500 or location.lower().startswith("http://"):
+                updates.update({"status": "routing_pending", "https_status": "pending"})
+            else:
+                # The HTTPS request uses normal certificate validation; success means TLS is usable.
+                updates.update({"status": "active", "https_status": "active"})
+        except requests.RequestException:
+            updates.update({"status": "https_pending", "https_status": "pending"})
+    collection(SCHOOL_DOMAINS).update_one({"_id": document["_id"]}, {"$set": updates})
+    return {**document, **updates}
+
+@public_bp.get("/school/domains")
+@require_authenticated
+def list_owner_school_domains():
+    school = _current_owner_school()
+    _api_key, _service_id, target_host = _render_config()
+    remote_domains = _render_list_domains()
+    by_name = {str(item.get("name", "")).lower(): item for item in remote_domains}
+    local = list(collection(SCHOOL_DOMAINS).find({"school_id": _school_id(school)}).sort("created_at", -1))
+    result = []
+    for document in local:
+        remote = by_name.get(document.get("hostname", "").lower())
+        if remote:
+            document = _sync_domain_status(document, remote)
+        result.append(_domain_projection(document, school, target_host))
+    return ok({"domains": result, "count": len(result), "render_target": target_host}, "School domains loaded.")
+
+@public_bp.post("/school/domains")
+@require_authenticated
+def create_owner_school_domain():
+    school = _current_owner_school()
+    payload = _json_body()
+    hostname = _domain_host(payload.get("hostname"))
+    existing = collection(SCHOOL_DOMAINS).find_one({"hostname": hostname})
+    if existing:
+        if existing.get("school_id") == _school_id(school):
+            raise APIError("This hostname is already added to this school. Refresh its verification status instead.", 409, "domain_already_added")
+        raise APIError("This hostname is already associated with another school.", 409, "domain_already_assigned")
+    _api_key, service_id, target_host = _render_config()
+    global _RENDER_DOMAINS_INDEX_READY
+    domains_collection = collection(SCHOOL_DOMAINS)
+    try:
+        if not _RENDER_DOMAINS_INDEX_READY:
+            domains_collection.create_index("hostname", unique=True, name="uniq_elimu_school_domain_hostname")
+            _RENDER_DOMAINS_INDEX_READY = True
+    except Exception as exc:
+        raise APIError("Domain uniqueness could not be guaranteed because existing hostname records conflict. Resolve duplicate domain records before retrying.", 409, "domain_registry_conflict") from exc
+    remote = _render_request("POST", _render_domain_path(service_id), body={"name": hostname})
+    if isinstance(remote, list):
+        remote = remote[0] if remote else {}
+    if isinstance(remote, dict) and isinstance(remote.get("value"), dict):
+        remote = remote["value"]
+    if not isinstance(remote, dict) or not remote.get("name"):
+        # Do not report success or create a public mapping on an unexpected provider response.
+        raise APIError("The hosting provider did not confirm that the hostname was added.", 502, "render_invalid_response")
+    now = datetime.now(timezone.utc)
+    document = {
+        "school_id": _school_id(school), "school_oid": school["_id"],
+        "hostname": hostname, "render_domain_id": str(remote.get("id", "")),
+        "verification_status": str(remote.get("verificationStatus", "unverified")).lower(),
+        "https_status": "pending", "status": "pending_dns",
+        "created_by": str(current_user_id()), "created_at": now, "updated_at": now,
+    }
+    try:
+        inserted = domains_collection.insert_one(document)
+        document["_id"] = inserted.inserted_id
+    except Exception as exc:
+        # The remote name must not be left with a tenant mapping if local registration failed.
+        try:
+            _render_request("DELETE", _render_domain_path(service_id, hostname))
+        except Exception:
+            pass
+        raise APIError("The domain could not be registered to this school safely.", 409, "domain_registry_conflict") from exc
+    return ok({"domain": _domain_projection(document, school, target_host)}, "Hostname added to the hosting service. Configure the DNS record shown, then verify it.", 201)
+
+@public_bp.post("/school/domains/<domain_id>/verify")
+@require_authenticated
+def verify_owner_school_domain(domain_id):
+    school = _current_owner_school()
+    oid = _object_id(domain_id, "domain")
+    document = collection(SCHOOL_DOMAINS).find_one({"_id": oid, "school_id": _school_id(school)})
+    if not document:
+        raise APIError("Domain not found in this school.", 404, "domain_not_found")
+    _api_key, service_id, target_host = _render_config()
+    _render_request("POST", _render_domain_path(service_id, document["hostname"]) + "/verify")
+    remote = next((item for item in _render_list_domains() if str(item.get("name", "")).lower() == document["hostname"].lower()), None)
+    if not remote:
+        raise APIError("The hosting provider accepted the verification request but the hostname could not be refreshed yet.", 503, "domain_verification_pending")
+    updated = _sync_domain_status(document, remote)
+    return ok({"domain": _domain_projection(updated, school, target_host)}, "Verification request processed; current DNS, routing and HTTPS status is shown.",)
+
+@public_bp.patch("/school/domains/<domain_id>/primary")
+@require_authenticated
+def set_owner_primary_school_domain(domain_id):
+    school = _current_owner_school()
+    oid = _object_id(domain_id, "domain")
+    document = collection(SCHOOL_DOMAINS).find_one({"_id": oid, "school_id": _school_id(school)})
+    if not document:
+        raise APIError("Domain not found in this school.", 404, "domain_not_found")
+    if document.get("status") != "active" or document.get("https_status") != "active" or document.get("verification_status") != "verified":
+        raise APIError("Only a verified domain with working HTTPS can be selected as primary.", 409, "domain_not_active")
+    updated = collection(SCHOOLS).find_one_and_update(
+        {"_id": school["_id"], "owner_user_id": str(current_user_id()), "status": "active", "verification_status": VERIFIED, "is_demo": {"$ne": True}},
+        {"$set": {"primary_domain": document["hostname"], "primary_domain_updated_at": datetime.now(timezone.utc)}},
+        return_document=True,
+    )
+    if not updated:
+        raise APIError("The verified school could not be updated.", 409, "primary_domain_update_failed")
+    return ok({"school": {"id": str(updated["_id"]), "primary_domain": updated["primary_domain"], "domain": _domain_projection(document, updated)}}, "Primary domain updated.")
+
+@public_bp.delete("/school/domains/<domain_id>")
+@require_authenticated
+def delete_owner_school_domain(domain_id):
+    school = _current_owner_school()
+    oid = _object_id(domain_id, "domain")
+    document = collection(SCHOOL_DOMAINS).find_one({"_id": oid, "school_id": _school_id(school)})
+    if not document:
+        raise APIError("Domain not found in this school.", 404, "domain_not_found")
+    _api_key, service_id, _target_host = _render_config()
+    _render_request("DELETE", _render_domain_path(service_id, document["hostname"]))
+    collection(SCHOOL_DOMAINS).delete_one({"_id": oid, "school_id": _school_id(school)})
+    if school.get("primary_domain") == document.get("hostname"):
+        collection(SCHOOLS).update_one({"_id": school["_id"], "owner_user_id": str(current_user_id())}, {"$unset": {"primary_domain": "", "primary_domain_updated_at": ""}})
+    return ok({"removed": True, "hostname": document["hostname"]}, "Domain removed from the hosting service and school registry.")
+
+@public_bp.get("/public/school-domain")
+def get_public_school_by_custom_domain():
+    hostname = _domain_host(request.args.get("hostname") or request.host.split(":", 1)[0])
+    document = collection(SCHOOL_DOMAINS).find_one({"hostname": hostname, "status": "active", "verification_status": "verified", "https_status": "active"})
+    if not document:
+        raise APIError("No active verified school website is configured for this hostname.", 404, "school_domain_not_found")
+    try:
+        school_oid = document.get("school_oid") or ObjectId(str(document.get("school_id")))
+    except (InvalidId, TypeError, ValueError) as exc:
+        raise APIError("The school domain mapping is invalid.", 404, "school_domain_not_found") from exc
+    school = collection(SCHOOLS).find_one({"_id": school_oid, "status": "active", "verification_status": VERIFIED, "is_demo": {"$ne": True}, "public_profile_enabled": True})
+    if not school:
+        raise APIError("No published school website is configured for this hostname.", 404, "school_domain_not_found")
+    return ok({"school": _public_school_profile(school), "hostname": hostname, "domain_status": "active"})
 
 # ============================================================
 # SCHOOL OWNER: DOCUMENT MANAGEMENT
