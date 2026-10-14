@@ -1559,19 +1559,30 @@ def _render_list_domains():
 
 def _domain_dns_instructions(hostname, target_host):
     labels = hostname.split(".")
-    apex = len(labels) == 2 or (len(labels) == 3 and labels[-2] in {"ac", "co", "org", "com", "gov", "edu"} and labels[-1] == "ke")
-    if apex:
+    multi_label_suffixes = {
+        "ac.ke", "co.ke", "or.ke", "go.ke", "ne.ke", "sc.ke", "me.ke",
+        "co.uk", "org.uk", "ac.uk", "gov.uk", "com.uk",
+        "com.au", "net.au", "org.au", "co.nz", "co.za",
+        "com.ng", "com.gh", "co.ug", "com.tz",
+    }
+    is_apex = len(labels) == 2 or any(
+        hostname.endswith("." + suffix) and len(labels) == len(suffix.split(".")) + 1
+        for suffix in multi_label_suffixes
+    )
+    if is_apex:
         return {
-            "record_type": "ALIAS / ANAME / CNAME flattening where supported",
+            "record_type": "A (fallback) or ALIAS / ANAME / CNAME flattening",
             "host": "@",
-            "value": target_host,
-            "note": "Root/apex record support varies by DNS provider. Follow your provider’s instructions for pointing an apex domain to the Render target; do not create conflicting A or AAAA records.",
+            "value": "216.24.57.1",
+            "alternate_target": target_host,
+            "note": "Use an ALIAS/ANAME record or CNAME flattening to the Render hostname when your provider supports it. Otherwise use Render's documented apex A-record target shown here. Cloudflare root domains should use CNAME flattening. Remove conflicting AAAA records.",
         }
+    zone_prefix = ".".join(labels[:-2]) if len(labels) > 2 and ".".join(labels[-2:]) in multi_label_suffixes else labels[0]
     return {
         "record_type": "CNAME",
-        "host": labels[0],
+        "host": zone_prefix,
         "value": target_host,
-        "note": "Create a CNAME for this hostname pointing to the exact Render service hostname above. Remove conflicting AAAA records if present.",
+        "note": "Create a CNAME pointing to the exact Render service hostname shown. Remove conflicting AAAA records if present.",
     }
 
 def _domain_projection(document, school=None, target_host=None):
@@ -1630,6 +1641,16 @@ def list_owner_school_domains():
         remote = by_name.get(document.get("hostname", "").lower())
         if remote:
             document = _sync_domain_status(document, remote)
+        else:
+            # A locally active mapping is never trusted if Render no longer owns the hostname.
+            updates = {
+                "status": "failed",
+                "verification_status": "unknown",
+                "https_status": "pending",
+                "updated_at": datetime.now(timezone.utc),
+            }
+            collection(SCHOOL_DOMAINS).update_one({"_id": document["_id"]}, {"$set": updates})
+            document = {**document, **updates}
         result.append(_domain_projection(document, school, target_host))
     return ok({"domains": result, "count": len(result), "render_target": target_host}, "School domains loaded.")
 
@@ -1725,7 +1746,9 @@ def delete_owner_school_domain(domain_id):
     if not document:
         raise APIError("Domain not found in this school.", 404, "domain_not_found")
     _api_key, service_id, _target_host = _render_config()
-    _render_request("DELETE", _render_domain_path(service_id, document["hostname"]))
+    remote = next((item for item in _render_list_domains() if str(item.get("name", "")).lower() == document["hostname"].lower()), None)
+    if remote:
+        _render_request("DELETE", _render_domain_path(service_id, document["hostname"]))
     collection(SCHOOL_DOMAINS).delete_one({"_id": oid, "school_id": _school_id(school)})
     if school.get("primary_domain") == document.get("hostname"):
         collection(SCHOOLS).update_one({"_id": school["_id"], "owner_user_id": str(current_user_id())}, {"$unset": {"primary_domain": "", "primary_domain_updated_at": ""}})
