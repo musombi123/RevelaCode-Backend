@@ -341,9 +341,9 @@ def jobs():
     )
 
     return ok(
-        services.list_jobs(
+        services.jobs(
             current_user_id(),
-            filters,
+            **filters,
         )
     )
 
@@ -351,7 +351,7 @@ def jobs():
 @sync_bp.get("/jobs/<job_id>")
 def get_job(job_id):
     return ok(
-        services.get_job(
+        services.job(
             current_user_id(),
             job_id,
         )

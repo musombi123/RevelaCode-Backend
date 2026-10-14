@@ -999,7 +999,7 @@ def retry_job(
         )
 
     if current.get("status") not in {
-        jobs.STATUS_FAILED,
+        jobs.JOB_FAILED,
         jobs.STATUS_CANCELLED,
     }:
         raise ValueError(
@@ -1019,7 +1019,7 @@ def retry_job(
         },
         {
             "$set": {
-                "status": jobs.STATUS_RETRYING,
+                "status": jobs.JOB_RETRYING,
                 "next_retry_at": timestamp,
                 "updated_at": timestamp,
                 "error": None,
@@ -1112,35 +1112,35 @@ def automation_status(
     pending = collection(jobs.JOBS).count_documents(
         {
             "school_id": school_id,
-            "status": jobs.STATUS_PENDING,
+            "status": jobs.JOB_PENDING,
         }
     )
 
     running = collection(jobs.JOBS).count_documents(
         {
             "school_id": school_id,
-            "status": jobs.STATUS_RUNNING,
+            "status": jobs.JOB_RUNNING,
         }
     )
 
     retrying = collection(jobs.JOBS).count_documents(
         {
             "school_id": school_id,
-            "status": jobs.STATUS_RETRYING,
+            "status": jobs.JOB_RETRYING,
         }
     )
 
     failed = collection(jobs.JOBS).count_documents(
         {
             "school_id": school_id,
-            "status": jobs.STATUS_FAILED,
+            "status": jobs.JOB_FAILED,
         }
     )
 
     succeeded = collection(jobs.JOBS).count_documents(
         {
             "school_id": school_id,
-            "status": jobs.STATUS_SUCCEEDED,
+            "status": jobs.JOB_SUCCEEDED,
         }
     )
 
