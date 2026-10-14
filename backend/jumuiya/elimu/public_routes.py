@@ -198,6 +198,7 @@ def _public_school_profile(school):
     allowed_fields = (
         "code",
         "public_slug",
+        "primary_domain",
         "name",
         "school_type",
         "description",
