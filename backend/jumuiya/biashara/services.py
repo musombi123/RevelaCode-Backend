@@ -2,6 +2,7 @@
 
 import re
 from datetime import datetime, timezone
+from urllib.parse import urlsplit
 
 from bson import ObjectId
 from bson.errors import InvalidId
@@ -1372,7 +1373,6 @@ def dashboard(
 # BUSINESS WEBSITE / PUBLIC STOREFRONT
 # =========================================================
 
-from urllib.parse import urlsplit
 
 DEFAULT_BIASHARA_WEBSITE_SETTINGS = {
     "headline": "",
