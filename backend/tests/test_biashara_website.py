@@ -1,6 +1,6 @@
 import pytest
 
-from jumuiya.biashara.services import normalize_biashara_website_settings
+from jumuiya.biashara.website import normalize_biashara_website_settings
 from jumuiya.core.errors import APIError
 
 
