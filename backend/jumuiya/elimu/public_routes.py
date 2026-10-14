@@ -1565,8 +1565,29 @@ def _render_domain_path(service_id, hostname=None):
 
 def _render_list_domains():
     _api_key, service_id, _target_host = _render_config()
-    payload = _render_request("GET", _render_domain_path(service_id) + "?limit=100")
-    return _render_domain_items(payload)
+    collected = []
+    seen_cursors = set()
+    cursor = None
+
+    # The service may host domains for many schools; do not mark later pages
+    # as failed merely because Render returned its first page (max 100).
+    for _page in range(100):
+        query = "?limit=100"
+        if cursor:
+            query += "&cursor=" + quote(cursor, safe="")
+        payload = _render_request("GET", _render_domain_path(service_id) + query)
+        items = _render_domain_items(payload)
+        collected.extend(items)
+
+        next_cursor = None
+        if isinstance(payload, list) and payload and isinstance(payload[-1], dict):
+            next_cursor = payload[-1].get("cursor")
+        if not next_cursor or next_cursor in seen_cursors or len(items) < 100:
+            break
+        seen_cursors.add(next_cursor)
+        cursor = str(next_cursor)
+
+    return collected
 
 def _domain_dns_instructions(hostname, target_host):
     labels = hostname.split(".")
@@ -1614,6 +1635,7 @@ def _domain_projection(document, school=None, target_host=None):
         "status": document.get("status", "pending_dns"),
         "verification_status": document.get("verification_status", "unverified"),
         "https_status": document.get("https_status", "pending"),
+        "redirect_for": document.get("redirect_for", ""),
         "is_primary": primary,
         "dns": _domain_dns_instructions(hostname, target),
         "created_at": _serialize(document.get("created_at")),
@@ -1627,6 +1649,7 @@ def _sync_domain_status(document, remote):
     updates = {
         "render_domain_id": str(remote.get("id") or document.get("render_domain_id") or ""),
         "verification_status": verification,
+        "redirect_for": str(remote.get("redirectForName") or ""),
         "updated_at": now,
     }
     if verification != "verified":
@@ -1705,6 +1728,7 @@ def create_owner_school_domain():
     document = {
         "school_id": _school_id(school), "school_oid": school["_id"],
         "hostname": hostname, "render_domain_id": str(remote.get("id", "")),
+        "redirect_for": str(remote.get("redirectForName") or ""),
         "verification_status": str(remote.get("verificationStatus", "unverified")).lower(),
         "https_status": "pending", "status": "pending_dns",
         "created_by": str(current_user_id()), "created_at": now, "updated_at": now,
@@ -1747,6 +1771,8 @@ def set_owner_primary_school_domain(domain_id):
         raise APIError("Domain not found in this school.", 404, "domain_not_found")
     if document.get("status") != "active" or document.get("https_status") != "active" or document.get("verification_status") != "verified":
         raise APIError("Only a verified domain with working HTTPS can be selected as primary.", 409, "domain_not_active")
+    if document.get("redirect_for"):
+        raise APIError("This hostname is configured by the hosting provider to redirect to " + document["redirect_for"] + ". Select the destination hostname as primary instead.", 409, "domain_redirects_elsewhere")
     updated = collection(SCHOOLS).find_one_and_update(
         {"_id": school["_id"], "owner_user_id": str(current_user_id()), "status": "active", "verification_status": VERIFIED, "is_demo": {"$ne": True}},
         {"$set": {"primary_domain": document["hostname"], "primary_domain_updated_at": datetime.now(timezone.utc)}},
