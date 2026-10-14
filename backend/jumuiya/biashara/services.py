@@ -1367,3 +1367,278 @@ def dashboard(
             ),
         },
     }
+
+# =========================================================
+# BUSINESS WEBSITE / PUBLIC STOREFRONT
+# =========================================================
+
+from urllib.parse import urlsplit
+
+DEFAULT_BIASHARA_WEBSITE_SETTINGS = {
+    "headline": "",
+    "tagline": "",
+    "about": "",
+    "hero_image_url": "",
+    "primary_color": "#1d4ed8",
+    "accent_color": "#0f766e",
+    "seo_title": "",
+    "seo_description": "",
+    "whatsapp_number": "",
+    "show_products": True,
+    "contact_enabled": True,
+    "published": False,
+    "published_at": None,
+    "updated_at": None,
+}
+
+WEBSITE_TEXT_LIMITS = {
+    "headline": 120,
+    "tagline": 240,
+    "about": 1600,
+    "seo_title": 70,
+    "seo_description": 180,
+    "whatsapp_number": 32,
+}
+
+
+def normalize_biashara_website_settings(payload, current=None):
+    """Validate website settings without accepting arbitrary HTML or scripts."""
+    if not isinstance(payload, dict):
+        raise APIError("Website settings must be a JSON object.", 400, "invalid_website_settings")
+
+    current = current if isinstance(current, dict) else {}
+    result = dict(DEFAULT_BIASHARA_WEBSITE_SETTINGS)
+    result.update(current)
+
+    for field, limit in WEBSITE_TEXT_LIMITS.items():
+        if field not in payload:
+            continue
+        value = payload[field]
+        if not isinstance(value, str):
+            raise APIError(field.replace("_", " ").capitalize() + " must be text.", 422, "validation_error")
+        value = value.strip()
+        if len(value) > limit:
+            raise APIError(field.replace("_", " ").capitalize() + " must be " + str(limit) + " characters or fewer.", 422, "validation_error")
+        if field != "about" and ("<" in value or ">" in value):
+            raise APIError("HTML is not allowed in website text fields.", 422, "invalid_website_text")
+        result[field] = value
+
+    for field in ("hero_image_url",):
+        if field in payload:
+            value = payload[field]
+            if not isinstance(value, str):
+                raise APIError("Hero image URL must be text.", 422, "validation_error")
+            value = value.strip()
+            if value:
+                try:
+                    parsed = urlsplit(value)
+                except ValueError as exc:
+                    raise APIError("Hero image URL is invalid.", 422, "invalid_website_url") from exc
+                if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
+                    raise APIError("Hero image URL must be a valid HTTPS URL.", 422, "invalid_website_url")
+            result[field] = value
+
+    for field in ("primary_color", "accent_color"):
+        if field in payload:
+            value = payload[field]
+            if not isinstance(value, str) or not re.fullmatch(r"#[0-9a-fA-F]{6}", value.strip()):
+                raise APIError(field.replace("_", " ").capitalize() + " must be a six-digit hex colour.", 422, "invalid_website_color")
+            result[field] = value.strip().lower()
+
+    for field in ("show_products", "contact_enabled", "published"):
+        if field in payload:
+            if not isinstance(payload[field], bool):
+                raise APIError(field.replace("_", " ").capitalize() + " must be true or false.", 422, "validation_error")
+            result[field] = payload[field]
+
+    if "whatsapp_number" in payload:
+        value = result["whatsapp_number"]
+        if value and not re.fullmatch(r"[+0-9() .-]{7,32}", value):
+            raise APIError("WhatsApp number contains unsupported characters.", 422, "invalid_phone")
+        result["whatsapp_number"] = value
+
+    return result
+
+
+def get_biashara_website_settings(user_id):
+    business = _require_business(user_id)
+    settings = dict(DEFAULT_BIASHARA_WEBSITE_SETTINGS)
+    stored = business.get("website")
+    if isinstance(stored, dict):
+        settings.update(stored)
+    return {
+        "slug": business.get("slug", ""),
+        "url_path": "/b/" + str(business.get("slug", "")),
+        "settings": settings,
+    }
+
+
+def save_biashara_website_settings(user_id, payload):
+    business = _require_business(user_id)
+    now = now_utc()
+    current = business.get("website") if isinstance(business.get("website"), dict) else {}
+    settings = normalize_biashara_website_settings(payload, current)
+    settings["updated_at"] = now.isoformat()
+    if settings.get("published"):
+        settings["published_at"] = settings.get("published_at") or now.isoformat()
+    else:
+        settings["published_at"] = None
+
+    collection("jumuiya_businesses").update_one(
+        {"_id": clean_id(business["id"]), "owner_user_id": str(user_id)},
+        {"$set": {"website": settings, "updated_at": now}},
+    )
+    log_action(user_id, "business.website_updated", "business", clean_id(business["id"]))
+    return {
+        "slug": business.get("slug", ""),
+        "url_path": "/b/" + str(business.get("slug", "")),
+        "settings": settings,
+    }
+
+
+def get_public_biashara_website(slug):
+    normalized_slug = str(slug or "").strip().lower()
+    if not normalized_slug or not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", normalized_slug):
+        raise APIError("Business website not found.", 404, "website_not_found")
+
+    business = collection("jumuiya_businesses").find_one({
+        "slug": normalized_slug,
+        "status": {"$ne": "inactive"},
+        "website.published": True,
+    })
+    if not business:
+        raise APIError("Business website not found or not published.", 404, "website_not_found")
+
+    website = business.get("website") if isinstance(business.get("website"), dict) else {}
+    public_business = {
+        "name": business.get("name", ""),
+        "slug": business.get("slug", ""),
+        "description": business.get("description", ""),
+        "phone": business.get("phone", ""),
+        "email": business.get("email", ""),
+        "location": business.get("location", ""),
+        "county": business.get("county", ""),
+        "currency": business.get("currency", "KES") or "KES",
+        "logo_url": business.get("logo_url", ""),
+    }
+    public_website = {
+        "headline": website.get("headline") or business.get("name", ""),
+        "tagline": website.get("tagline", ""),
+        "about": website.get("about") or business.get("description", ""),
+        "hero_image_url": website.get("hero_image_url", ""),
+        "primary_color": website.get("primary_color", "#1d4ed8"),
+        "accent_color": website.get("accent_color", "#0f766e"),
+        "seo_title": website.get("seo_title") or business.get("name", ""),
+        "seo_description": website.get("seo_description") or business.get("description", ""),
+        "whatsapp_number": website.get("whatsapp_number", ""),
+        "show_products": website.get("show_products", True) is True,
+        "contact_enabled": website.get("contact_enabled", True) is True,
+    }
+
+    products = []
+    if public_website["show_products"]:
+        product_docs = collection("jumuiya_products").find(
+            {
+                "business_id": str(business["_id"]),
+                "status": "active",
+            },
+            {
+                "_id": 1,
+                "name": 1,
+                "description": 1,
+                "category": 1,
+                "price": 1,
+                "currency": 1,
+                "image_url": 1,
+                "stock_quantity": 1,
+            },
+        ).sort("created_at", -1).limit(60)
+        for product in product_docs:
+            products.append({
+                "id": str(product.get("_id", "")),
+                "name": product.get("name", ""),
+                "description": product.get("description", ""),
+                "category": product.get("category", ""),
+                "price": product.get("price", 0),
+                "currency": product.get("currency") or public_business["currency"],
+                "image_url": product.get("image_url", ""),
+                "available": float(product.get("stock_quantity", 0) or 0) > 0,
+            })
+
+    return {
+        "business": public_business,
+        "website": public_website,
+        "products": products,
+    }
+
+
+def submit_public_biashara_inquiry(slug, payload):
+    if not isinstance(payload, dict):
+        raise APIError("A JSON request body is required.", 400, "invalid_json")
+
+    # Low-cost honeypot: automated submissions that fill this field are accepted
+    # without creating a lead. Production should also enable request rate limits.
+    if str(payload.get("website", "")).strip():
+        return {"accepted": True}
+
+    normalized_slug = str(slug or "").strip().lower()
+    business = collection("jumuiya_businesses").find_one({
+        "slug": normalized_slug,
+        "status": {"$ne": "inactive"},
+        "website.published": True,
+        "website.contact_enabled": True,
+    })
+    if not business:
+        raise APIError("Business website not found or contact is disabled.", 404, "website_not_found")
+
+    def text_field(name, limit, required=False):
+        value = payload.get(name, "")
+        if not isinstance(value, str):
+            raise APIError(name.replace("_", " ").capitalize() + " must be text.", 422, "validation_error")
+        value = value.strip()
+        if required and not value:
+            raise APIError(name.replace("_", " ").capitalize() + " is required.", 422, "validation_error")
+        if len(value) > limit:
+            raise APIError(name.replace("_", " ").capitalize() + " is too long.", 422, "validation_error")
+        if "<" in value or ">" in value:
+            raise APIError("HTML is not allowed in inquiry fields.", 422, "invalid_inquiry_text")
+        return value
+
+    name = text_field("name", 80, True)
+    email = text_field("email", 254)
+    phone = text_field("phone", 32)
+    message = text_field("message", 2000, True)
+    if not email and not phone:
+        raise APIError("Provide an email address or phone number.", 422, "contact_required")
+    if email and not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email):
+        raise APIError("Enter a valid email address.", 422, "invalid_email")
+    if phone and not re.fullmatch(r"[+0-9() .-]{7,32}", phone):
+        raise APIError("Enter a valid phone number.", 422, "invalid_phone")
+
+    now = now_utc()
+    document = {
+        "business_id": str(business["_id"]),
+        "owner_user_id": str(business.get("owner_user_id", "")),
+        "business_slug": normalized_slug,
+        "source": "public_website",
+        "name": name,
+        "email": email,
+        "phone": phone,
+        "message": message,
+        "status": "new",
+        "created_at": now,
+        "updated_at": now,
+    }
+    collection("jumuiya_business_website_inquiries").insert_one(document)
+    return {"accepted": True}
+
+
+def list_biashara_website_inquiries(user_id, limit=30):
+    business = _require_business(user_id)
+    documents = collection("jumuiya_business_website_inquiries").find(
+        {
+            "business_id": business["id"],
+            "owner_user_id": str(user_id),
+        }
+    ).sort("created_at", -1).limit(_bounded_list_limit(limit))
+    return serialise_many(documents)
