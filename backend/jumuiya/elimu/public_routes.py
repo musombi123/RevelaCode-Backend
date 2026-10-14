@@ -4,7 +4,7 @@ from __future__ import annotations
 import os
 import re
 import requests
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from urllib.parse import quote, urlparse
 
 from bson import ObjectId
@@ -51,6 +51,7 @@ EVENTS = "jumuiya_school_events"
 CBC = "jumuiya_cbc_projects"
 DOCUMENTS = "jumuiya_elimu_public_documents"
 SCHOOL_DOMAINS = "jumuiya_elimu_school_domains"
+SCHOOL_INQUIRIES = "jumuiya_elimu_public_inquiries"
 
 REVELACODE_DEFAULT_RENDER_HOST = "revelacode-frontend.onrender.com"
 _RENDER_DOMAINS_INDEX_READY = False
@@ -1768,6 +1769,139 @@ def get_public_school_by_custom_domain():
     if not school:
         raise APIError("No published school website is configured for this hostname.", 404, "school_domain_not_found")
     return ok({"school": _public_school_profile(school), "hostname": hostname, "domain_status": "active"})
+
+# ============================================================
+# PUBLIC SCHOOL INQUIRIES: RECEIPT AND OWNER INBOX
+# ============================================================
+
+def _school_for_public_inquiry(payload):
+    hostname = _text(payload.get("hostname"))
+    if hostname:
+        hostname = _domain_host(hostname)
+        domain = collection(SCHOOL_DOMAINS).find_one({
+            "hostname": hostname,
+            "status": "active",
+            "verification_status": "verified",
+            "https_status": "active",
+        })
+        if not domain:
+            raise APIError("This hostname is not an active verified school website.", 404, "school_domain_not_found")
+        try:
+            oid = domain.get("school_oid") or ObjectId(str(domain.get("school_id")))
+        except (InvalidId, TypeError, ValueError) as exc:
+            raise APIError("The school domain mapping is invalid.", 404, "school_domain_not_found") from exc
+        school = collection(SCHOOLS).find_one({"_id": oid, **_verified_school_query()})
+    else:
+        school_slug = _text(payload.get("school_slug") or payload.get("school_code"))
+        if not school_slug or len(school_slug) > 120:
+            raise APIError("A valid public school slug is required.", 422, "school_slug_required")
+        school = collection(SCHOOLS).find_one({
+            **_verified_school_query(),
+            "$or": [{"public_slug": school_slug}, {"code": school_slug}],
+        })
+    if not school:
+        raise APIError("The school website is not published or could not be found.", 404, "public_school_not_found")
+    return school
+
+
+def _public_inquiry_projection(document):
+    return {
+        "id": str(document.get("_id", "")),
+        "name": document.get("name", ""),
+        "email": document.get("email", ""),
+        "phone": document.get("phone", ""),
+        "topic": document.get("topic", "general"),
+        "message": document.get("message", ""),
+        "status": document.get("status", "new"),
+        "created_at": _serialize(document.get("created_at")),
+        "updated_at": _serialize(document.get("updated_at")),
+    }
+
+
+@public_bp.post("/public/inquiries")
+def submit_public_school_inquiry():
+    payload = _json_body()
+    # Honeypot fields are expected to remain empty; never store the bot payload.
+    if _text(payload.get("website_confirmation")):
+        raise APIError("This inquiry could not be accepted. Check the form and try again.", 422, "inquiry_rejected")
+
+    name = _text(payload.get("name"))
+    email = _text(payload.get("email")).lower()
+    phone = _text(payload.get("phone"))
+    topic = _text(payload.get("topic") or "general").lower()
+    message = _text(payload.get("message"))
+    if len(name) < 2 or len(name) > 100:
+        raise APIError("Name must contain between 2 and 100 characters.", 422, "validation_error")
+    if len(email) > 254 or not re.fullmatch(r"[^@\s]{1,64}@[^@\s.]+(?:\.[^@\s.]+)+", email):
+        raise APIError("Enter a valid email address for the school to respond to.", 422, "validation_error")
+    if phone and len(phone) > 40:
+        raise APIError("Phone number must be 40 characters or fewer.", 422, "validation_error")
+    if topic not in {"admissions", "fees", "general", "other"}:
+        raise APIError("Choose a supported inquiry topic.", 422, "validation_error")
+    if len(message) < 15 or len(message) > 4000:
+        raise APIError("Message must contain between 15 and 4,000 characters.", 422, "validation_error")
+
+    school = _school_for_public_inquiry(payload)
+    school_id = _school_id(school)
+    now = datetime.now(timezone.utc)
+    cutoff = now - timedelta(minutes=10)
+    inquiries = collection(SCHOOL_INQUIRIES)
+    if inquiries.count_documents({"school_id": school_id, "email": email, "created_at": {"$gte": cutoff}}) >= 3:
+        raise APIError("Too many inquiries from this email address. Please try again later.", 429, "inquiry_rate_limited")
+    if inquiries.count_documents({"school_id": school_id, "created_at": {"$gte": cutoff}}) >= 50:
+        raise APIError("This school has received many recent inquiries. Please try again later.", 429, "inquiry_rate_limited")
+
+    document = {
+        "school_id": school_id,
+        "school_oid": school["_id"],
+        "name": name,
+        "email": email,
+        "phone": phone,
+        "topic": topic,
+        "message": message,
+        "status": "new",
+        "source_hostname": _text(payload.get("hostname")).lower() or "",
+        "created_at": now,
+        "updated_at": now,
+    }
+    result = inquiries.insert_one(document)
+    if not result.inserted_id:
+        raise APIError("The inquiry could not be saved. Please try again.", 503, "inquiry_save_failed")
+    return ok(
+        {"submitted": True},
+        "Your inquiry was received and saved for school administration review. It has not been emailed automatically.",
+        201,
+    )
+
+
+@public_bp.get("/school/inquiries")
+@require_authenticated
+def list_owner_school_inquiries():
+    school = _current_owner_school()
+    limit = min(max(_limit(), 1), 100)
+    cursor = collection(SCHOOL_INQUIRIES).find({"school_id": _school_id(school)}).sort("created_at", -1).limit(limit)
+    result = [_public_inquiry_projection(item) for item in cursor]
+    return ok({"inquiries": result, "count": len(result)}, "School inquiries loaded.")
+
+
+@public_bp.patch("/school/inquiries/<inquiry_id>/status")
+@require_authenticated
+def update_owner_school_inquiry_status(inquiry_id):
+    school = _current_owner_school()
+    payload = _json_body()
+    status = _text(payload.get("status")).lower()
+    if status not in {"new", "read", "archived"}:
+        raise APIError("Inquiry status must be new, read, or archived.", 422, "validation_error")
+    oid = _object_id(inquiry_id, "inquiry")
+    result = collection(SCHOOL_INQUIRIES).find_one_and_update(
+        {"_id": oid, "school_id": _school_id(school)},
+        {"$set": {"status": status, "updated_at": datetime.now(timezone.utc)}},
+        return_document=True,
+    )
+    if not result:
+        raise APIError("Inquiry not found in this school.", 404, "inquiry_not_found")
+    return ok({"inquiry": _public_inquiry_projection(result)}, "Inquiry status updated.")
+
 
 # ============================================================
 # SCHOOL OWNER: DOCUMENT MANAGEMENT
