@@ -1419,7 +1419,7 @@ def normalize_biashara_website_settings(payload, current=None):
         value = value.strip()
         if len(value) > limit:
             raise APIError(field.replace("_", " ").capitalize() + " must be " + str(limit) + " characters or fewer.", 422, "validation_error")
-        if field != "about" and ("<" in value or ">" in value):
+        if "<" in value or ">" in value:
             raise APIError("HTML is not allowed in website text fields.", 422, "invalid_website_text")
         result[field] = value
 
@@ -1530,7 +1530,7 @@ def get_public_biashara_website(slug):
         "accent_color": website.get("accent_color", "#0f766e"),
         "seo_title": website.get("seo_title") or business.get("name", ""),
         "seo_description": website.get("seo_description") or business.get("description", ""),
-        "whatsapp_number": website.get("whatsapp_number", ""),
+        "whatsapp_number": website.get("whatsapp_number", "") if website.get("contact_enabled", True) is True else "",
         "show_products": website.get("show_products", True) is True,
         "contact_enabled": website.get("contact_enabled", True) is True,
     }
