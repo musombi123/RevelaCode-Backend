@@ -21,7 +21,6 @@ from backend.jumuiya.shamba import (
 from backend.jumuiya.shamba.trust_routes import (
     shamba_trust_bp,
     require_farm_rights_review,
-    require_verified_farm_workspace,
 )
 
 
@@ -873,7 +872,6 @@ def get_command_center(farm_id):
 
 @shamba_bp.get("/dashboard")
 @require_authenticated
-@require_verified_farm_workspace
 def get_dashboard():
     """
     Main Shamba Farm Command Center.
