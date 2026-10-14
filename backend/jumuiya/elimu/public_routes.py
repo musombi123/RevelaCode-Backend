@@ -200,6 +200,11 @@ def _public_school_profile(school):
         "code",
         "public_slug",
         "primary_domain",
+        "seo_title",
+        "seo_description",
+        "favicon_url",
+        "social_image_url",
+        "website_theme",
         "name",
         "school_type",
         "description",
@@ -1182,6 +1187,10 @@ _WEBSITE_TEXT_LIMITS = {
     "about": 4000,
     "about_school": 4000,
     "homepage_title": 180,
+    "seo_title": 180,
+    "seo_description": 300,
+    "favicon_url": 1000,
+    "social_image_url": 1000,
     "motto": 300,
     "mission": 2000,
     "vision": 2000,
@@ -1204,7 +1213,7 @@ _WEBSITE_TEXT_LIMITS = {
     "address": 300,
 }
 
-_WEBSITE_URL_FIELDS = {"website", "logo_url", "cover_image_url"}
+_WEBSITE_URL_FIELDS = {"website", "logo_url", "cover_image_url", "favicon_url", "social_image_url"}
 
 # These are curated public-facing offerings managed by the verified school owner.
 # Only allowlisted fields are stored/returned; student records and internal staff
