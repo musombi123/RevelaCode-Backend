@@ -675,3 +675,46 @@ def get_dashboard():
             user_id()
         )
     )
+
+
+# =========================================================
+# BUSINESS WEBSITE / PUBLIC STOREFRONT
+# =========================================================
+
+@biashara_bp.get("/website")
+@require_authenticated
+def get_website_settings():
+    return ok(services.get_biashara_website_settings(user_id()))
+
+
+@biashara_bp.put("/website")
+@require_authenticated
+def save_website_settings():
+    return ok(
+        services.save_biashara_website_settings(user_id(), body()),
+        "Website settings saved.",
+    )
+
+
+@biashara_bp.get("/website/inquiries")
+@require_authenticated
+def get_website_inquiries():
+    return ok(
+        services.list_biashara_website_inquiries(
+            user_id(),
+            query_limit(default=30),
+        )
+    )
+
+
+@biashara_bp.get("/public/<slug>")
+def get_public_website(slug):
+    return ok(services.get_public_biashara_website(slug))
+
+
+@biashara_bp.post("/public/<slug>/inquiries")
+def create_public_website_inquiry(slug):
+    return created(
+        services.submit_public_biashara_inquiry(slug, body()),
+        "Thank you. Your inquiry has been received.",
+    )
