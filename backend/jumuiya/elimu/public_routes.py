@@ -1544,7 +1544,8 @@ def _render_domain_items(payload):
     for entry in payload:
         if not isinstance(entry, dict):
             continue
-        item = entry.get("value", entry.get("item", entry))
+        # Render's list API wraps each row as {"customDomain": {...}, "cursor": "..."}.
+        item = entry.get("customDomain", entry.get("value", entry.get("item", entry)))
         if isinstance(item, dict) and item.get("name"):
             result.append(item)
     return result
@@ -1566,22 +1567,30 @@ def _domain_dns_instructions(hostname, target_host):
         "com.au", "net.au", "org.au", "co.nz", "co.za",
         "com.ng", "com.gh", "co.ug", "com.tz",
     }
-    is_apex = len(labels) == 2 or any(
-        hostname.endswith("." + suffix) and len(labels) == len(suffix.split(".")) + 1
-        for suffix in multi_label_suffixes
+    matched_suffix = next(
+        (suffix for suffix in sorted(multi_label_suffixes, key=len, reverse=True)
+         if hostname.endswith("." + suffix)),
+        None,
     )
-    if is_apex:
+    apex = len(labels) == 2 or bool(
+        matched_suffix and len(labels) == len(matched_suffix.split(".")) + 1
+    )
+    if apex:
         return {
             "record_type": "A (fallback) or ALIAS / ANAME / CNAME flattening",
             "host": "@",
             "value": "216.24.57.1",
             "alternate_target": target_host,
-            "note": "Use an ALIAS/ANAME record or CNAME flattening to the Render hostname when your provider supports it. Otherwise use Render's documented apex A-record target shown here. Cloudflare root domains should use CNAME flattening. Remove conflicting AAAA records.",
+            "note": "Use an ALIAS/ANAME record or CNAME flattening to the Render hostname when your DNS provider supports it. Otherwise use Render's documented apex A-record target shown here. Cloudflare root domains should use CNAME flattening. Remove conflicting AAAA records.",
         }
-    zone_prefix = ".".join(labels[:-2]) if len(labels) > 2 and ".".join(labels[-2:]) in multi_label_suffixes else labels[0]
+    relative_host_labels = len(labels) - (
+        len(matched_suffix.split(".")) + 1 if matched_suffix else 2
+    )
+    relative_host_labels = max(relative_host_labels, 1)
+    dns_host = ".".join(labels[:relative_host_labels])
     return {
         "record_type": "CNAME",
-        "host": zone_prefix,
+        "host": dns_host,
         "value": target_host,
         "note": "Create a CNAME pointing to the exact Render service hostname shown. Remove conflicting AAAA records if present.",
     }
@@ -1619,10 +1628,10 @@ def _sync_domain_status(document, remote):
             response_status = response.status_code
             location = str(response.headers.get("Location", ""))
             response.close()
-            if response_status >= 500 or location.lower().startswith("http://"):
+            if response_status >= 400 or location.lower().startswith("http://"):
                 updates.update({"status": "routing_pending", "https_status": "pending"})
             else:
-                # The HTTPS request uses normal certificate validation; success means TLS is usable.
+                # The HTTPS request uses normal certificate validation; success means TLS and an application response are usable.
                 updates.update({"status": "active", "https_status": "active"})
         except requests.RequestException:
             updates.update({"status": "https_pending", "https_status": "pending"})
