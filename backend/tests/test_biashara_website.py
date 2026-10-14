@@ -1,7 +1,7 @@
 import pytest
 
 from jumuiya.biashara.website import normalize_biashara_website_settings
-from jumuiya.core.errors import APIError
+from backend.jumuiya.core.errors import APIError
 
 
 def test_website_settings_accept_safe_publish_configuration():
