@@ -2379,7 +2379,31 @@ def dashboard(
             "generated_at": now_utc(),
         })
 
-    primary = farms[0]
+    # The dashboard route requires at least one farm whose rights have
+    # been reviewed. Never anchor the command center to a newer unreviewed
+    # farm merely because it appears first in the creation-date ordering.
+    verified_farms = [
+        farm for farm in farms
+        if str(farm.get("legal_verification_status") or "").strip().lower() == "verified"
+    ]
+    if not verified_farms:
+        return serialise({
+            "farmer": farmer,
+            "farms": farms,
+            "primary_farm": None,
+            "summary": {
+                "farm_count": len(farms),
+                "crop_count": 0,
+                "active_crop_count": 0,
+                "harvest_count": 0,
+                "health_score": None,
+            },
+            "needs_setup": True,
+            "verification_required": True,
+            "generated_at": now_utc(),
+        })
+
+    primary = verified_farms[0]
 
     primary_id = primary.get(
         "id"

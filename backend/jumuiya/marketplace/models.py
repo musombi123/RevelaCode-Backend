@@ -161,6 +161,12 @@ def listing_document(user_id, data):
             user_id
         ),
 
+        "farm_id": (
+            str(data.get("farm_id"))
+            if data.get("farm_id")
+            else None
+        ),
+
         "title": title,
 
         "description": description,

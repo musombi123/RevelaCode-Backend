@@ -237,6 +237,12 @@ def add_listing():
             "location",
             max_length=200,
         ),
+
+        "farm_id": text(
+            data,
+            "farm_id",
+            max_length=120,
+        ) or None,
     }
 
     allowed_hubs = {

@@ -116,6 +116,37 @@ def listings(
             category
         ).strip().lower()
 
+    normalized_hub = str(hub or "").strip().lower()
+    reviewed_owner_by_id = {}
+
+    # Filter legacy/unreviewed Shamba listings even when the client requests
+    # the all-hubs marketplace without passing ?hub=shamba.
+    if normalized_hub in {"", "shamba"}:
+        reviewed_farms = list(collection("jumuiya_farms").find(
+            {
+                "legal_verification_status": "verified",
+                "status": {"$ne": "deleted"},
+            },
+            {"_id": 1, "owner_user_id": 1},
+        ))
+        reviewed_owner_by_id = {
+            str(item.get("_id")): str(item.get("owner_user_id") or "")
+            for item in reviewed_farms
+        }
+        reviewed_ids = list(reviewed_owner_by_id.keys())
+
+        if normalized_hub == "shamba":
+            if not reviewed_ids:
+                return []
+            query["farm_id"] = {"$in": reviewed_ids}
+        elif reviewed_ids:
+            query["$or"] = [
+                {"hub": {"$ne": "shamba"}},
+                {"hub": "shamba", "farm_id": {"$in": reviewed_ids}},
+            ]
+        else:
+            query["hub"] = {"$ne": "shamba"}
+
     documents = (
         collection(
             "jumuiya_marketplace_listings"
@@ -126,6 +157,21 @@ def listings(
             -1,
         )
     )
+
+    if normalized_hub == "shamba":
+        # For Shamba-only requests, seller identity must match the reviewed farm owner.
+        documents = [
+            item for item in documents
+            if reviewed_owner_by_id.get(str(item.get("farm_id"))) == str(item.get("seller_user_id") or "")
+        ]
+    elif not normalized_hub:
+        # The general marketplace includes all hubs, but only reviewed and correctly
+        # owner-linked Shamba listings are allowed into that result set.
+        documents = [
+            item for item in documents
+            if str(item.get("hub") or "community").strip().lower() != "shamba"
+            or reviewed_owner_by_id.get(str(item.get("farm_id"))) == str(item.get("seller_user_id") or "")
+        ]
 
     return serialize_many(
         documents
@@ -151,10 +197,35 @@ def create_listing(
             "authentication_required",
         )
 
+    resolved_data = dict(data)
+    if str(resolved_data.get("hub", "community")).strip().lower() == "shamba":
+        requested_farm_id = str(resolved_data.get("farm_id") or "").strip()
+        farm_query = {
+            "owner_user_id": str(user_id),
+            "legal_verification_status": "verified",
+            "status": {"$ne": "deleted"},
+        }
+        if requested_farm_id:
+            try:
+                requested_oid = ObjectId(requested_farm_id)
+                farm_query["_id"] = requested_oid
+            except (InvalidId, TypeError, ValueError):
+                raise APIError("Invalid farm identifier for this Shamba listing.", 422, "invalid_farm_id")
+            farm = collection("jumuiya_farms").find_one(farm_query)
+        else:
+            farm = collection("jumuiya_farms").find_one(farm_query, sort=[("created_at", -1)])
+        if not farm:
+            raise APIError(
+                "Shamba listings require a farm you own or are authorized to manage whose rights have been reviewed by RevelaCode.",
+                403,
+                "farm_verification_required",
+            )
+        resolved_data["farm_id"] = str(farm["_id"])
+
     try:
         document = listing_document(
             user_id,
-            data,
+            resolved_data,
         )
 
     except ValueError as exc:

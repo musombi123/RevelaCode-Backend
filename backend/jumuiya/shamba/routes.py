@@ -18,12 +18,18 @@ from backend.jumuiya.shamba import (
     schemas,
     services,
 )
+from backend.jumuiya.shamba.trust_routes import (
+    shamba_trust_bp,
+    require_farm_rights_review,
+    require_verified_farm_workspace,
+)
 
 
 shamba_bp = Blueprint(
     "jumuiya_shamba",
     __name__,
 )
+shamba_bp.register_blueprint(shamba_trust_bp)
 
 
 # ============================================================
@@ -390,6 +396,7 @@ def update_farm_location(farm_id):
     "/farms/<farm_id>/crops"
 )
 @require_authenticated
+@require_farm_rights_review
 def get_crops(farm_id):
     return ok(
         services.list_crops(
@@ -404,6 +411,7 @@ def get_crops(farm_id):
     "/farms/<farm_id>/crops"
 )
 @require_authenticated
+@require_farm_rights_review
 def add_crop(farm_id):
     payload = validate(
         schemas.crop_payload,
@@ -428,6 +436,7 @@ def add_crop(farm_id):
     "/farms/<farm_id>/activities"
 )
 @require_authenticated
+@require_farm_rights_review
 def get_activities(farm_id):
     return ok(
         services.list_activities(
@@ -441,6 +450,7 @@ def get_activities(farm_id):
     "/farms/<farm_id>/activities"
 )
 @require_authenticated
+@require_farm_rights_review
 def add_activity(farm_id):
     payload = validate(
         schemas.activity_payload,
@@ -465,6 +475,7 @@ def add_activity(farm_id):
     "/farms/<farm_id>/harvests"
 )
 @require_authenticated
+@require_farm_rights_review
 def get_harvests(farm_id):
     return ok(
         services.list_harvests(
@@ -478,6 +489,7 @@ def get_harvests(farm_id):
     "/farms/<farm_id>/harvests"
 )
 @require_authenticated
+@require_farm_rights_review
 def add_harvest(farm_id):
     payload = validate(
         schemas.harvest_payload,
@@ -502,6 +514,7 @@ def add_harvest(farm_id):
     "/farms/<farm_id>/insights"
 )
 @require_authenticated
+@require_farm_rights_review
 def get_farm_insights(farm_id):
     """
     Return the current farm intelligence snapshot.
@@ -522,6 +535,7 @@ def get_farm_insights(farm_id):
     "/farms/<farm_id>/insights/refresh"
 )
 @require_authenticated
+@require_farm_rights_review
 def refresh_farm_insights(farm_id):
     """
     Explicitly refresh farm intelligence.
@@ -552,6 +566,7 @@ def refresh_farm_insights(farm_id):
     "/farms/<farm_id>/recommendations"
 )
 @require_authenticated
+@require_farm_rights_review
 def get_recommendations(farm_id):
     """
     Return active recommendations.
@@ -569,6 +584,7 @@ def get_recommendations(farm_id):
     "/farms/<farm_id>/recommendations"
 )
 @require_authenticated
+@require_farm_rights_review
 def create_recommendation(farm_id):
     """
     Create a manual recommendation.
@@ -660,6 +676,7 @@ def create_recommendation(farm_id):
     "/farms/<farm_id>/alerts"
 )
 @require_authenticated
+@require_farm_rights_review
 def get_farm_alerts(farm_id):
     """
     Return active agricultural alerts.
@@ -677,6 +694,7 @@ def get_farm_alerts(farm_id):
     "/farms/<farm_id>/alerts/summary"
 )
 @require_authenticated
+@require_farm_rights_review
 def get_alert_summary(farm_id):
     """
     Return active alerts plus unread count.
@@ -694,6 +712,7 @@ def get_alert_summary(farm_id):
     "/farms/<farm_id>/alerts/<alert_id>/read"
 )
 @require_authenticated
+@require_farm_rights_review
 def mark_alert_read(
     farm_id,
     alert_id,
@@ -720,6 +739,7 @@ def mark_alert_read(
     "/farms/<farm_id>/weather"
 )
 @require_authenticated
+@require_farm_rights_review
 def get_farm_weather(farm_id):
     """
     Return the weather snapshot associated with the farm.
@@ -744,6 +764,7 @@ def get_farm_weather(farm_id):
     "/farms/<farm_id>/market"
 )
 @require_authenticated
+@require_farm_rights_review
 def get_farm_market(farm_id):
     """
     Return market intelligence associated with the farm.
@@ -765,6 +786,7 @@ def get_farm_market(farm_id):
     "/farms/<farm_id>/crops/<crop_id>/analysis"
 )
 @require_authenticated
+@require_farm_rights_review
 def get_crop_analysis(
     farm_id,
     crop_id,
@@ -795,6 +817,7 @@ def get_crop_analysis(
     "/farms/<farm_id>/ai-context"
 )
 @require_authenticated
+@require_farm_rights_review
 def get_ai_context(farm_id):
     """
     Return structured Shamba context for RevelaAI.
@@ -828,6 +851,7 @@ def get_ai_context(farm_id):
     "/farms/<farm_id>/command-center"
 )
 @require_authenticated
+@require_farm_rights_review
 def get_command_center(farm_id):
     """
     Complete Farm Operating System payload.
@@ -849,6 +873,7 @@ def get_command_center(farm_id):
 
 @shamba_bp.get("/dashboard")
 @require_authenticated
+@require_verified_farm_workspace
 def get_dashboard():
     """
     Main Shamba Farm Command Center.
