@@ -121,6 +121,17 @@ INDEX_DEFINITIONS = {
         ),
     ],
 
+    "jumuiya_business_website_inquiries": [
+        (
+            [
+                ("business_id", ASCENDING),
+                ("owner_user_id", ASCENDING),
+                ("created_at", DESCENDING),
+            ],
+            {"name": "ix_biashara_website_inquiries_owner_created"},
+        ),
+    ],
+
     "jumuiya_audit_logs": [
         (
             [
