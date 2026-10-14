@@ -237,6 +237,8 @@ def _public_school_profile(school):
         else:
             result[field] = school.get(field, "")
 
+    # Public website design settings are an allowlisted, validated projection.
+    result["website_theme"] = _public_website_theme(school.get("website_theme"))
     result["public"] = True
 
     return _serialize(result)
@@ -1085,6 +1087,87 @@ def update_public_profile_setting():
 # SCHOOL OWNER: PUBLIC WEBSITE SETTINGS
 # ============================================================
 
+# Website themes are data, never arbitrary CSS or executable content.
+_WEBSITE_THEME_DEFAULTS = {
+    "primary": "#047857",
+    "secondary": "#064e3b",
+    "accent": "#d4af37",
+    "background": "#f8fafc",
+    "surface": "#ffffff",
+    "heading": "#0f172a",
+    "body": "#475569",
+    "header": "#ffffff",
+    "footer": "#ffffff",
+    "font_style": "modern",
+    "button_style": "solid",
+}
+_WEBSITE_THEME_COLOR_FIELDS = tuple(
+    field for field in _WEBSITE_THEME_DEFAULTS if field not in {"font_style", "button_style"}
+)
+_WEBSITE_THEME_OPTIONS = {
+    "font_style": {"modern", "classic", "humanist"},
+    "button_style": {"solid", "outline", "soft"},
+}
+_WEBSITE_THEME_COLOR_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
+
+
+def _public_website_theme(value):
+    """Return a safe public theme, falling back field-by-field to defaults."""
+    result = dict(_WEBSITE_THEME_DEFAULTS)
+    if not isinstance(value, dict):
+        return result
+    for field in _WEBSITE_THEME_COLOR_FIELDS:
+        candidate = value.get(field)
+        if isinstance(candidate, str) and _WEBSITE_THEME_COLOR_RE.fullmatch(candidate.strip()):
+            result[field] = candidate.strip().lower()
+    for field, choices in _WEBSITE_THEME_OPTIONS.items():
+        candidate = value.get(field)
+        if isinstance(candidate, str) and candidate in choices:
+            result[field] = candidate
+    return result
+
+
+def _validated_website_theme(value, base=None):
+    """Validate a school theme and persist only supported colours and options."""
+    if not isinstance(value, dict):
+        raise APIError(
+            "website_theme_draft must be an object of supported theme settings.",
+            422,
+            "validation_error",
+        )
+    unknown = set(value) - set(_WEBSITE_THEME_DEFAULTS)
+    if unknown:
+        raise APIError(
+            "Unsupported website theme fields: " + ", ".join(sorted(unknown)),
+            422,
+            "validation_error",
+        )
+    result = _public_website_theme(base)
+    for field in _WEBSITE_THEME_COLOR_FIELDS:
+        if field not in value:
+            continue
+        candidate = value[field]
+        if not isinstance(candidate, str) or not _WEBSITE_THEME_COLOR_RE.fullmatch(candidate.strip()):
+            raise APIError(
+                f"{field} must be a six-digit hexadecimal colour such as #0A74DA.",
+                422,
+                "validation_error",
+            )
+        result[field] = candidate.strip().lower()
+    for field, choices in _WEBSITE_THEME_OPTIONS.items():
+        if field not in value:
+            continue
+        candidate = value[field]
+        if not isinstance(candidate, str) or candidate not in choices:
+            raise APIError(
+                f"{field} must be one of: {', '.join(sorted(choices))}.",
+                422,
+                "validation_error",
+            )
+        result[field] = candidate
+    return result
+
+
 _WEBSITE_TEXT_LIMITS = {
     "public_slug": 80,
     "description": 3000,
@@ -1229,6 +1312,10 @@ def _owner_website_projection(school):
     for field in _WEBSITE_LIST_SCHEMAS:
         value = school.get(field, [])
         result[field] = value if isinstance(value, list) else []
+    result["website_theme"] = _public_website_theme(school.get("website_theme"))
+    result["website_theme_draft"] = _public_website_theme(
+        school.get("website_theme_draft") or school.get("website_theme")
+    )
     result["public_slug"] = result.get("public_slug") or _website_slug(school.get("name"))
     return result
 
@@ -1271,6 +1358,31 @@ def save_owner_website_settings():
     for field in _WEBSITE_LIST_SCHEMAS:
         if field in payload:
             updates[field] = _validated_website_entries(field, payload[field])
+
+    if "website_theme_draft" in payload:
+        updates["website_theme_draft"] = _validated_website_theme(
+            payload["website_theme_draft"],
+            base=school.get("website_theme_draft") or school.get("website_theme"),
+        )
+
+    publish_theme = payload.get("publish_website_theme", False)
+    if not isinstance(publish_theme, bool):
+        raise APIError(
+            "publish_website_theme must be a boolean.",
+            422,
+            "validation_error",
+        )
+    if publish_theme:
+        theme_candidate = payload.get(
+            "website_theme_draft",
+            school.get("website_theme_draft") or school.get("website_theme") or _WEBSITE_THEME_DEFAULTS,
+        )
+        published_theme = _validated_website_theme(
+            theme_candidate,
+            base=school.get("website_theme_draft") or school.get("website_theme"),
+        )
+        updates["website_theme"] = published_theme
+        updates["website_theme_draft"] = published_theme
 
     requested_slug = updates.get("public_slug")
     slug_source = requested_slug or school.get("public_slug") or school.get("name")
