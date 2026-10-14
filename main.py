@@ -7,6 +7,7 @@ import os
 import threading
 import time
 from datetime import datetime
+from urllib.parse import urlsplit
 
 from dotenv import load_dotenv
 from flask import Flask, jsonify, make_response, request
@@ -78,6 +79,72 @@ def configured_frontend_origins() -> set[str]:
 
 FRONTEND_ORIGINS = configured_frontend_origins()
 
+
+def is_approved_frontend_origin(origin: str) -> bool:
+    """
+    Accept configured platform origins plus active, verified school domains.
+
+    Custom domains are approved dynamically only while the domain registry
+    and school record both confirm an active, verified, HTTPS-enabled public
+    site. This avoids wildcard CORS and supports new schools without a deploy.
+    """
+    normalized = str(origin or "").strip().rstrip("/")
+    if not normalized:
+        return False
+    if normalized in FRONTEND_ORIGINS:
+        return True
+
+    try:
+        parsed = urlsplit(normalized)
+        if (
+            parsed.scheme != "https"
+            or not parsed.hostname
+            or parsed.port is not None
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.path not in ("", "/")
+            or parsed.query
+            or parsed.fragment
+        ):
+            return False
+        hostname = parsed.hostname.encode("idna").decode("ascii").lower().rstrip(".")
+    except (ValueError, UnicodeError):
+        return False
+
+    try:
+        from backend.jumuiya.core.database import collection
+        from bson import ObjectId
+        from bson.errors import InvalidId
+
+        domain = collection("jumuiya_elimu_school_domains").find_one({
+            "hostname": hostname,
+            "status": "active",
+            "verification_status": "verified",
+            "https_status": "active",
+        })
+        if not domain:
+            return False
+
+        school_oid = domain.get("school_oid")
+        if school_oid is None:
+            try:
+                school_oid = ObjectId(str(domain.get("school_id", "")))
+            except (InvalidId, TypeError, ValueError):
+                return False
+
+        school = collection("jumuiya_schools").find_one({
+            "_id": school_oid,
+            "status": "active",
+            "verification_status": "verified",
+            "public_profile_enabled": True,
+            "is_demo": {"$ne": True},
+        })
+        return bool(school)
+    except Exception:
+        logger.exception("Could not validate a custom school CORS origin")
+        return False
+
+
 CORS_ALLOWED_METHODS = (
     "GET, POST, PUT, PATCH, DELETE, OPTIONS"
 )
@@ -145,7 +212,7 @@ def handle_cors_preflight():
 
     origin = request.headers.get("Origin", "").strip().rstrip("/")
 
-    if origin not in FRONTEND_ORIGINS:
+    if not is_approved_frontend_origin(origin):
         logger.warning(
             "Rejected CORS preflight from origin: %s",
             origin or "<missing>",
@@ -227,7 +294,7 @@ def ensure_cors_response_headers(response):
 
     origin = request.headers.get("Origin", "").strip().rstrip("/")
 
-    if origin not in FRONTEND_ORIGINS:
+    if not is_approved_frontend_origin(origin):
         return response
 
     response.headers["Access-Control-Allow-Origin"] = origin
