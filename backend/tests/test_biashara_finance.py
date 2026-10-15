@@ -160,6 +160,56 @@ class Collection:
                 return types.SimpleNamespace(matched_count=1, modified_count=1)
         return types.SimpleNamespace(matched_count=0, modified_count=0)
 
+    def aggregate(self, pipeline):
+        rows = deepcopy(self.documents)
+        for stage in pipeline:
+            if "$match" in stage:
+                rows = [doc for doc in rows if _matches(doc, stage["$match"])]
+            elif "$unwind" in stage:
+                field = stage["$unwind"].lstrip("$")
+                expanded = []
+                for doc in rows:
+                    values = doc.get(field)
+                    if isinstance(values, list):
+                        for value in values:
+                            clone = deepcopy(doc)
+                            clone[field] = deepcopy(value)
+                            expanded.append(clone)
+                rows = expanded
+            elif "$group" in stage:
+                spec = stage["$group"]
+                grouped = {}
+                for doc in rows:
+                    key = {}
+                    for output_name, expression in spec["_id"].items():
+                        value = _get_path(doc, expression.lstrip("$"))
+                        if isinstance(value, list):
+                            value = value[0] if value else None
+                        key[output_name] = value
+                    token = tuple(sorted(key.items()))
+                    group = grouped.setdefault(token, {"_id": key, "debit_minor": 0, "credit_minor": 0, "line_count": 0})
+                    for output_name, expression in spec.items():
+                        if output_name == "_id":
+                            continue
+                        operation, field = next(iter(expression.items()))
+                        value = _get_path(doc, field.lstrip("$"))
+                        if isinstance(value, list):
+                            value = value[0] if value else 0
+                        value = 1 if value is _missing else value
+                        if operation == "$sum":
+                            group[output_name] = group.get(output_name, 0) + value
+                rows = list(grouped.values())
+            elif "$sort" in stage:
+                sort_fields = list(stage["$sort"].items())
+                for field, direction in reversed(sort_fields):
+                    def sort_value(doc, path=field):
+                        value = _get_path(doc, path)
+                        return (value is _missing, None if value is _missing else value)
+                    rows.sort(key=sort_value, reverse=direction < 0)
+            else:
+                raise AssertionError("Unsupported aggregate stage: " + next(iter(stage)))
+        return Cursor(rows)
+
 
 @pytest.fixture
 def finance_db(monkeypatch):
@@ -440,4 +490,24 @@ def test_journal_queries_are_scoped_to_the_active_business(finance_db, monkeypat
 
     monkeypatch.setattr(biashara, "_require_business", lambda user_id: {"id": "other-business", "currency": "KES"})
     assert finance.get_journal_entries("other-owner") == []
+
+def test_ledger_summary_returns_balanced_minor_unit_totals(finance_db):
+    draft = _draft_invoice(finance_db)
+    invoice = finance.issue_invoice("owner-1", draft["id"])
+    finance.record_payment(
+        "owner-1", invoice["id"],
+        {"amount": "23.45", "payment_method": "cash", "reference": "summary-receipt"},
+        "cash-payment-summary-0001",
+    )
+
+    summary = finance.get_ledger_summary("owner-1", currency="KES")
+    totals = summary["totals_by_currency"]["KES"]
+    assert totals["is_balanced"] is True
+    assert totals["debit_minor"] == totals["credit_minor"] == 14690
+    accounts = {row["account_code"]: row for row in summary["accounts"]}
+    assert accounts["accounts_receivable"]["normal_balance_minor"] == 10000
+    assert accounts["cash_on_hand"]["normal_balance_minor"] == 2345
+    assert accounts["sales_revenue_unclassified"]["normal_balance_minor"] == 12345
+    assert summary["tax_status"] == "not_configured"
+    assert summary["etims_status"] == "not_configured"
 
