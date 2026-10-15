@@ -15,6 +15,7 @@ from pymongo.errors import DuplicateKeyError
 from backend.jumuiya.core.database import collection
 from backend.jumuiya.core.errors import APIError
 from backend.jumuiya.core.audit import log_action
+from backend.jumuiya.biashara.tenancy.service import require_permission
 
 from backend.jumuiya.biashara.website import (
     DEFAULT_BIASHARA_WEBSITE_SETTINGS,
@@ -217,6 +218,13 @@ def _require_business(user_id, business_id=None):
     """Resolve an active business only after validating owner/member access."""
     from backend.jumuiya.biashara.tenancy.service import get_business_context
     return get_business_context(user_id, business_id=business_id)
+
+
+def _require_business_with_permission(user_id, permission, business_id=None):
+    """Enforce role permission at the service boundary, not only at Flask routes."""
+    business = _require_business(user_id, business_id=business_id)
+    require_permission(user_id, permission, business_id=str(business["id"]))
+    return business
 
 
 def create_or_update_business(
