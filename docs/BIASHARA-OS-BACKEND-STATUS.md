@@ -50,6 +50,13 @@ python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().d
 
 Set the resulting value as `BIASHARA_INTEGRATION_ENCRYPTION_KEY` and keep a secure backup. For a staged key rotation, configure both old and new keys in `BIASHARA_INTEGRATION_ENCRYPTION_KEYS`, set `BIASHARA_INTEGRATION_CURRENT_KEY_ID` to the new key ID, and re-encrypt connections by issuing a credentials update with an empty `credentials` object for each connection. Keep the old key in the ring until verification is complete.
 
+### Public storefront SEO metadata
+
+- The public storefront response includes a separate `seo` object containing title, description, canonical path, Open Graph values, Twitter card metadata and a Store structured-data object.
+- An absolute canonical URL is returned only when `BIASHARA_PUBLIC_BASE_URL` is configured as a plausible public HTTPS origin. The service never derives its canonical domain from the request Host header; otherwise it returns a relative canonical path and `canonical_url: null`.
+- Contact details are included in structured data only when the website contact setting is enabled. Hero images are emitted in social metadata only when they use a valid HTTPS URL.
+- The API serves only active businesses whose website is published. This metadata does not represent domain ownership verification: `domain_verification_status` remains `not_implemented`, and a production frontend still needs to render the returned meta tags/JSON-LD and add route-level sitemap/robots behavior.
+
 ### Revenue catalogue and entitlement visibility
 
 - The existing revenue engine records transaction intents only; an intent is not a subscription and never proves payment.
@@ -147,4 +154,4 @@ See the [Biashara validation workflow](https://github.com/musombi123/RevelaCode-
 - Add a real worker process and operational monitoring for provider sync; this branch currently provides durable queue primitives and internal automation dispatch, not a complete external-channel sync service.
 - Review the operational chart of accounts, VAT/tax treatment, refunds, settlement entries and closing controls with a Kenyan accountant before using this journal as formal books.
 - Add a verified subscription lifecycle, provider-confirmed payment updates, machine-readable feature/limit policies and paid-feature enforcement before billing or paid entitlements are enabled.
-- Add domain verification/rendering/SEO acceptance tests and validate the entitlement snapshot against deployment configuration.
+- Complete custom-domain ownership verification and frontend rendering of SEO metadata, and add public-route sitemap/robots integration.
