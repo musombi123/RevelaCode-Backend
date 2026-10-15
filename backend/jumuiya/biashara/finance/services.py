@@ -667,6 +667,7 @@ def _mark_payment_allocation(payment, invoice):
         return collection("jumuiya_payments").find_one({"_id": payment_id, "business_id": business_id}) or payment
 
     invoices = collection("jumuiya_invoices")
+    reservation_consumed = False
     for _attempt in range(12):
         latest = _get_invoice(business_id, invoice_id)
         if alloc_key in (latest.get("payment_allocation_keys") or []):
