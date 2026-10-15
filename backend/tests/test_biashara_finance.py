@@ -566,3 +566,64 @@ def test_expense_idempotency_key_cannot_be_reused_for_different_amount(finance_d
     assert len(finance_db["data"]["jumuiya_expenses"].documents) == 1
     assert len(finance_db["data"]["jumuiya_journal_entries"].documents) == 1
 
+def test_allocation_retry_recovers_when_invoice_write_preceded_payment_write(finance_db):
+    draft = _draft_invoice(finance_db)
+    invoice = finance.issue_invoice("owner-1", draft["id"])
+    payment = finance.record_payment(
+        "owner-1", invoice["id"],
+        {"amount": "20.00", "payment_method": "cash", "reference": "write-order-recovery"},
+        "cash-payment-write-order-0001",
+    )
+    assert payment["allocation_status"] == "allocated"
+
+    # Simulate a crash after the invoice's allocation key was persisted, but
+    # before the payment row was marked allocated/journal insertion completed.
+    payments = finance_db["data"]["jumuiya_payments"]
+    stored_payment = payments.find_one({"idempotency_key": "cash-payment-write-order-0001"})
+    payments.update_one(
+        {"_id": stored_payment["_id"]},
+        {"$set": {"allocation_status": "pending"}},
+    )
+    journals = finance_db["data"]["jumuiya_journal_entries"]
+    journals.documents = [
+        row for row in journals.documents if row["source_id"] != payment["id"]
+    ]
+
+    recovered = finance.record_payment(
+        "owner-1", invoice["id"],
+        {"amount": "20.00", "payment_method": "cash", "reference": "write-order-recovery"},
+        "cash-payment-write-order-0001",
+    )
+    assert recovered["allocation_status"] == "allocated"
+    assert len([
+        row for row in journals.documents
+        if row["source_id"] == payment["id"] and row["source_type"] == "payment.cash_allocated"
+    ]) == 1
+    refreshed_invoice = finance_db["data"]["jumuiya_invoices"].find_one({"_id": ObjectId(invoice["id"])})
+    assert refreshed_invoice["amount_paid_minor"] == 2000
+
+
+def test_verified_mpesa_allocation_conflict_posts_provider_clearing_to_suspense(finance_db):
+    payment = {
+        "_id": ObjectId("64b000000000000000000501"),
+        "business_id": "business-finance-1",
+        "invoice_id": "invoice-already-paid",
+        "idempotency_key": "mpesa-stk:provider-conflict-0001",
+        "amount_minor": 3500,
+        "currency": "KES",
+        "payment_status": "provider_confirmed",
+        "verification_status": "provider_verified",
+        "provider_verified": True,
+        "provider_name": "mpesa_daraja",
+        "allocation_status": "allocation_conflict",
+        "recorded_by_user_id": "owner-1",
+        "provider_verified_at": datetime(2026, 10, 15, 12, 0, tzinfo=timezone.utc),
+    }
+
+    entry = finance._post_provider_payment_journal(payment, "owner-1")
+
+    assert entry["source_type"] == "payment.mpesa_unallocated"
+    assert entry["total_debit_minor"] == entry["total_credit_minor"] == 3500
+    assert entry["lines"][0]["account_code"] == "mpesa_clearing"
+    assert entry["lines"][1]["account_code"] == "unallocated_customer_receipts"
+
