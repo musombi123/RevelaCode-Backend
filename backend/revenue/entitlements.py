@@ -145,7 +145,7 @@ def get_entitlement_snapshot(user_id, hub=None):
 
     active.sort(key=lambda item: (item.get("hub") or "", item.get("plan_code") or ""))
     selected = next(
-        (item for item in active if item.get("hub") == selected_hub),
+        (item for item in active if item.get("hub") in {selected_hub, "all"}),
         None,
     ) if selected_hub else (active[0] if active else None)
 
