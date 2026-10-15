@@ -50,6 +50,14 @@ python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().d
 
 Set the resulting value as `BIASHARA_INTEGRATION_ENCRYPTION_KEY` and keep a secure backup. For a staged key rotation, configure both old and new keys in `BIASHARA_INTEGRATION_ENCRYPTION_KEYS`, set `BIASHARA_INTEGRATION_CURRENT_KEY_ID` to the new key ID, and re-encrypt connections by issuing a credentials update with an empty `credentials` object for each connection. Keep the old key in the ring until verification is complete.
 
+### Custom-domain ownership claims
+
+- An owner/manager can claim a fully qualified hostname through `POST /api/jumuiya/biashara/website/domains`. The response gives the TXT record name `_revelacode-verification.<hostname>` and a value prefixed with `revelacode-domain-verification=`.
+- Publish that TXT value in the authoritative DNS zone, then call `POST /api/jumuiya/biashara/website/domains/<claim_id>/verify`. The backend resolves TXT records itself and compares the exact challenge token. Failed lookups remain pending and can be retried; a previously verified claim is demoted if the proof disappears on a later check.
+- Claims are tenant-scoped and the hostname is unique across businesses. The owner can list claims at `GET /api/jumuiya/biashara/website/domains` and remove a claim with `DELETE /api/jumuiya/biashara/website/domains/<claim_id>`.
+- A verified TXT record proves DNS control only. Every claim reports `domain_serving_status: not_configured`; this code does not configure CDN/hosting routing, issue TLS certificates, or claim that the custom hostname serves the storefront.
+- DNS lookups use a short resolver timeout; failures return a retryable pending state without exposing resolver exceptions. Configure outbound DNS access and monitor resolver health in the deployment environment.
+
 ### Public storefront SEO metadata
 
 - The public storefront response includes a separate `seo` object containing title, description, canonical path, Open Graph values, Twitter card metadata and a Store structured-data object.
@@ -154,4 +162,4 @@ See the [Biashara validation workflow](https://github.com/musombi123/RevelaCode-
 - Add a real worker process and operational monitoring for provider sync; this branch currently provides durable queue primitives and internal automation dispatch, not a complete external-channel sync service.
 - Review the operational chart of accounts, VAT/tax treatment, refunds, settlement entries and closing controls with a Kenyan accountant before using this journal as formal books.
 - Add a verified subscription lifecycle, provider-confirmed payment updates, machine-readable feature/limit policies and paid-feature enforcement before billing or paid entitlements are enabled.
-- Complete custom-domain ownership verification and frontend rendering of SEO metadata, and add public-route sitemap/robots integration.
+- Configure production custom-domain routing/TLS after DNS ownership verification, render SEO metadata in the frontend, and add public-route sitemap/robots integration.
