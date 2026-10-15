@@ -152,6 +152,17 @@ def list_mpesa_intents():
     return ok(rows, "Biashara M-Pesa payment intents loaded.", meta={"count": len(rows)})
 
 
+@biashara_finance_bp.post("/mpesa/intents/<payment_id>/query")
+@require_authenticated
+@require_business_permission("finance.manage")
+def query_mpesa_intent_status(payment_id):
+    result = mpesa.query_stk_status(current_user_id(), payment_id)
+    return ok(
+        result,
+        "Daraja status was queried. The invoice remains unpaid until a verified callback is matched and allocated.",
+    )
+
+
 @biashara_finance_bp.get("/mpesa/callbacks")
 @require_authenticated
 @require_business_permission("finance.view")
