@@ -344,3 +344,28 @@ def test_application_bootstrap_membership_is_not_mislabelled_for_rollback(tenanc
     rollback = migration.plan_owner_membership_rollback(limit=50)
     assert rollback["rollback_candidates"] == []
 
+def test_manager_cannot_change_or_revoke_another_manager(tenancy_db, monkeypatch):
+    business_id = str(tenancy_db["business_one"])
+    tenancy.add_member("owner-1", business_id, "manager-1", "manager")
+
+    def permission_context(user_id, permission, business_id=None):
+        return {
+            "id": business_id or str(tenancy_db["business_one"]),
+            "membership_role": "manager" if user_id == "manager-1" else "owner",
+            "permissions": ["*"],
+        }
+
+    monkeypatch.setattr(tenancy, "require_permission", permission_context)
+
+    with pytest.raises(APIError) as modify:
+        tenancy.add_member("manager-1", business_id, "manager-1", "cashier")
+    assert modify.value.code == "business_permission_denied"
+
+    with pytest.raises(APIError) as revoke:
+        tenancy.remove_member("manager-1", business_id, "manager-1")
+    assert revoke.value.code == "business_permission_denied"
+
+    # The business owner can change a manager's role using the same service.
+    changed = tenancy.add_member("owner-1", business_id, "manager-1", "cashier")
+    assert changed["role"] == "cashier"
+
