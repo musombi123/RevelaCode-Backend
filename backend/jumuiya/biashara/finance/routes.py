@@ -6,6 +6,7 @@ from flask import Blueprint, request
 from backend.jumuiya.core.errors import APIError
 from backend.jumuiya.core.permissions import current_user_id, require_authenticated
 from backend.jumuiya.core.responses import created, ok
+from backend.jumuiya.biashara.tenancy.service import require_business_permission
 from backend.jumuiya.biashara.finance import schemas, services
 
 
@@ -28,6 +29,7 @@ def _validate(schema, data):
 
 @biashara_finance_bp.get("/invoices")
 @require_authenticated
+@require_business_permission("finance.view")
 def list_invoices():
     rows = services.list_invoices(
         current_user_id(),
@@ -39,6 +41,7 @@ def list_invoices():
 
 @biashara_finance_bp.post("/invoices")
 @require_authenticated
+@require_business_permission("finance.manage")
 def create_invoice():
     payload = _validate(schemas.invoice_payload, _body())
     result = services.create_invoice(
@@ -51,12 +54,14 @@ def create_invoice():
 
 @biashara_finance_bp.get("/invoices/<invoice_id>")
 @require_authenticated
+@require_business_permission("finance.view")
 def get_invoice(invoice_id):
     return ok(services.get_invoice(current_user_id(), invoice_id), "Biashara invoice loaded.")
 
 
 @biashara_finance_bp.post("/invoices/<invoice_id>/issue")
 @require_authenticated
+@require_business_permission("finance.manage")
 def issue_invoice(invoice_id):
     result = services.issue_invoice(current_user_id(), invoice_id)
     return ok(result, "Commercial invoice issued. Tax calculation and eTIMS submission remain not configured unless explicitly enabled.")
@@ -64,6 +69,7 @@ def issue_invoice(invoice_id):
 
 @biashara_finance_bp.post("/invoices/<invoice_id>/void")
 @require_authenticated
+@require_business_permission("finance.manage")
 def void_invoice(invoice_id):
     data = _body()
     reason = data.get("reason", "")
@@ -74,6 +80,7 @@ def void_invoice(invoice_id):
 
 @biashara_finance_bp.post("/invoices/<invoice_id>/payments")
 @require_authenticated
+@require_business_permission("finance.manage")
 def record_payment(invoice_id):
     payload = _validate(schemas.payment_payload, _body())
     result = services.record_payment(
@@ -91,6 +98,7 @@ def record_payment(invoice_id):
 
 @biashara_finance_bp.get("/ledger/summary")
 @require_authenticated
+@require_business_permission("finance.view")
 def ledger_summary():
     result = services.get_ledger_summary(
         current_user_id(),
@@ -103,6 +111,7 @@ def ledger_summary():
 
 @biashara_finance_bp.get("/ledger/entries")
 @require_authenticated
+@require_business_permission("finance.view")
 def ledger_entries():
     rows = services.get_journal_entries(
         current_user_id(),
