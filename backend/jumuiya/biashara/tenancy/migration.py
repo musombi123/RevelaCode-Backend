@@ -9,6 +9,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from bson import ObjectId
+from bson.errors import InvalidId
 from pymongo.errors import DuplicateKeyError
 
 from backend.jumuiya.core.database import collection
@@ -40,6 +41,17 @@ def now_utc():
 def _safe_business_id(document):
     value = document.get("_id")
     return str(value) if value is not None else ""
+
+
+def _business_lookup_id(value):
+    """Parse an ObjectId only when valid; never let malformed legacy IDs abort a report."""
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        return ObjectId(text)
+    except (InvalidId, TypeError):
+        return text
 
 
 def run_owner_membership_migration(dry_run=True, limit=DEFAULT_LIMIT):
@@ -149,10 +161,20 @@ def run_owner_membership_migration(dry_run=True, limit=DEFAULT_LIMIT):
             memberships.insert_one(document)
             report["owner_memberships_created"] += 1
         except DuplicateKeyError:
-            # Concurrent runs are expected; verify the winning record and only
-            # repair the role when this exact owner relationship is unambiguous.
+            # Concurrent runs are expected. If the winning row is already a
+            # valid owner relationship, leave its origin untouched so a future
+            # rollback cannot remove a normal application membership.
             prior = memberships.find_one(query)
-            if prior:
+            if prior and prior.get("role") == "owner" and prior.get("status") == "active":
+                report["owner_memberships_existing"] += 1
+            elif prior:
+                previous_state = {
+                    "role": prior.get("role"),
+                    "status": prior.get("status"),
+                    "permissions_snapshot": prior.get("permissions_snapshot"),
+                    "source": prior.get("source"),
+                    "revoked_at": prior.get("revoked_at"),
+                }
                 memberships.update_one(
                     {"_id": prior["_id"], "business_id": business_id, "user_id": owner_id},
                     {"$set": {
@@ -161,6 +183,7 @@ def run_owner_membership_migration(dry_run=True, limit=DEFAULT_LIMIT):
                         "permissions_snapshot": _permissions("owner"),
                         "updated_at": now_utc(),
                         "revoked_at": None,
+                        "migration_previous_state": previous_state,
                         "source": OWNER_MEMBERSHIP_SOURCE,
                     }},
                 )
@@ -209,7 +232,8 @@ def plan_owner_membership_rollback(limit=DEFAULT_LIMIT):
     for member in candidates[:limit]:
         business_id = str(member.get("business_id") or "")
         user_id = str(member.get("user_id") or "")
-        business = businesses.find_one({"_id": ObjectId(business_id) if len(business_id) == 24 else business_id})
+        business_lookup_id = _business_lookup_id(business_id)
+        business = businesses.find_one({"_id": business_lookup_id}) if business_lookup_id is not None else None
         if not business or str(business.get("owner_user_id") or "") != user_id:
             skipped.append({
                 "membership_id": str(member.get("_id") or ""),
