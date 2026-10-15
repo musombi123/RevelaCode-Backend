@@ -1,6 +1,7 @@
 # backend/routes/support_routes.py
 from flask import Blueprint, request, jsonify
 from datetime import datetime
+import re
 from bson.objectid import ObjectId
 
 from backend.db import get_db
@@ -98,6 +99,7 @@ def view_tickets():
     search = request.args.get("search", "").strip()
     mine = request.args.get("mine", "false").lower() == "true"
 
+    search_pattern = re.escape(search)
     query = {}
 
     if status:
@@ -108,8 +110,8 @@ def view_tickets():
 
     if search:
         query["$or"] = [
-            {"subject": {"$regex": search, "$options": "i"}},
-            {"user": {"$regex": search, "$options": "i"}}
+            {"subject": {"$regex": search_pattern, "$options": "i"}},
+            {"user": {"$regex": search_pattern, "$options": "i"}}
         ]
 
     total = collection.count_documents(query)
@@ -273,16 +275,23 @@ def search_tickets():
             "message": "Missing search query."
         }), 400
 
+    if len(query_text) > 200:
+        return jsonify({
+            "success": False,
+            "message": "Search query must be 200 characters or fewer."
+        }), 400
+
+    query_pattern = re.escape(query_text)
     db = get_db()
     collection = db[COLLECTIONS["support_tickets"]]
 
     query = {
         "$or": [
-            {"user": {"$regex": query_text, "$options": "i"}},
-            {"email": {"$regex": query_text, "$options": "i"}},
-            {"subject": {"$regex": query_text, "$options": "i"}},
-            {"description": {"$regex": query_text, "$options": "i"}},
-            {"status": {"$regex": query_text, "$options": "i"}}
+            {"user": {"$regex": query_pattern, "$options": "i"}},
+            {"email": {"$regex": query_pattern, "$options": "i"}},
+            {"subject": {"$regex": query_pattern, "$options": "i"}},
+            {"description": {"$regex": query_pattern, "$options": "i"}},
+            {"status": {"$regex": query_pattern, "$options": "i"}}
         ]
     }
 
