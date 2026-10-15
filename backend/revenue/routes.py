@@ -13,6 +13,7 @@ from backend.jumuiya.core.permissions import (
 )
 from backend.revenue import revenue_bp
 from backend.revenue.constants import SUPPORTED_REVENUE_STREAMS
+from backend.revenue.entitlements import get_entitlement_snapshot
 from backend.revenue.ledger import (
     RevenueIntentError,
     create_intent,
@@ -189,3 +190,17 @@ def revenue_list_transactions():
         "success": True,
         **result,
     }), 200
+
+@revenue_bp.get("/entitlements")
+@require_authenticated
+def revenue_get_entitlements():
+    """Return the authenticated user's effective, verified plan access."""
+    result = get_entitlement_snapshot(
+        user_id=current_user_id(),
+        hub=request.args.get("hub"),
+    )
+    return jsonify({
+        "success": True,
+        **result,
+    }), 200
+
