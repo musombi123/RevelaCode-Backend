@@ -276,13 +276,12 @@ def _dispatch_payment(payment_id, business_id):
     return {"enqueued": 1, "pending": 0, "errors": 0}
 
 
-def _issue_stk_request(connection, metadata, credentials, payment, invoice, phone):
+def _issue_stk_request(connection, metadata, credentials, payment, invoice, phone, token):
     callback_url = _public_callback_base() + (
         "/api/jumuiya/biashara/finance/mpesa/callback/" + str(connection["_id"])
     )
     environment = metadata["environment"]
     root = _provider_root(environment)
-    token = _access_token(credentials, environment)
     timestamp = now_utc().strftime("%Y%m%d%H%M%S")
     shortcode = str(metadata["shortcode"])
     password = base64.b64encode((shortcode + credentials["passkey"] + timestamp).encode("utf-8")).decode("ascii")
@@ -471,7 +470,7 @@ def start_stk_push(user_id, invoice_id, payload, idempotency_key):
     _dispatch_payment(payment_id, business_id)
 
     try:
-        request_result = _issue_stk_request(connection, metadata, credentials, document, invoice, phone)
+        request_result = _issue_stk_request(connection, metadata, credentials, document, invoice, phone, token)
     except APIError as error:
         details = error.details or {}
         ambiguous = bool(details.get("outcome_may_be_unknown")) or error.code == "mpesa_request_outcome_unknown"
