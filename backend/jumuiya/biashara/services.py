@@ -1781,10 +1781,26 @@ def _apply_sale_payment_state(sale, user_id):
         "recorded_at": recorded_at,
         "actor_user_id": str(user_id),
     }
+    business_id = str(sale.get("business_id") or "")
+    payment_event_manifest = _build_outbox_manifest(
+        event_key=f"order:{order_id}:payment-recorded:{sale_id}",
+        event_type="order.payment_recorded",
+        entity_type="order",
+        entity_id=order_id,
+        payload={
+            "payment_status": sale.get("payment_status", "manual_recorded"),
+            "payment_verification_status": sale.get("payment_verification_status", "unverified_manual"),
+            "payment_method": sale.get("payment_method", "cash"),
+            "amount_minor": sale.get("amount_minor", 0),
+            "currency": sale.get("currency", "KES"),
+        },
+        actor_user_id=user_id,
+        occurred_at=recorded_at,
+    )
     collection("jumuiya_orders").update_one(
         {
             "_id": clean_id(order_id),
-            "business_id": str(sale.get("business_id") or ""),
+            "business_id": business_id,
         },
         {
             "$set": {
@@ -1795,9 +1811,13 @@ def _apply_sale_payment_state(sale, user_id):
                 "payment_recorded_at": recorded_at,
                 "updated_at": now_utc(),
             },
-            "$addToSet": {"payment_history": event},
+            "$addToSet": {
+                "payment_history": event,
+                "outbox_event_manifest": payment_event_manifest,
+            },
         },
     )
+    _dispatch_outbox_source("jumuiya_orders", business_id, clean_id(order_id))
 
 
 def _order_sale_amount(order):
