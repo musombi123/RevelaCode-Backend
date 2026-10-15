@@ -321,6 +321,16 @@ INDEX_DEFINITIONS = {
     # -----------------------------------------------------
 
     "jumuiya_businesses": [
+        # Use the exact legacy key pattern with non-unique options so the
+        # index reconciler explicitly replaces uq_businesses_owner.
+        (
+            [
+                ("owner_user_id", ASCENDING),
+            ],
+            {
+                "name": "ix_businesses_owner",
+            },
+        ),
         (
             [
                 ("owner_user_id", ASCENDING),
