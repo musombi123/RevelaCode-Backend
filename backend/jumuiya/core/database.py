@@ -514,6 +514,17 @@ INDEX_DEFINITIONS = {
         ),
     ],
 
+    "jumuiya_integration_connections": [
+        (
+            [("business_id", ASCENDING), ("provider", ASCENDING), ("name", ASCENDING)],
+            {"unique": True, "name": "uq_biashara_integration_provider_name"},
+        ),
+        (
+            [("business_id", ASCENDING), ("enabled", ASCENDING), ("updated_at", DESCENDING)],
+            {"name": "ix_biashara_integrations_enabled_updated"},
+        ),
+    ],
+
     "jumuiya_automation_rules": [
         (
             [("business_id", ASCENDING), ("trigger_event", ASCENDING), ("enabled", ASCENDING), ("created_at", DESCENDING)],
