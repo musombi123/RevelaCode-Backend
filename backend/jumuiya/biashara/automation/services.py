@@ -21,6 +21,7 @@ from backend.jumuiya.core.database import collection
 from backend.jumuiya.core.errors import APIError
 from backend.jumuiya.core.audit import log_action
 from backend.jumuiya.biashara import services as biashara_services
+from backend.jumuiya.biashara.tenancy.service import get_business_context, require_permission
 
 
 logger = logging.getLogger("jumuiya.biashara.automation")
@@ -166,6 +167,7 @@ def _validate_rule_payload(payload, existing=None):
 
 
 def create_rule(user_id, payload):
+    require_permission(user_id, "automation.manage")
     _business_data, business_id = _business(user_id)
     clean = _validate_rule_payload(payload)
     now = now_utc()
@@ -188,6 +190,7 @@ def create_rule(user_id, payload):
 
 
 def list_rules(user_id, enabled=None):
+    require_permission(user_id, "automation.view")
     _business_data, business_id = _business(user_id)
     query = {"business_id": business_id}
     if enabled is not None:
@@ -199,6 +202,7 @@ def list_rules(user_id, enabled=None):
 
 
 def set_rule_enabled(user_id, rule_id, enabled):
+    require_permission(user_id, "automation.manage")
     _business_data, business_id = _business(user_id)
     if not isinstance(enabled, bool):
         raise APIError("enabled must be a boolean.", 422, "invalid_automation_rule")
@@ -549,6 +553,7 @@ def process_event_for_automations(event):
 
 
 def list_runs(user_id, limit=50, status=None):
+    require_permission(user_id, "automation.view")
     _business_data, business_id = _business(user_id)
     try:
         limit = min(max(int(limit), 1), MAX_LIST_LIMIT)
@@ -565,7 +570,12 @@ def list_runs(user_id, limit=50, status=None):
 
 
 def list_tasks(user_id, limit=50, status=None, task_type=None):
-    _business_data, business_id = _business(user_id)
+    context = get_business_context(user_id)
+    business_id = str(context["id"])
+    permissions = set(context.get("permissions") or [])
+    task_read_permissions = {"automation.view", "orders.manage", "finance.manage", "inventory.manage"}
+    if "*" not in permissions and not permissions.intersection(task_read_permissions):
+        raise APIError("Your business role does not allow viewing automation tasks.", 403, "business_permission_denied")
     try:
         limit = min(max(int(limit), 1), MAX_LIST_LIMIT)
     except (TypeError, ValueError):
@@ -578,6 +588,15 @@ def list_tasks(user_id, limit=50, status=None, task_type=None):
         query["status"] = state
     if task_type:
         query["task_type"] = str(task_type).strip().lower()
+    if "automation.view" not in permissions and "*" not in permissions:
+        visible_types = set()
+        if "orders.manage" in permissions:
+            visible_types.add("fulfillment_follow_up")
+        if "finance.manage" in permissions:
+            visible_types.update({"invoice_follow_up", "payment_evidence_review"})
+        if "inventory.manage" in permissions:
+            visible_types.add("reorder_suggestion")
+        query["task_type"] = {"$in": sorted(visible_types)}
     rows = collection(TASKS_COLLECTION).find(query).sort("created_at", -1).limit(limit)
     return [_serialize(row) for row in rows]
 
@@ -595,6 +614,15 @@ def decide_task(user_id, task_id, decision, note=""):
     task = tasks.find_one({"_id": _clean_id(task_id), "business_id": business_id})
     if not task:
         raise APIError("Automation task not found.", 404, "automation_task_not_found")
+    required_permission = {
+        "reorder_suggestion": "automation.manage",
+        "payment_evidence_review": "finance.manage",
+        "invoice_follow_up": "finance.manage",
+        "fulfillment_follow_up": "orders.manage",
+    }.get(str(task.get("task_type") or ""))
+    if not required_permission:
+        raise APIError("This task type has no enabled decision policy.", 409, "invalid_automation_task_type")
+    require_permission(user_id, required_permission, business_id=business_id)
     status = task.get("status")
     if status in {"completed", "dismissed"}:
         if decision == "complete" and status == "completed":
@@ -644,6 +672,7 @@ def decide_task(user_id, task_id, decision, note=""):
     return _serialize(updated)
 
 def replay_failed_automation_dispatches(user_id, limit=100):
+    require_permission(user_id, "automation.manage")
     """Retry automation dispatch for durable outbox events explicitly marked retry."""
     _business_data, business_id = _business(user_id)
     try:
