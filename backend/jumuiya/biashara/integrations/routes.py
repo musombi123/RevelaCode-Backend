@@ -53,3 +53,11 @@ def patch_connection_enabled(connection_id):
         raise APIError("enabled must be a boolean.", 422, "invalid_integration_configuration")
     result = service.set_connection_enabled(current_user_id(), connection_id, payload["enabled"])
     return ok(result, "Integration connection state saved; this does not confirm provider connectivity.")
+
+@biashara_integrations_bp.delete("/<connection_id>")
+@require_authenticated
+@require_business_permission("integration.manage")
+def delete_connection(connection_id):
+    result = service.delete_connection(current_user_id(), connection_id)
+    return ok(result, "Integration connection and its encrypted credentials were removed.")
+
