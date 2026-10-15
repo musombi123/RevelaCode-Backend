@@ -780,10 +780,12 @@ def expense_payload(data):
             max_len=120,
         ),
 
+        # Legacy clients may send an amount, but the service recalculates
+        # it from canonical product/order records.
         "amount": _money(
             data,
             "amount",
-            required=True,
+            required=False,
             minimum=0,
         ),
 
@@ -867,6 +869,12 @@ def sale_payload(data):
             data,
             "reference",
             max_len=120,
+        ),
+
+        "idempotency_key": _text(
+            data,
+            "idempotency_key",
+            max_len=128,
         ),
     }
 
