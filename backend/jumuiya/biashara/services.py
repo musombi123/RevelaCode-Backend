@@ -766,6 +766,7 @@ def create_order(
         currency = "KES"
 
     product_cache = {}
+    stock_by_product = {}
     requested_by_product = {}
     priced_items = []
     subtotal = Decimal("0.00")
@@ -827,6 +828,7 @@ def create_order(
             )
         if not available.is_finite() or available < 0:
             available = Decimal("0")
+        stock_by_product[product_key] = available
         if str(product.get("currency") or currency).upper() != currency:
             raise APIError(
                 "All products in one order must use the business currency.",
@@ -856,7 +858,7 @@ def create_order(
     # durable reservation workflow is implemented.
     for product_key, requested in requested_by_product.items():
         product = product_cache[product_key]
-        available = Decimal(str(product.get("stock_quantity", 0) or 0))
+        available = stock_by_product.get(product_key, Decimal("0"))
         if requested > available:
             raise APIError(
                 f"Insufficient stock for {product.get('name', 'product')}.",
@@ -969,7 +971,7 @@ def update_order_status(
         "completed": set(),
         "cancelled": set(),
     }
-    if status not in transitions:
+    if not isinstance(status, str) or status not in transitions:
         raise APIError("Invalid order status.", 422, "invalid_order_status")
 
     business = _require_business(user_id)
