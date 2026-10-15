@@ -187,7 +187,18 @@ def _context_from_documents(business, membership):
     role = str(membership.get("role") or "").strip().lower()
     if role not in ROLE_PERMISSIONS:
         raise APIError("Business membership has an unsupported role.", 403, "invalid_business_role")
-    result = _serialise(business)
+    # Explicitly project the business fields needed by authenticated workspace
+    # services. Do not return internal owner IDs or arbitrary Mongo fields.
+    allowed_fields = (
+        "name", "slug", "description", "business_type", "category",
+        "phone", "email", "location", "county", "logo_url", "currency",
+        "payment_methods", "opening_hours", "status", "profile_complete",
+        "created_at", "updated_at",
+    )
+    result = {"id": str(business.get("_id") or business.get("id") or "")}
+    for field in allowed_fields:
+        if field in business:
+            result[field] = _serialise(business[field])
     result["membership_role"] = role
     result["permissions"] = _permissions(role)
     result["membership_status"] = str(membership.get("status") or "active")
