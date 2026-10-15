@@ -734,3 +734,84 @@ def test_unknown_callback_with_multiple_matching_intents_is_not_guessed(mpesa_db
     assert stored_event["match_candidate_count"] == 2
     assert all(row["payment_status"] == "provider_request_unknown" for row in payments.documents)
 
+def test_stk_query_is_correlated_and_does_not_confirm_or_allocate_payment(mpesa_db, monkeypatch):
+    calls = _ok_requests(monkeypatch)
+    payment = mpesa.start_stk_push(
+        "owner-1", str(INVOICE_ID), _payment_payload(), "stk-query-payment-0001"
+    )
+
+    query_calls = []
+
+    def query_post(url, **kwargs):
+        query_calls.append((url, kwargs))
+        return FakeResponse(200, {
+            "ResponseCode": "0",
+            "ResponseDescription": "The service request has been accepted successfully",
+            "MerchantRequestID": "merchant-request-001",
+            "CheckoutRequestID": "ws_CO_001",
+        })
+    monkeypatch.setattr(mpesa.requests, "post", query_post)
+
+    result = mpesa.query_stk_status("owner-1", payment["id"])
+
+    assert len(query_calls) == 1
+    assert query_calls[0][0] == "https://sandbox.safaricom.co.ke/mpesa/stkpushquery/v1/query"
+    body = query_calls[0][1]["json"]
+    assert body["BusinessShortCode"] == "600123"
+    assert body["CheckoutRequestID"] == "ws_CO_001"
+    assert "passkey-test" not in json.dumps(body)
+    assert result["provider_query_status"] == "accepted_waiting_for_verified_callback"
+    assert result["payment_status"] == "pending_provider_confirmation"
+    assert result["provider_verified"] is False
+    assert result["allocation_status"] == "not_allocated_pending_verification"
+
+    invoice = mpesa_db["data"][mpesa.INVOICES_COLLECTION].find_one({"_id": INVOICE_ID})
+    assert invoice["amount_paid_minor"] == 0
+    assert invoice["pending_mpesa_amount_minor"] == 2500
+
+
+def test_stk_query_correlation_mismatch_does_not_change_payment_state(mpesa_db, monkeypatch):
+    _ok_requests(monkeypatch)
+    payment = mpesa.start_stk_push(
+        "owner-1", str(INVOICE_ID), _payment_payload(), "stk-query-mismatch-0001"
+    )
+    monkeypatch.setattr(mpesa.requests, "post", lambda url, **kwargs: FakeResponse(200, {
+        "ResponseCode": "0",
+        "MerchantRequestID": "merchant-request-001",
+        "CheckoutRequestID": "ws_CO_DIFFERENT",
+    }))
+
+    with pytest.raises(APIError) as raised:
+        mpesa.query_stk_status("owner-1", payment["id"])
+    assert raised.value.code == "mpesa_query_correlation_mismatch"
+    saved = mpesa_db["data"][mpesa.PAYMENTS_COLLECTION].find_one({"_id": ObjectId(payment["id"])})
+    assert saved["payment_status"] == "pending_provider_confirmation"
+    assert saved["provider_verified"] is False
+
+
+def test_stk_query_refuses_intent_without_checkout_id(mpesa_db, monkeypatch):
+    calls = {"get": 0, "post": 0}
+
+    def get(url, **kwargs):
+        calls["get"] += 1
+        return FakeResponse(200, {"access_token": "mock-only-access-token"})
+
+    def post(url, **kwargs):
+        calls["post"] += 1
+        raise requests.Timeout("ambiguous STK response")
+    monkeypatch.setattr(mpesa.requests, "get", get)
+    monkeypatch.setattr(mpesa.requests, "post", post)
+
+    with pytest.raises(APIError):
+        mpesa.start_stk_push(
+            "owner-1", str(INVOICE_ID), _payment_payload(), "stk-query-no-id-0001"
+        )
+    saved = mpesa_db["data"][mpesa.PAYMENTS_COLLECTION].find_one({
+        "business_id": BUSINESS_ID,
+        "idempotency_key": "mpesa-stk:stk-query-no-id-0001",
+    })
+    with pytest.raises(APIError) as raised:
+        mpesa.query_stk_status("owner-1", str(saved["_id"]))
+    assert raised.value.code == "mpesa_checkout_id_missing"
+    assert calls == {"get": 1, "post": 1}
+
