@@ -45,7 +45,7 @@ PROVIDERS = {
     "mpesa_daraja": {
         "label": "M-Pesa Daraja",
         "required_metadata": {"shortcode", "environment"},
-        "optional_metadata": {"initiator_name"},
+        "optional_metadata": {"initiator_name", "transaction_type"},
         "required_credentials": {"consumer_key", "consumer_secret", "passkey"},
         "optional_credentials": {"initiator_password", "security_credential"},
     },
@@ -248,6 +248,11 @@ def _validate_provider_metadata(provider, metadata, existing=None):
             if environment not in {"sandbox", "production"}:
                 raise APIError("M-Pesa environment must be sandbox or production.", 422, "invalid_integration_configuration")
             clean[field] = environment
+        elif field == "transaction_type" and provider == "mpesa_daraja":
+            transaction_type = str(value or "").strip()
+            if transaction_type not in {"CustomerPayBillOnline", "CustomerBuyGoodsOnline"}:
+                raise APIError("M-Pesa transaction_type must be CustomerPayBillOnline or CustomerBuyGoodsOnline.", 422, "invalid_integration_configuration")
+            clean[field] = transaction_type
         elif field in {"phone_number_id", "shortcode", "business_account_id", "graph_api_version", "api_version", "initiator_name"}:
             clean[field] = _required_text(value, field, 160)
         else:
