@@ -117,17 +117,24 @@ def _trusted_public_base_url(value=None):
     host = parsed.hostname.lower().rstrip(".")
     if not host or host in {"localhost", "localhost.localdomain"} or host.endswith((".localhost", ".local")):
         return None
+    host_is_ip = False
     try:
         from ipaddress import ip_address
-        if not ip_address(host).is_global:
+        parsed_ip = ip_address(host)
+        host_is_ip = True
+        if not parsed_ip.is_global:
             return None
     except ValueError:
         # DNS resolution/domain verification is separate; this validates only
         # that the configured canonical origin is a plausible public hostname.
         if "." not in host or host.startswith(".") or host.endswith("."):
             return None
-    port = parsed.port
-    authority = host if port in (None, 443) else f"{host}:{port}"
+    try:
+        port = parsed.port
+    except ValueError:
+        return None
+    authority_host = "[" + host + "]" if ":" in host else host
+    authority = authority_host if port in (None, 443) else f"{authority_host}:{port}"
     return "https://" + authority
 
 
