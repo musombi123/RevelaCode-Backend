@@ -250,6 +250,7 @@ def finance_db(monkeypatch):
     monkeypatch.setattr(ledger, "dispatch_manifest_for_record", lambda *args, **kwargs: {"enqueued": 1, "pending": 0, "errors": 0})
     monkeypatch.setattr(biashara, "collection", lambda name: data[name])
     monkeypatch.setattr(biashara, "_dispatch_outbox_source", lambda *args, **kwargs: {"enqueued": 1, "pending": 0, "errors": 0})
+    monkeypatch.setattr(biashara, "require_permission", lambda user_id, permission, business_id=None: {"id": business_id or "business-finance-1"})
     monkeypatch.setattr(biashara, "_require_business", lambda user_id: {
         "id": "business-finance-1", "currency": "KES", "name": "Test Business"
     })
