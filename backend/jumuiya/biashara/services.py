@@ -1247,6 +1247,7 @@ def create_order(user_id, payload):
                     409,
                     "order_reservation_failed",
                 )
+            _dispatch_outbox_source("jumuiya_orders", business["id"], existing["_id"])
             return serialise(existing)
 
     currency = str(business.get("currency") or "KES").strip().upper()
@@ -1332,6 +1333,23 @@ def create_order(user_id, payload):
             "actor_user_id": str(user_id),
         }],
     })
+    created_event = _build_outbox_manifest(
+        event_key=f"order:{document['_id']}:created",
+        event_type="order.created",
+        entity_type="order",
+        entity_id=document["_id"],
+        payload={
+            "status": "pending",
+            "inventory_status": "reservation_pending",
+            "source_channel": document["source_channel"],
+            "total_amount_minor": int(subtotal * 100),
+            "currency": currency,
+        },
+        actor_user_id=user_id,
+        occurred_at=now,
+    )
+    document["outbox_event_manifest"] = [created_event]
+    document["outbox_enqueued_event_keys"] = []
     if idempotency_key:
         document["idempotency_key"] = idempotency_key
 
@@ -1357,6 +1375,7 @@ def create_order(user_id, payload):
         raise
 
     saved = orders.find_one({"_id": document["_id"], "business_id": str(business["id"])}) or document
+    _dispatch_outbox_source("jumuiya_orders", business["id"], document["_id"])
     log_action(user_id, "inventory.order_reserved", "order", document["_id"])
     return serialise(saved)
 
