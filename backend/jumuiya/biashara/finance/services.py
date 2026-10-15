@@ -21,6 +21,11 @@ from backend.jumuiya.core.errors import APIError
 from backend.jumuiya.core.audit import log_action
 from backend.jumuiya.biashara import services as biashara_services
 from backend.jumuiya.biashara.sync.outbox import build_outbox_manifest, dispatch_manifest_for_record
+from backend.jumuiya.biashara.finance.ledger import (
+    post_journal_entry,
+    ledger_summary as _ledger_summary,
+    list_journal_entries as _list_journal_entries,
+)
 
 
 def now_utc():
@@ -121,6 +126,101 @@ def _order_total_minor(order):
             total += (price.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP) * quantity).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
         return int(total.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP) * 100)
     return _minor(order.get("total_amount", 0), "stored order total", allow_zero=True)
+
+
+def _post_invoice_journal(invoice, user_id):
+    """Post issue-time receivable/revenue entry, with tax classification explicitly pending."""
+    if invoice.get("status") != "issued":
+        return None
+    amount_minor = int(invoice.get("total_amount_minor", 0) or 0)
+    if amount_minor <= 0:
+        # A zero-value invoice has no monetary effect and therefore no journal.
+        return None
+    invoice_id = str(invoice.get("_id") or invoice.get("id") or "")
+    return post_journal_entry(
+        business_id=str(invoice.get("business_id") or ""),
+        source_key="invoice-issued:" + invoice_id,
+        source_type="invoice.issued",
+        source_id=invoice_id,
+        currency=invoice.get("currency", "KES"),
+        lines=[
+            {
+                "account_code": "accounts_receivable",
+                "debit_minor": amount_minor,
+                "credit_minor": 0,
+                "memo": "Receivable recognised on invoice issue",
+            },
+            {
+                "account_code": "sales_revenue_unclassified",
+                "debit_minor": 0,
+                "credit_minor": amount_minor,
+                "memo": "Commercial invoice total; tax classification pending",
+            },
+        ],
+        actor_user_id=user_id,
+        basis="Commercial invoice total posted without tax calculation; tax classification is not configured and must be reviewed before formal accounting use.",
+        effective_at=invoice.get("issued_at") or invoice.get("updated_at") or now_utc(),
+    )
+
+
+def _post_cash_payment_journal(payment, user_id):
+    """Post cash-on-hand against receivables only after an allocated cash attestation."""
+    if (
+        payment.get("payment_status") != "manual_attested"
+        or payment.get("verification_status") != "manual_attested"
+        or payment.get("allocation_status") != "allocated"
+    ):
+        return None
+    amount_minor = int(payment.get("amount_minor", 0) or 0)
+    if amount_minor <= 0:
+        return None
+    payment_id = str(payment.get("_id") or payment.get("id") or "")
+    invoice_id = str(payment.get("invoice_id") or "")
+    return post_journal_entry(
+        business_id=str(payment.get("business_id") or ""),
+        source_key="cash-payment:" + payment_id,
+        source_type="payment.cash_allocated",
+        source_id=payment_id,
+        currency=payment.get("currency", "KES"),
+        lines=[
+            {
+                "account_code": "cash_on_hand",
+                "debit_minor": amount_minor,
+                "credit_minor": 0,
+                "memo": "Cash receipt recorded by manual attestation",
+            },
+            {
+                "account_code": "accounts_receivable",
+                "debit_minor": 0,
+                "credit_minor": amount_minor,
+                "memo": "Cash payment allocated to invoice " + invoice_id[:80],
+            },
+        ],
+        actor_user_id=user_id,
+        basis="Manual cash attestation allocated to an issued invoice; not bank reconciliation or external-provider verification.",
+        effective_at=payment.get("allocated_at") or payment.get("updated_at") or now_utc(),
+    )
+
+
+def get_ledger_summary(user_id, currency=None, from_date=None, to_date=None):
+    _business_data, business_id = _business(user_id)
+    return _ledger_summary(
+        business_id=business_id,
+        currency=currency,
+        from_date=from_date,
+        to_date=to_date,
+    )
+
+
+def get_journal_entries(user_id, limit=50, source_type=None, from_date=None, to_date=None):
+    _business_data, business_id = _business(user_id)
+    return _list_journal_entries(
+        business_id=business_id,
+        limit=limit,
+        source_type=source_type,
+        from_date=from_date,
+        to_date=to_date,
+    )
 
 
 def _get_invoice(business_id, invoice_id):
@@ -342,6 +442,7 @@ def issue_invoice(user_id, invoice_id):
     invoices = collection("jumuiya_invoices")
     invoice = _get_invoice(business_id, invoice_id)
     if invoice.get("status") == "issued":
+        _post_invoice_journal(invoice, user_id)
         _dispatch("jumuiya_invoices", business_id, invoice["_id"])
         return _invoice_view(invoice)
     if invoice.get("status") != "draft":
@@ -376,6 +477,7 @@ def issue_invoice(user_id, invoice_id):
             _dispatch("jumuiya_invoices", business_id, latest["_id"])
             return _invoice_view(latest)
         raise APIError("Invoice changed before it could be issued.", 409, "invoice_state_conflict")
+    _post_invoice_journal(updated, user_id)
     _dispatch("jumuiya_invoices", business_id, updated["_id"])
     log_action(user_id, "biashara.invoice_issued", "invoice", updated["_id"], {
         "invoice_number": number, "amount_minor": updated.get("total_amount_minor", 0)
@@ -509,6 +611,7 @@ def _mark_payment_allocation(payment, invoice):
     ) or payment
     _dispatch("jumuiya_invoices", business_id, invoice_id)
     _dispatch("jumuiya_payments", business_id, payment_id)
+    _post_cash_payment_journal(updated_payment, payment.get("recorded_by_user_id") or "")
     return updated_payment
 
 
@@ -536,7 +639,9 @@ def record_payment(user_id, invoice_id, payload, idempotency_key):
             raise APIError("Idempotency-Key was reused for different payment data.", 409, "idempotency_key_reused")
         if prior.get("allocation_status") == "pending":
             _mark_payment_allocation(prior, invoice)
-        return _ser(payments.find_one({"_id": prior["_id"], "business_id": business_id}) or prior)
+        current_payment = payments.find_one({"_id": prior["_id"], "business_id": business_id}) or prior
+        _post_cash_payment_journal(current_payment, user_id)
+        return _ser(current_payment)
 
     now = now_utc()
     payment_id = ObjectId()
