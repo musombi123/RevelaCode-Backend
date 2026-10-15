@@ -251,6 +251,54 @@ def _public_event(document, include_payload=True, include_lease=False):
     return result
 
 
+def _dispatch_automation_event(document):
+    """Dispatch durable internal automation and retain failed attempts for replay."""
+    business_id = str(document.get("business_id") or "")
+    event_id = str(document.get("event_id") or "")
+    if not business_id or not event_id:
+        return {"processed": False, "error_code": "invalid_automation_event"}
+    try:
+        from backend.jumuiya.biashara.automation.services import process_event_for_automations
+        result = process_event_for_automations(_public_event(document, include_payload=True))
+        processed = bool(result.get("processed"))
+        collection(OUTBOX_COLLECTION).update_one(
+            {"business_id": business_id, "event_id": event_id},
+            {
+                "$set": {
+                    "automation_dispatch_status": "processed" if processed else "retry",
+                    "automation_last_dispatch_at": now_utc(),
+                    "automation_last_error_code": result.get("error_code"),
+                    "automation_last_run_count": int(result.get("created_runs", 0) or 0),
+                    "updated_at": now_utc(),
+                },
+                "$inc": {"automation_dispatch_attempt_count": 1},
+            },
+        )
+        return result
+    except Exception as error:
+        logger.warning(
+            "Biashara automation dispatch deferred (event_hash=%s, error=%s)",
+            hashlib.sha256(event_id.encode("utf-8")).hexdigest()[:12],
+            type(error).__name__,
+        )
+        try:
+            collection(OUTBOX_COLLECTION).update_one(
+                {"business_id": business_id, "event_id": event_id},
+                {
+                    "$set": {
+                        "automation_dispatch_status": "retry",
+                        "automation_last_dispatch_at": now_utc(),
+                        "automation_last_error_code": "automation_dispatch_failed",
+                        "updated_at": now_utc(),
+                    },
+                    "$inc": {"automation_dispatch_attempt_count": 1},
+                },
+            )
+        except Exception:
+            logger.warning("Biashara automation dispatch status update deferred.")
+        return {"processed": False, "error_code": "automation_dispatch_failed"}
+
+
 def enqueue_outbox_event(
     business_id,
     event_key,
