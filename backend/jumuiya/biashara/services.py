@@ -749,6 +749,92 @@ def low_stock(
 
 
 
+# =========================================================
+# CUSTOMERS
+# =========================================================
+
+def create_customer(user_id, payload):
+    """Create a tenant-scoped customer with safe retries and an outbox intent."""
+    business = _require_business_with_permission(user_id, "customers.manage")
+    business_id = str(business["id"])
+    key = str(payload.get("idempotency_key") or "").strip()
+    if key and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{7,127}", key):
+        raise APIError("Idempotency-Key must be 8–128 safe characters.", 422, "invalid_idempotency_key")
+
+    stable_payload = {
+        "name": str(payload.get("name") or "").strip()[:160],
+        "phone": str(payload.get("phone") or "").strip()[:40],
+        "email": str(payload.get("email") or "").strip().lower()[:254],
+        "notes": str(payload.get("notes") or "").strip()[:1000],
+    }
+    if not stable_payload["name"]:
+        raise APIError("Customer name is required.", 422, "invalid_customer")
+    fingerprint = hashlib.sha256(
+        json.dumps(stable_payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    ).hexdigest()
+
+    customers = collection("jumuiya_customers")
+    if key:
+        existing = customers.find_one({"business_id": business_id, "idempotency_key": key})
+        if existing:
+            if existing.get("request_fingerprint") != fingerprint:
+                raise APIError("Idempotency-Key was reused for different customer data.", 409, "idempotency_key_reused")
+            _dispatch_outbox_source("jumuiya_customers", business_id, existing["_id"])
+            return serialise(existing)
+
+    document = customer_document(business_id, stable_payload)
+    document["_id"] = ObjectId()
+    document["request_fingerprint"] = fingerprint
+    document["outbox_enqueued_event_keys"] = []
+    if key:
+        document["idempotency_key"] = key
+    event = _build_outbox_manifest(
+        event_key=f"customer:{document['_id']}:created",
+        event_type="customer.created",
+        entity_type="customer",
+        entity_id=document["_id"],
+        payload={"status": "active"},
+        actor_user_id=user_id,
+        occurred_at=document.get("created_at") or now_utc(),
+    )
+    document["outbox_event_manifest"] = [event]
+    try:
+        customers.insert_one(document)
+    except DuplicateKeyError:
+        if key:
+            existing = customers.find_one({"business_id": business_id, "idempotency_key": key})
+            if existing and existing.get("request_fingerprint") == fingerprint:
+                _dispatch_outbox_source("jumuiya_customers", business_id, existing["_id"])
+                return serialise(existing)
+            if existing:
+                raise APIError("Idempotency-Key was reused for different customer data.", 409, "idempotency_key_reused")
+        raise
+
+    _dispatch_outbox_source("jumuiya_customers", business_id, document["_id"])
+    log_action(user_id, "customer.created", "customer", document["_id"])
+    return serialise(document)
+
+
+def list_customers(user_id, search=None, limit=50):
+    """List the selected business's customers without crossing tenant boundaries."""
+    business = _require_business_with_permission(user_id, "customers.view")
+    query = {"business_id": str(business["id"])}
+    search_text = str(search or "").strip()[:120]
+    if search_text:
+        expression = {"$regex": re.escape(search_text), "$options": "i"}
+        query["$or"] = [
+            {"name": expression},
+            {"phone": expression},
+            {"email": expression},
+        ]
+    documents = (
+        collection("jumuiya_customers")
+        .find(query)
+        .sort("created_at", -1)
+        .limit(_bounded_list_limit(limit))
+    )
+    return serialise_many(documents)
+
 
 def _inventory_adjustment_fingerprint(product_id, movement_type, quantity, reason):
     canonical = {
