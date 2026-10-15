@@ -35,6 +35,7 @@ SOURCE_COLLECTIONS = (
     "jumuiya_products",
     "jumuiya_invoices",
     "jumuiya_payments",
+    "jumuiya_journal_entries",
 )
 
 OUTBOX_STATES = {"pending", "processing", "retry", "delivered", "dead_letter"}
