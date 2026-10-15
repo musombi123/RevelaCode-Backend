@@ -44,6 +44,9 @@ def _matches(document, query):
                 elif operator == "$lt":
                     if actual is _missing_module or actual >= value:
                         return False
+                elif operator == "$gt":
+                    if actual is _missing_module or actual <= value:
+                        return False
                 else:
                     raise AssertionError(f"Unsupported fake query operator: {operator}")
         elif actual is _missing_module or actual != expected:
@@ -261,3 +264,34 @@ def test_manifest_repair_enqueues_once_from_source_record(outbox_db, monkeypatch
     assert first["enqueued"] == 1
     assert second["enqueued"] == 0
     assert len(outbox_db.documents) == 1
+
+def test_expired_worker_lease_is_reclaimed_and_old_worker_cannot_ack(outbox_db):
+    outbox.enqueue_outbox_event(
+        "business-1",
+        "order:order-5:created",
+        "order.created",
+        "order",
+        "order-5",
+        payload={"status": "pending"},
+    )
+    first = outbox.claim_due_events("worker-old", business_id="business-1", limit=1)[0]
+    outbox_db.update_one(
+        {"business_id": "business-1", "event_id": first["event_id"]},
+        {"$set": {"lease_expires_at": datetime(2000, 1, 1, tzinfo=timezone.utc)}},
+    )
+
+    second = outbox.claim_due_events("worker-new", business_id="business-1", limit=1)[0]
+    assert second["lease_token"] != first["lease_token"]
+    assert second["attempt_count"] == 2
+
+    with pytest.raises(APIError) as raised:
+        outbox.mark_event_delivered(
+            "business-1", first["event_id"], "worker-old", first["lease_token"]
+        )
+    assert raised.value.code == "outbox_lease_conflict"
+
+    done = outbox.mark_event_delivered(
+        "business-1", second["event_id"], "worker-new", second["lease_token"]
+    )
+    assert done["state"] == "delivered"
+
