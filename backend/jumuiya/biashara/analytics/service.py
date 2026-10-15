@@ -10,6 +10,7 @@ from backend.jumuiya.core.database import collection
 from backend.jumuiya.biashara.services import (
     _require_business,
 )
+from backend.jumuiya.biashara.tenancy.service import require_permission
 
 from backend.jumuiya.biashara.models import (
     DEFAULT_CURRENCY,
@@ -23,6 +24,13 @@ from backend.jumuiya.biashara.models import (
 
 PRODUCT_ACTIVE_STATUS = PRODUCT_STATUS_ACTIVE
 PRODUCT_DELETED_STATUS = "deleted"
+
+
+def _analytics_business(user_id):
+    """Re-check analytics entitlement in the service layer."""
+    business = _require_business(user_id)
+    require_permission(user_id, "analytics.view", business_id=str(business["id"]))
+    return business
 
 
 # =========================================================
@@ -222,9 +230,7 @@ def overview(
     previous period.
     """
 
-    business = _require_business(
-        user_id
-    )
+    business = _analytics_business(user_id)
 
     business_id = business["id"]
 
@@ -438,9 +444,7 @@ def sales_analytics(
     user_id,
     days=DEFAULT_DAYS,
 ):
-    business = _require_business(
-        user_id
-    )
+    business = _analytics_business(user_id)
 
     business_id = business["id"]
 
@@ -562,9 +566,7 @@ def revenue_analytics(
     user_id,
     days=DEFAULT_DAYS,
 ):
-    business = _require_business(
-        user_id
-    )
+    business = _analytics_business(user_id)
 
     business_id = business["id"]
 
@@ -665,9 +667,7 @@ def orders_analytics(
     user_id,
     days=DEFAULT_DAYS,
 ):
-    business = _require_business(
-        user_id
-    )
+    business = _analytics_business(user_id)
 
     business_id = business["id"]
 
@@ -759,9 +759,7 @@ def customers_analytics(
     user_id,
     days=DEFAULT_DAYS,
 ):
-    business = _require_business(
-        user_id
-    )
+    business = _analytics_business(user_id)
 
     business_id = business["id"]
 
@@ -855,9 +853,7 @@ def products_analytics(
     user_id,
     days=DEFAULT_DAYS,
 ):
-    business = _require_business(
-        user_id
-    )
+    business = _analytics_business(user_id)
 
     business_id = business["id"]
 
@@ -977,9 +973,7 @@ def expenses_analytics(
     user_id,
     days=DEFAULT_DAYS,
 ):
-    business = _require_business(
-        user_id
-    )
+    business = _analytics_business(user_id)
 
     business_id = business["id"]
 
@@ -1068,9 +1062,7 @@ def profit_analytics(
     user_id,
     days=DEFAULT_DAYS,
 ):
-    business = _require_business(
-        user_id
-    )
+    business = _analytics_business(user_id)
 
     business_id = business["id"]
 
