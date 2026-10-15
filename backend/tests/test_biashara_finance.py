@@ -236,6 +236,14 @@ def test_invoice_issue_allocates_number_once_and_tax_state_stays_honest(finance_
     assert second["etims"]["status"] == "not_configured"
     assert second["amount_paid_minor"] == 0
     assert len(finance_db["data"]["jumuiya_finance_counters"].documents) == 1
+    journal = finance_db["data"]["jumuiya_journal_entries"].documents
+    assert len(journal) == 1
+    assert journal[0]["source_key"] == "invoice-issued:" + first["id"]
+    assert journal[0]["total_debit_minor"] == journal[0]["total_credit_minor"] == 12345
+    assert {line["account_code"] for line in journal[0]["lines"]} == {
+        "accounts_receivable", "sales_revenue_unclassified"
+    }
+    assert "tax classification is not configured" in journal[0]["basis"]
 
 
 def test_cash_payment_allocates_once_and_updates_invoice_balance(finance_db):
@@ -255,6 +263,12 @@ def test_cash_payment_allocates_once_and_updates_invoice_balance(finance_db):
     assert refreshed["amount_paid_minor"] == 2345
     assert refreshed["payment_status"] == "partially_paid"
     assert len(finance_db["data"]["jumuiya_payments"].documents) == 1
+    journal = finance_db["data"]["jumuiya_journal_entries"].documents
+    assert len(journal) == 2
+    payment_entry = next(entry for entry in journal if entry["source_type"] == "payment.cash_allocated")
+    assert payment_entry["total_debit_minor"] == payment_entry["total_credit_minor"] == 2345
+    assert payment_entry["lines"][0]["account_code"] == "cash_on_hand"
+    assert payment_entry["lines"][1]["account_code"] == "accounts_receivable"
 
 
 def test_manual_mpesa_reference_is_not_provider_verified_or_allocated(finance_db):
@@ -274,6 +288,8 @@ def test_manual_mpesa_reference_is_not_provider_verified_or_allocated(finance_db
     assert payment["allocation_status"] == "not_allocated_pending_verification"
     assert refreshed["amount_paid_minor"] == 0
     assert refreshed["payment_status"] == "unpaid"
+    assert len(finance_db["data"]["jumuiya_journal_entries"].documents) == 1
+    assert finance_db["data"]["jumuiya_journal_entries"].documents[0]["source_type"] == "invoice.issued"
 
 
 def test_overpayment_is_retained_as_conflict_without_corrupting_invoice_balance(finance_db):
@@ -343,4 +359,85 @@ def test_invoice_cannot_be_voided_while_external_payment_evidence_is_unverified(
     with pytest.raises(APIError) as raised:
         finance.void_invoice("owner-1", invoice["id"], "mistake")
     assert raised.value.code == "invoice_has_unresolved_payment"
+
+def test_manual_payment_replay_repairs_missing_cash_journal(finance_db):
+    draft = _draft_invoice(finance_db)
+    invoice = finance.issue_invoice("owner-1", draft["id"])
+    payment = finance.record_payment(
+        "owner-1", invoice["id"],
+        {"amount": "20.00", "payment_method": "cash", "reference": "receipt-repair"},
+        "cash-payment-repair-0001",
+    )
+    entries = finance_db["data"]["jumuiya_journal_entries"]
+    assert payment["allocation_status"] == "allocated"
+    payment_entries = [row for row in entries.documents if row["source_type"] == "payment.cash_allocated"]
+    assert len(payment_entries) == 1
+
+    # Simulate a crash after allocation saved but before the journal insert.
+    entries.documents = [row for row in entries.documents if row["source_type"] != "payment.cash_allocated"]
+    finance.record_payment(
+        "owner-1", invoice["id"],
+        {"amount": "20.00", "payment_method": "cash", "reference": "receipt-repair"},
+        "cash-payment-repair-0001",
+    )
+    assert len([row for row in entries.documents if row["source_type"] == "payment.cash_allocated"]) == 1
+
+
+def test_journal_rejects_unbalanced_entries_and_reuses_source_key_safely(finance_db):
+    with pytest.raises(APIError) as unbalanced:
+        ledger.post_journal_entry(
+            business_id="business-finance-1",
+            source_key="manual-test-entry-0001",
+            source_type="manual.test",
+            source_id="example-1",
+            currency="KES",
+            lines=[
+                {"account_code": "cash_on_hand", "debit_minor": 1000, "credit_minor": 0},
+                {"account_code": "accounts_receivable", "debit_minor": 0, "credit_minor": 999},
+            ],
+            actor_user_id="owner-1",
+            basis="unit-test",
+        )
+    assert unbalanced.value.code == "unbalanced_journal_entry"
+    assert len(finance_db["data"]["jumuiya_journal_entries"].documents) == 0
+
+    payload = dict(
+        business_id="business-finance-1",
+        source_key="manual-test-entry-0002",
+        source_type="manual.test",
+        source_id="example-2",
+        currency="KES",
+        lines=[
+            {"account_code": "cash_on_hand", "debit_minor": 1000, "credit_minor": 0},
+            {"account_code": "accounts_receivable", "debit_minor": 0, "credit_minor": 1000},
+        ],
+        actor_user_id="owner-1",
+        basis="unit-test",
+    )
+    first = ledger.post_journal_entry(**payload)
+    second = ledger.post_journal_entry(**payload)
+    assert first["id"] == second["id"]
+    assert len(finance_db["data"]["jumuiya_journal_entries"].documents) == 1
+
+    with pytest.raises(APIError) as conflict:
+        ledger.post_journal_entry(**{
+            **payload,
+            "lines": [
+                {"account_code": "cash_on_hand", "debit_minor": 1500, "credit_minor": 0},
+                {"account_code": "accounts_receivable", "debit_minor": 0, "credit_minor": 1500},
+            ],
+        })
+    assert conflict.value.code == "journal_source_conflict"
+    assert len(finance_db["data"]["jumuiya_journal_entries"].documents) == 1
+
+
+def test_journal_queries_are_scoped_to_the_active_business(finance_db, monkeypatch):
+    draft = _draft_invoice(finance_db)
+    invoice = finance.issue_invoice("owner-1", draft["id"])
+    rows = finance.get_journal_entries("owner-1")
+    assert len(rows) == 1
+    assert rows[0]["source_id"] == invoice["id"]
+
+    monkeypatch.setattr(biashara, "_require_business", lambda user_id: {"id": "other-business", "currency": "KES"})
+    assert finance.get_journal_entries("other-owner") == []
 
