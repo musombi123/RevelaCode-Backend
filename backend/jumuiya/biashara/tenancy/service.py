@@ -32,14 +32,14 @@ ROLE_PERMISSIONS = {
         "products.view", "products.manage", "inventory.view", "inventory.manage",
         "orders.view", "orders.create", "orders.manage",
         "sales.view", "sales.create", "customers.view", "customers.manage",
-        "finance.view", "finance.manage", "analytics.view",
+        "finance.view", "finance.manage", "analytics.view", "intelligence.view",
         "website.view", "website.manage", "automation.view", "automation.manage",
         "sync.view", "sync.manage",
     },
     "cashier": {
         "business.view", "products.view", "inventory.view",
         "orders.view", "orders.create", "sales.view", "sales.create",
-        "customers.view",
+        "customers.view", "customers.manage",
     },
     "stock_controller": {
         "business.view", "products.view", "products.manage",
@@ -47,7 +47,7 @@ ROLE_PERMISSIONS = {
     },
     "accountant": {
         "business.view", "orders.view", "sales.view",
-        "finance.view", "finance.manage", "analytics.view",
+        "finance.view", "finance.manage", "analytics.view", "intelligence.view",
     },
     "fulfilment": {
         "business.view", "orders.view", "orders.manage",
@@ -59,11 +59,11 @@ ROLE_PERMISSIONS = {
     },
     "advisor": {
         "business.view", "products.view", "orders.view", "sales.view",
-        "finance.view", "analytics.view", "automation.view", "sync.view",
+        "finance.view", "analytics.view", "intelligence.view", "automation.view", "sync.view",
     },
     "read_only": {
         "business.view", "products.view", "inventory.view", "orders.view",
-        "sales.view", "customers.view", "finance.view", "analytics.view",
+        "sales.view", "customers.view", "finance.view", "analytics.view", "intelligence.view",
         "website.view", "automation.view", "sync.view", "team.view",
     },
 }
