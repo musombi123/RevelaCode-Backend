@@ -1,5 +1,7 @@
 # backend/jumuiya/biashara/services.py
 
+import hashlib
+import json
 import re
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
@@ -7,6 +9,7 @@ from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from bson import ObjectId
 from bson.errors import InvalidId
 from pymongo import ReturnDocument
+from pymongo.errors import DuplicateKeyError
 
 from backend.jumuiya.core.database import collection
 from backend.jumuiya.core.errors import APIError
@@ -731,19 +734,405 @@ def list_customers(
 # =========================================================
 
 
-def create_order(
+
+def _order_fingerprint(payload):
+    """Stable fingerprint of customer intent, excluding client prices/totals."""
+    items = []
+    for item in payload.get("items", []):
+        quantity = Decimal(str(item.get("quantity", 0)))
+        items.append({
+            "product_id": str(item.get("product_id") or ""),
+            "quantity": format(quantity.normalize(), "f"),
+        })
+    canonical = {
+        "customer_id": str(payload.get("customer_id") or ""),
+        "items": items,
+        "notes": str(payload.get("notes") or "").strip(),
+    }
+    encoded = json.dumps(canonical, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _order_quantities(order):
+    quantities = {}
+    for item in order.get("items", []):
+        product_id = str(item.get("product_id") or "")
+        try:
+            quantity = Decimal(str(item.get("quantity")))
+        except (InvalidOperation, TypeError, ValueError):
+            raise APIError("Stored order quantity is invalid.", 409, "invalid_order_inventory")
+        if not product_id or not quantity.is_finite() or quantity <= 0:
+            raise APIError("Stored order item is invalid.", 409, "invalid_order_inventory")
+        quantities[product_id] = quantities.get(product_id, Decimal("0")) + quantity
+    return quantities
+
+
+def _reservation_for(product, order_id):
+    for reservation in product.get("active_reservations", []) or []:
+        if str(reservation.get("order_id")) == str(order_id):
+            return reservation
+    return None
+
+
+def _inventory_movement_key(order_id, product_id, operation):
+    return f"biashara:order:{order_id}:{operation}:{product_id}"
+
+
+def _ensure_order_movement(
+    business_id,
     user_id,
-    payload,
+    order_id,
+    product_id,
+    operation,
+    movement_type,
+    reason,
+    quantity,
+    previous_quantity,
+    new_quantity,
 ):
-    """Create a pending order using server-authoritative catalogue prices.
+    """Persist a uniquely-keyed inventory fact; safe to call during recovery."""
+    movements = collection("jumuiya_inventory_movements")
+    key = _inventory_movement_key(order_id, product_id, operation)
+    existing = movements.find_one({
+        "business_id": str(business_id),
+        "idempotency_key": key,
+    })
+    if existing:
+        return existing
 
-    Submitted line names/prices/totals are never trusted. The current stock
-    check is advisory because pending orders do not reserve inventory yet;
-    that limitation is recorded on the order until reservation/fulfilment is
-    implemented as a separate, idempotent workflow.
-    """
+    document = inventory_movement_document(
+        str(business_id),
+        clean_id(product_id),
+        {
+            "movement_type": movement_type,
+            "quantity": float(quantity),
+            "reason": reason,
+        },
+        float(previous_quantity),
+        float(new_quantity),
+    )
+    document.update({
+        "idempotency_key": key,
+        "order_id": str(order_id),
+        "actor_user_id": str(user_id),
+        "source": "order_lifecycle",
+    })
+    try:
+        result = movements.insert_one(document)
+        document["_id"] = result.inserted_id
+        return document
+    except DuplicateKeyError:
+        existing = movements.find_one({
+            "business_id": str(business_id),
+            "idempotency_key": key,
+        })
+        if existing:
+            return existing
+        raise
+
+
+def _ensure_reservation_movement(business_id, user_id, order_id, product_id, reservation):
+    return _ensure_order_movement(
+        business_id=business_id,
+        user_id=user_id,
+        order_id=order_id,
+        product_id=product_id,
+        operation="reserve",
+        movement_type="remove",
+        reason="order_reservation",
+        quantity=reservation["quantity"],
+        previous_quantity=reservation["previous_available_quantity"],
+        new_quantity=reservation["new_available_quantity"],
+    )
+
+
+def _release_order_inventory(order, user_id, allow_missing=False):
+    """Release open-order reservations exactly once and recover interrupted releases."""
+    business_id = str(order["business_id"])
+    order_id = str(order.get("_id") or order.get("id"))
+    products = collection("jumuiya_products")
+    movements = collection("jumuiya_inventory_movements")
+
+    for product_id, quantity in _order_quantities(order).items():
+        release_key = _inventory_movement_key(order_id, product_id, "release")
+        consume_key = _inventory_movement_key(order_id, product_id, "consume")
+        while True:
+            product = products.find_one({
+                "_id": clean_id(product_id),
+                "business_id": business_id,
+            })
+            if not product:
+                if movements.find_one({"business_id": business_id, "idempotency_key": release_key}):
+                    break
+                if allow_missing:
+                    break
+                raise APIError(
+                    "A reserved product is missing; inventory needs reconciliation.",
+                    409,
+                    "inventory_reservation_missing",
+                )
+
+            reservation = _reservation_for(product, order_id)
+            if reservation is None:
+                if movements.find_one({"business_id": business_id, "idempotency_key": release_key}):
+                    break
+                if movements.find_one({"business_id": business_id, "idempotency_key": consume_key}):
+                    raise APIError(
+                        "Stock has already been consumed by this order and cannot be released as a cancellation.",
+                        409,
+                        "order_inventory_consumed",
+                    )
+                if allow_missing or order.get("inventory_status") in {"not_reserved", "reservation_failed"}:
+                    break
+                raise APIError(
+                    "The order reservation marker is missing; inventory needs reconciliation.",
+                    409,
+                    "inventory_reservation_missing",
+                )
+
+            state = reservation.get("state", "reserved")
+            if state == "consumed":
+                raise APIError(
+                    "Stock has already been consumed by this order and cannot be released as a cancellation.",
+                    409,
+                    "order_inventory_consumed",
+                )
+
+            if state == "released":
+                _ensure_order_movement(
+                    business_id, user_id, order_id, product_id, "release", "add",
+                    "order_cancelled", reservation["quantity"],
+                    reservation["release_previous_available_quantity"],
+                    reservation["release_new_available_quantity"],
+                )
+                products.update_one(
+                    {"_id": product["_id"], "business_id": business_id},
+                    {"$pull": {"active_reservations": {"order_id": order_id}}},
+                )
+                break
+
+            try:
+                stock = Decimal(str(product.get("stock_quantity", 0) or 0))
+                reserved = Decimal(str(product.get("reserved_quantity", 0) or 0))
+            except (InvalidOperation, TypeError, ValueError):
+                raise APIError("Product inventory state is invalid.", 409, "invalid_inventory_state")
+            if not stock.is_finite() or not reserved.is_finite() or reserved < quantity:
+                raise APIError("Reserved inventory is inconsistent and needs reconciliation.", 409, "invalid_inventory_state")
+
+            previous_available = stock - reserved
+            new_reserved = reserved - quantity
+            new_available = stock - new_reserved
+            now = now_utc()
+            updated = products.find_one_and_update(
+                {
+                    "_id": product["_id"],
+                    "business_id": business_id,
+                    "stock_quantity": product.get("stock_quantity", 0),
+                    "reserved_quantity": product.get("reserved_quantity", 0),
+                    "active_reservations": {
+                        "$elemMatch": {"order_id": order_id, "state": "reserved"}
+                    },
+                },
+                {
+                    "$inc": {"reserved_quantity": -float(quantity)},
+                    "$set": {
+                        "updated_at": now,
+                        "active_reservations.$[reservation].state": "released",
+                        "active_reservations.$[reservation].release_previous_available_quantity": float(previous_available),
+                        "active_reservations.$[reservation].release_new_available_quantity": float(new_available),
+                        "active_reservations.$[reservation].released_at": now,
+                    },
+                },
+                array_filters=[{"reservation.order_id": order_id, "reservation.state": "reserved"}],
+                return_document=ReturnDocument.AFTER,
+            )
+            if not updated:
+                continue
+
+            updated_reservation = _reservation_for(updated, order_id)
+            if not updated_reservation:
+                raise APIError("Reservation release needs reconciliation.", 409, "inventory_reservation_missing")
+            _ensure_order_movement(
+                business_id, user_id, order_id, product_id, "release", "add",
+                "order_cancelled", quantity,
+                updated_reservation["release_previous_available_quantity"],
+                updated_reservation["release_new_available_quantity"],
+            )
+            products.update_one(
+                {"_id": product["_id"], "business_id": business_id},
+                {"$pull": {"active_reservations": {"order_id": order_id}}},
+            )
+            break
+
+    collection("jumuiya_orders").update_one(
+        {"_id": clean_id(order_id), "business_id": business_id},
+        {"$set": {"inventory_status": "released", "inventory_released_at": now_utc()}},
+    )
+
+
+def _reserve_order_inventory(order, user_id):
+    """Reserve available stock with compare-and-set writes and crash-recoverable markers."""
+    business_id = str(order["business_id"])
+    order_id = str(order.get("_id") or order.get("id"))
+    products = collection("jumuiya_products")
+    quantities = _order_quantities(order)
+
+    for product_id, quantity in quantities.items():
+        reserved_done = False
+        for _attempt in range(12):
+            product = products.find_one({
+                "_id": clean_id(product_id),
+                "business_id": business_id,
+            })
+            if not product:
+                raise APIError("One or more products are no longer available.", 422, "invalid_product")
+
+            reservation = _reservation_for(product, order_id)
+            if reservation:
+                state = reservation.get("state", "reserved")
+                if state == "reserved":
+                    _ensure_reservation_movement(business_id, user_id, order_id, product_id, reservation)
+                    reserved_done = True
+                    break
+                if state == "consumed":
+                    # A duplicate request after fulfilment must not reserve again.
+                    reserved_done = True
+                    break
+                if state == "released":
+                    raise APIError("This order's inventory reservation was already released.", 409, "order_inventory_released")
+
+            if product.get("status", "active") != "active":
+                raise APIError("One or more products are no longer available.", 422, "invalid_product")
+
+            try:
+                stock = Decimal(str(product.get("stock_quantity", 0) or 0))
+                reserved = Decimal(str(product.get("reserved_quantity", 0) or 0))
+            except (InvalidOperation, TypeError, ValueError):
+                raise APIError("Product inventory state is invalid.", 409, "invalid_inventory_state")
+            if not stock.is_finite() or not reserved.is_finite() or stock < 0 or reserved < 0 or reserved > stock:
+                raise APIError("Product inventory state is inconsistent.", 409, "invalid_inventory_state")
+
+            available = stock - reserved
+            if available < quantity:
+                raise APIError(
+                    f"Insufficient available stock for {product.get('name', 'product')}.",
+                    409,
+                    "insufficient_stock",
+                )
+
+            new_reserved = reserved + quantity
+            now = now_utc()
+            marker = {
+                "order_id": order_id,
+                "quantity": float(quantity),
+                "state": "reserved",
+                "previous_available_quantity": float(available),
+                "new_available_quantity": float(stock - new_reserved),
+                "previous_reserved_quantity": float(reserved),
+                "new_reserved_quantity": float(new_reserved),
+                "reserved_at": now,
+            }
+            filter_doc = {
+                "_id": product["_id"],
+                "business_id": business_id,
+                "status": "active",
+                "stock_quantity": product.get("stock_quantity", 0),
+                "active_reservations.order_id": {"$ne": order_id},
+            }
+            if "reserved_quantity" in product:
+                filter_doc["reserved_quantity"] = product["reserved_quantity"]
+            else:
+                filter_doc["reserved_quantity"] = {"$exists": False}
+
+            updated = products.find_one_and_update(
+                filter_doc,
+                {
+                    "$inc": {"reserved_quantity": float(quantity)},
+                    "$set": {"updated_at": now},
+                    "$addToSet": {"active_reservations": marker},
+                },
+                return_document=ReturnDocument.AFTER,
+            )
+            if updated:
+                saved_marker = _reservation_for(updated, order_id)
+                if not saved_marker:
+                    raise APIError("Inventory reservation needs reconciliation.", 409, "inventory_reservation_missing")
+                _ensure_reservation_movement(business_id, user_id, order_id, product_id, saved_marker)
+                reserved_done = True
+                break
+
+        if not reserved_done:
+            # Re-check after bounded compare-and-set retries; never overbook stock.
+            raise APIError(
+                "Inventory changed while reserving this order. Retry with the same idempotency key.",
+                409,
+                "inventory_reservation_conflict",
+            )
+
+    current = collection("jumuiya_orders").find_one({
+        "_id": clean_id(order_id),
+        "business_id": business_id,
+    })
+    if not current:
+        raise APIError("Order record disappeared during reservation.", 409, "order_reservation_missing")
+    if current.get("status") != "pending":
+        _release_order_inventory(current, user_id, allow_missing=True)
+        raise APIError("The order changed while inventory was being reserved.", 409, "order_state_conflict")
+
+    collection("jumuiya_orders").update_one(
+        {"_id": clean_id(order_id), "business_id": business_id, "status": "pending"},
+        {"$set": {"inventory_status": "reserved", "reserved_at": now_utc()}},
+    )
+
+
+def _fail_order_reservation(order, user_id, error):
+    order_id = str(order.get("_id") or order.get("id"))
+    business_id = str(order["business_id"])
+    try:
+        _release_order_inventory(order, user_id, allow_missing=True)
+        collection("jumuiya_orders").update_one(
+            {"_id": clean_id(order_id), "business_id": business_id, "status": "pending"},
+            {
+                "$set": {
+                    "status": "cancelled",
+                    "inventory_status": "reservation_failed",
+                    "cancellation_reason": "inventory_reservation_failed",
+                    "cancelled_at": now_utc(),
+                    "updated_at": now_utc(),
+                },
+                "$push": {
+                    "status_history": {
+                        "from": "pending",
+                        "to": "cancelled",
+                        "at": now_utc().isoformat(),
+                        "actor_user_id": str(user_id),
+                        "reason": "inventory_reservation_failed",
+                    }
+                },
+            },
+        )
+    except Exception:
+        # Preserve the failed reservation record for operator recovery; never
+        # silently claim the stock was released if compensation did not finish.
+        collection("jumuiya_orders").update_one(
+            {"_id": clean_id(order_id), "business_id": business_id},
+            {"$set": {
+                "inventory_status": "release_reconciliation_required",
+                "inventory_reconciliation_required_at": now_utc(),
+            }},
+        )
+        log_action(
+            user_id,
+            "inventory.reservation_reconciliation_required",
+            "order",
+            order_id,
+            {"error_code": getattr(error, "code", "reservation_failed")},
+        )
+
+
+def create_order(user_id, payload):
+    """Create an order with catalogue-authoritative pricing and recoverable stock reservation."""
     business = _require_business(user_id)
-
     customer_id = payload.get("customer_id")
     if customer_id:
         customer = collection("jumuiya_customers").find_one({
@@ -751,96 +1140,86 @@ def create_order(
             "business_id": business["id"],
         })
         if not customer:
-            raise APIError(
-                "Customer does not belong to this business.",
-                422,
-                "invalid_customer",
-            )
+            raise APIError("Customer does not belong to this business.", 422, "invalid_customer")
 
     submitted_items = payload.get("items")
     if not isinstance(submitted_items, list) or not submitted_items:
         raise APIError("An order must contain at least one item.", 422, "invalid_order_items")
+
+    idempotency_key = str(payload.get("idempotency_key") or "").strip()
+    if idempotency_key and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{7,127}", idempotency_key):
+        raise APIError("Idempotency-Key must be 8–128 safe characters.", 422, "invalid_idempotency_key")
+
+    fingerprint = _order_fingerprint(payload)
+    orders = collection("jumuiya_orders")
+    if idempotency_key:
+        existing = orders.find_one({
+            "business_id": str(business["id"]),
+            "idempotency_key": idempotency_key,
+        })
+        if existing:
+            if existing.get("request_fingerprint") != fingerprint:
+                raise APIError(
+                    "This Idempotency-Key was already used for a different order payload.",
+                    409,
+                    "idempotency_key_reused",
+                )
+            if existing.get("inventory_status") == "reservation_pending" and existing.get("status") == "pending":
+                try:
+                    _reserve_order_inventory(existing, user_id)
+                except APIError as error:
+                    _fail_order_reservation(existing, user_id, error)
+                    raise
+                existing = orders.find_one({"_id": existing["_id"], "business_id": str(business["id"])}) or existing
+            if existing.get("inventory_status") in {"reservation_failed", "release_reconciliation_required"}:
+                raise APIError(
+                    "This order's stock reservation did not complete. Review the order before creating another request.",
+                    409,
+                    "order_reservation_failed",
+                )
+            return serialise(existing)
 
     currency = str(business.get("currency") or "KES").strip().upper()
     if not re.fullmatch(r"[A-Z]{3}", currency):
         currency = "KES"
 
     product_cache = {}
-    stock_by_product = {}
-    requested_by_product = {}
+    quantities = {}
     priced_items = []
     subtotal = Decimal("0.00")
-
     for index, item in enumerate(submitted_items):
         if not isinstance(item, dict):
-            raise APIError(
-                f"Order item {index + 1} must be an object.",
-                422,
-                "invalid_order_items",
-            )
-
-        raw_product_id = item.get("product_id")
-        if not raw_product_id:
-            raise APIError(
-                f"Order item {index + 1} requires a product.",
-                422,
-                "invalid_order_items",
-            )
-
-        product_key = str(raw_product_id)
-        product = product_cache.get(product_key)
+            raise APIError(f"Order item {index + 1} must be an object.", 422, "invalid_order_items")
+        product_id = str(item.get("product_id") or "")
+        if not product_id:
+            raise APIError(f"Order item {index + 1} requires a product.", 422, "invalid_order_items")
+        product = product_cache.get(product_id)
         if product is None:
             product = collection("jumuiya_products").find_one({
-                "_id": clean_id(raw_product_id),
-                "business_id": business["id"],
+                "_id": clean_id(product_id),
+                "business_id": str(business["id"]),
                 "status": "active",
             })
             if not product:
-                raise APIError(
-                    "One or more products are no longer available.",
-                    422,
-                    "invalid_product",
-                )
-            product_cache[product_key] = product
+                raise APIError("One or more products are no longer available.", 422, "invalid_product")
+            product_cache[product_id] = product
 
         try:
             quantity = Decimal(str(item.get("quantity")))
             unit_price = Decimal(str(product.get("price", 0)))
-            available = Decimal(str(product.get("stock_quantity", 0) or 0))
         except (InvalidOperation, TypeError, ValueError):
-            raise APIError(
-                "Order quantity or catalogue price is invalid.",
-                422,
-                "invalid_order_amount",
-            )
-
+            raise APIError("Order quantity or catalogue price is invalid.", 422, "invalid_order_amount")
         if not quantity.is_finite() or quantity <= 0:
-            raise APIError(
-                "Order quantities must be positive finite numbers.",
-                422,
-                "invalid_order_quantity",
-            )
+            raise APIError("Order quantities must be positive finite numbers.", 422, "invalid_order_quantity")
         if not unit_price.is_finite() or unit_price < 0:
-            raise APIError(
-                f"Catalogue price for {product.get('name', 'product')} is invalid.",
-                409,
-                "invalid_catalogue_price",
-            )
-        if not available.is_finite() or available < 0:
-            available = Decimal("0")
-        stock_by_product[product_key] = available
+            raise APIError(f"Catalogue price for {product.get('name', 'product')} is invalid.", 409, "invalid_catalogue_price")
         if str(product.get("currency") or currency).upper() != currency:
-            raise APIError(
-                "All products in one order must use the business currency.",
-                422,
-                "mixed_order_currency",
-            )
+            raise APIError("All products in one order must use the business currency.", 422, "mixed_order_currency")
 
         rounded_price = unit_price.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
         line_total = (rounded_price * quantity).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
         subtotal += line_total
-        requested_by_product[product_key] = requested_by_product.get(product_key, Decimal("0")) + quantity
-
+        quantities[product_id] = quantities.get(product_id, Decimal("0")) + quantity
         priced_items.append({
             "product_id": str(product.get("_id")),
             "name": str(product.get("name") or "Product")[:160],
@@ -853,45 +1232,29 @@ def create_order(
             "currency": currency,
         })
 
-    # A pending order does not reduce stock yet. This is an advisory check only;
-    # two concurrent pending orders can still request the same units until a
-    # durable reservation workflow is implemented.
-    for product_key, requested in requested_by_product.items():
-        product = product_cache[product_key]
-        available = stock_by_product.get(product_key, Decimal("0"))
-        if requested > available:
-            raise APIError(
-                f"Insufficient stock for {product.get('name', 'product')}.",
-                409,
-                "insufficient_stock",
-            )
-
     subtotal = subtotal.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-    total = subtotal
     now = now_utc()
     trusted_payload = {
         "customer_id": str(customer_id) if customer_id else None,
         "items": priced_items,
         "subtotal": float(subtotal),
-        "subtotal_minor": int(subtotal * 100),
         "discount": 0,
-        "total_amount": float(total),
-        "total_amount_minor": int(total * 100),
+        "total_amount": float(subtotal),
         "currency": currency,
+        "notes": str(payload.get("notes") or "")[:1000],
         "status": "pending",
         "payment_status": "unpaid",
-        "payment_method": "",
-        "payment_reference": "",
-        "notes": str(payload.get("notes") or "")[:1000],
     }
-
-    document = order_document(business["id"], trusted_payload)
+    document = order_document(str(business["id"]), trusted_payload)
     document.update({
+        "_id": ObjectId(),
         "subtotal_minor": int(subtotal * 100),
-        "total_amount_minor": int(total * 100),
+        "total_amount_minor": int(subtotal * 100),
         "currency": currency,
-        "source_channel": "manual",
-        "inventory_status": "not_reserved",
+        "source_channel": str(payload.get("source_channel") or "manual"),
+        "inventory_status": "reservation_pending",
+        "inventory_reserved_quantity": {key: float(value) for key, value in quantities.items()},
+        "request_fingerprint": fingerprint,
         "status_history": [{
             "from": None,
             "to": "pending",
@@ -899,12 +1262,33 @@ def create_order(
             "actor_user_id": str(user_id),
         }],
     })
+    if idempotency_key:
+        document["idempotency_key"] = idempotency_key
 
-    result = collection("jumuiya_orders").insert_one(document)
-    document["_id"] = result.inserted_id
+    try:
+        orders.insert_one(document)
+    except DuplicateKeyError:
+        if idempotency_key:
+            existing = orders.find_one({
+                "business_id": str(business["id"]),
+                "idempotency_key": idempotency_key,
+            })
+            if existing and existing.get("request_fingerprint") == fingerprint:
+                return create_order(user_id, {**payload, "idempotency_key": idempotency_key})
+            if existing:
+                raise APIError("Idempotency-Key was reused for a different order.", 409, "idempotency_key_reused")
+        raise
 
-    log_action(user_id, "order.created", "order", result.inserted_id)
-    return serialise(document)
+    log_action(user_id, "order.created", "order", document["_id"], {"source_channel": document["source_channel"]})
+    try:
+        _reserve_order_inventory(document, user_id)
+    except APIError as error:
+        _fail_order_reservation(document, user_id, error)
+        raise
+
+    saved = orders.find_one({"_id": document["_id"], "business_id": str(business["id"])}) or document
+    log_action(user_id, "inventory.order_reserved", "order", document["_id"])
+    return serialise(saved)
 
 def list_orders(
     user_id,
