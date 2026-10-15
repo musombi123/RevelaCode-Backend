@@ -954,6 +954,45 @@ def repair_pending_inventory_movements(user_id, limit=100):
                 )
     return report
 
+def _order_fingerprint(payload):
+    """Stable fingerprint of order intent, excluding client prices and totals."""
+    items = []
+    for item in payload.get("items", []):
+        try:
+            quantity = Decimal(str(item.get("quantity", 0)))
+        except (InvalidOperation, TypeError, ValueError):
+            raise APIError("Order quantity is invalid.", 422, "invalid_order_quantity")
+        if not quantity.is_finite() or quantity <= 0:
+            raise APIError("Order quantities must be positive finite numbers.", 422, "invalid_order_quantity")
+        items.append({
+            "product_id": str(item.get("product_id") or ""),
+            "quantity": format(quantity.normalize(), "f"),
+        })
+    canonical = {
+        "customer_id": str(payload.get("customer_id") or ""),
+        "items": items,
+        "notes": str(payload.get("notes") or "").strip(),
+        "source_channel": str(payload.get("source_channel") or "manual").strip().lower(),
+    }
+    encoded = json.dumps(canonical, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _order_quantities(order):
+    """Aggregate repeated SKU/product lines so reservation happens once per product."""
+    quantities = {}
+    for item in order.get("items", []):
+        product_id = str(item.get("product_id") or "")
+        try:
+            quantity = Decimal(str(item.get("quantity")))
+        except (InvalidOperation, TypeError, ValueError):
+            raise APIError("Stored order quantity is invalid.", 409, "invalid_order_inventory")
+        if not product_id or not quantity.is_finite() or quantity <= 0:
+            raise APIError("Stored order item is invalid.", 409, "invalid_order_inventory")
+        quantities[product_id] = quantities.get(product_id, Decimal("0")) + quantity
+    return quantities
+
+
 def _inventory_movement_key(order_id, product_id, operation):
     return f"biashara:order:{order_id}:{operation}:{product_id}"
 
