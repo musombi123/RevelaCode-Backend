@@ -15,6 +15,7 @@ from backend.jumuiya.core.responses import (
 )
 
 from backend.jumuiya.core.errors import APIError
+from backend.jumuiya.biashara.tenancy.service import require_business_permission
 
 from backend.jumuiya.biashara import (
     schemas,
@@ -221,6 +222,7 @@ def save_business():
     "/products"
 )
 @require_authenticated
+@require_business_permission("products.view")
 def get_products():
     """
     List the authenticated business products.
@@ -254,6 +256,7 @@ def get_products():
     "/products"
 )
 @require_authenticated
+@require_business_permission("products.manage")
 def add_product():
     """
     Create a product.
@@ -277,6 +280,7 @@ def add_product():
     "/products/<product_id>"
 )
 @require_authenticated
+@require_business_permission("products.manage")
 def edit_product(
     product_id,
 ):
@@ -310,6 +314,7 @@ def edit_product(
     "/products/<product_id>"
 )
 @require_authenticated
+@require_business_permission("products.manage")
 def delete_product(
     product_id,
 ):
@@ -336,6 +341,7 @@ def delete_product(
     "/inventory/low-stock"
 )
 @require_authenticated
+@require_business_permission("inventory.view")
 def low_stock():
     """
     Return products that have reached the low-stock threshold.
@@ -361,6 +367,7 @@ def low_stock():
     "/inventory/<product_id>/adjust"
 )
 @require_authenticated
+@require_business_permission("inventory.manage")
 def adjust_inventory(
     product_id,
 ):
@@ -391,6 +398,7 @@ def adjust_inventory(
     "/inventory/history"
 )
 @require_authenticated
+@require_business_permission("inventory.view")
 def inventory_history():
     """
     Return recent inventory movements.
@@ -420,6 +428,7 @@ def inventory_history():
     "/customers"
 )
 @require_authenticated
+@require_business_permission("customers.view")
 def get_customers():
     """
     List customers with optional search.
@@ -440,6 +449,7 @@ def get_customers():
     "/customers"
 )
 @require_authenticated
+@require_business_permission("customers.manage")
 def add_customer():
     """
     Create a customer record.
@@ -467,6 +477,7 @@ def add_customer():
     "/orders"
 )
 @require_authenticated
+@require_business_permission("orders.view")
 def get_orders():
     """
     List business orders.
@@ -492,6 +503,7 @@ def get_orders():
     "/orders"
 )
 @require_authenticated
+@require_business_permission("orders.create")
 def add_order():
     """
     Create an order.
@@ -522,6 +534,7 @@ def add_order():
     "/orders/<order_id>"
 )
 @require_authenticated
+@require_business_permission("orders.view")
 def get_order(
     order_id,
 ):
@@ -541,6 +554,7 @@ def get_order(
     "/orders/<order_id>/status"
 )
 @require_authenticated
+@require_business_permission("orders.manage")
 def update_order_status(
     order_id,
 ):
@@ -593,6 +607,7 @@ def update_order_status(
     "/sales"
 )
 @require_authenticated
+@require_business_permission("sales.create")
 def record_sale():
     """
     Record a completed business sale.
@@ -627,6 +642,7 @@ def record_sale():
     "/expenses"
 )
 @require_authenticated
+@require_business_permission("finance.view")
 def get_expenses():
     """
     List recent business expenses.
@@ -644,6 +660,7 @@ def get_expenses():
     "/expenses"
 )
 @require_authenticated
+@require_business_permission("finance.manage")
 def add_expense():
     """
     Record a business expense.
@@ -675,6 +692,7 @@ def add_expense():
     "/dashboard"
 )
 @require_authenticated
+@require_business_permission("analytics.view")
 def get_dashboard():
     """
     Return the complete Biashara operating dashboard.
@@ -704,12 +722,14 @@ def get_dashboard():
 
 @biashara_bp.get("/website")
 @require_authenticated
+@require_business_permission("website.view")
 def get_website_settings():
     return ok(services.get_biashara_website_settings(user_id()))
 
 
 @biashara_bp.put("/website")
 @require_authenticated
+@require_business_permission("website.manage")
 def save_website_settings():
     return ok(
         services.save_biashara_website_settings(user_id(), body()),
@@ -719,6 +739,7 @@ def save_website_settings():
 
 @biashara_bp.get("/website/inquiries")
 @require_authenticated
+@require_business_permission("website.view")
 def get_website_inquiries():
     return ok(
         services.list_biashara_website_inquiries(
