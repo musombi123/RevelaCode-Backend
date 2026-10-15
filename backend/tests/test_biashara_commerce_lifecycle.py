@@ -555,3 +555,75 @@ def test_customer_idempotency_key_reuse_with_changed_details_is_rejected(commerc
     assert raised.value.code == "idempotency_key_reused"
     assert len(commerce_db["jumuiya_customers"].documents) == 1
 
+def test_inventory_history_is_bounded_and_tenant_scoped(commerce_db):
+    result = services.inventory_adjustment(
+        "owner-1",
+        str(commerce_db["product_id"]),
+        {
+            "movement_type": "add",
+            "quantity": 1,
+            "reason": "supplier_delivery",
+            "idempotency_key": "inventory-history-add-0001",
+        },
+    )
+    commerce_db["movements"].documents.append({
+        "_id": ObjectId("64b000000000000000000088"),
+        "business_id": "business-2",
+        "product_id": str(commerce_db["product_id"]),
+        "movement_type": "add",
+        "quantity": 50,
+        "reason": "other_tenant",
+        "created_at": result["movement"]["created_at"],
+    })
+
+    rows = services.inventory_history("owner-1", str(commerce_db["product_id"]), limit=1)
+    assert len(rows) == 1
+    assert rows[0]["id"] == result["movement"]["id"]
+    assert rows[0]["business_id"] == "business-1"
+
+    with pytest.raises(APIError) as raised:
+        services.inventory_history("owner-1", "64b000000000000000000088", limit=10)
+    assert raised.value.code == "product_not_found"
+
+
+def test_order_status_service_requires_orders_manage_permission(commerce_db, monkeypatch):
+    created = services.create_order("owner-1", _payload(commerce_db, quantity=1))
+
+    def deny_order_management(user_id, permission, business_id=None):
+        if permission == "orders.manage":
+            raise APIError("Forbidden for this role.", 403, "business_permission_denied")
+        return {"id": business_id or "business-1"}
+
+    monkeypatch.setattr(services, "require_permission", deny_order_management)
+
+    with pytest.raises(APIError) as raised:
+        services.update_order_status("owner-1", created["id"], "confirmed")
+    assert raised.value.code == "business_permission_denied"
+    order = commerce_db["orders"].find_one({"_id": ObjectId(created["id"])})
+    assert order["status"] == "pending"
+    assert commerce_db["product"]["reserved_quantity"] == 1
+
+
+def test_cashier_can_record_pos_sale_without_order_management_permission(commerce_db, monkeypatch):
+    permissions = {"sales.create", "orders.create"}
+
+    def cashier_permissions(user_id, permission, business_id=None):
+        if permission not in permissions:
+            raise APIError("Forbidden for cashier role.", 403, "business_permission_denied")
+        return {"id": business_id or "business-1"}
+
+    monkeypatch.setattr(services, "require_permission", cashier_permissions)
+    sale = services.record_sale("cashier-1", {
+        "items": [{"product_id": str(commerce_db["product_id"]), "quantity": 1}],
+        "amount": 1,
+        "payment_method": "cash",
+        "idempotency_key": "cashier-pos-sale-0001",
+    })
+
+    assert sale["amount"] == 150.25
+    order = commerce_db["orders"].find_one({"_id": ObjectId(sale["order_id"])})
+    assert order["status"] == "completed"
+    assert order["inventory_status"] == "consumed"
+    assert commerce_db["product"]["stock_quantity"] == 4
+    assert commerce_db["product"]["reserved_quantity"] == 0
+
