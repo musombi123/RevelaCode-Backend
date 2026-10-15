@@ -1,5 +1,10 @@
 from copy import deepcopy
+import os
 from types import SimpleNamespace
+
+# The service module imports the platform database configuration at import time.
+# No live connection is used: every collection is replaced by an in-memory fake.
+os.environ.setdefault("MONGO_URI", "mongodb://127.0.0.1:27017/biashara_test")
 
 import pytest
 from bson import ObjectId
