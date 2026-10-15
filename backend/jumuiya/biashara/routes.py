@@ -496,6 +496,11 @@ def add_order():
         body(),
     )
 
+    # A stable key lets the browser/mobile client safely retry after timeouts.
+    header_key = request.headers.get("Idempotency-Key", "").strip()
+    if header_key:
+        payload["idempotency_key"] = header_key
+
     return created(
         services.create_order(
             user_id(),
