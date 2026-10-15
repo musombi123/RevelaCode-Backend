@@ -798,6 +798,13 @@ def expense_payload(data):
             "notes",
             max_len=1000,
         ),
+
+        # Optional for older clients; new clients should use Idempotency-Key.
+        "idempotency_key": _text(
+            data,
+            "idempotency_key",
+            max_len=128,
+        ),
     }
 
 
