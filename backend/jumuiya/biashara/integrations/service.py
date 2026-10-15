@@ -33,14 +33,14 @@ PROVIDERS = {
         "required_metadata": {"store_url"},
         "optional_metadata": {"api_version"},
         "required_credentials": {"consumer_key", "consumer_secret"},
-        "optional_credentials": set(),
+        "optional_credentials": {"webhook_secret"},
     },
     "whatsapp_cloud": {
         "label": "WhatsApp Cloud API",
         "required_metadata": {"phone_number_id"},
         "optional_metadata": {"business_account_id", "graph_api_version"},
         "required_credentials": {"access_token", "app_secret"},
-        "optional_credentials": set(),
+        "optional_credentials": {"verify_token"},
     },
     "mpesa_daraja": {
         "label": "M-Pesa Daraja",
