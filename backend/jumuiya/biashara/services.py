@@ -868,6 +868,7 @@ def _ensure_order_movement(
         "idempotency_key": key,
     })
     if existing:
+        _dispatch_outbox_source("jumuiya_inventory_movements", business_id, existing["_id"])
         return existing
 
     document = inventory_movement_document(
@@ -887,9 +888,30 @@ def _ensure_order_movement(
         "actor_user_id": str(user_id),
         "source": "order_lifecycle",
     })
+    document["_id"] = ObjectId()
+    occurred_at = document.get("created_at") or now_utc()
+    movement_event = _build_outbox_manifest(
+        event_key=f"inventory:{key}",
+        event_type="inventory.movement_recorded",
+        entity_type="inventory_movement",
+        entity_id=key,
+        payload={
+            "order_id": str(order_id),
+            "product_id": str(product_id),
+            "movement_type": movement_type,
+            "quantity": float(quantity),
+            "reason": str(reason),
+            "previous_quantity": float(previous_quantity),
+            "new_quantity": float(new_quantity),
+        },
+        actor_user_id=user_id,
+        occurred_at=occurred_at,
+    )
+    document["outbox_event_manifest"] = [movement_event]
+    document["outbox_enqueued_event_keys"] = []
     try:
-        result = movements.insert_one(document)
-        document["_id"] = result.inserted_id
+        movements.insert_one(document)
+        _dispatch_outbox_source("jumuiya_inventory_movements", business_id, document["_id"])
         return document
     except DuplicateKeyError:
         existing = movements.find_one({
@@ -897,6 +919,7 @@ def _ensure_order_movement(
             "idempotency_key": key,
         })
         if existing:
+            _dispatch_outbox_source("jumuiya_inventory_movements", business_id, existing["_id"])
             return existing
         raise
 
