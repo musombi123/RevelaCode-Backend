@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from backend.jumuiya.core.errors import APIError
+from backend.jumuiya.biashara.tenancy.service import require_permission
 from backend.jumuiya.biashara import services as biashara_services
 
 from backend.jumuiya.biashara.intelligence.geography import (
@@ -760,25 +761,23 @@ def get_business_context(
     user_id,
 ) -> dict:
     """
-    Obtain the authenticated user's Biashara business,
-    if one exists.
+    Obtain the authenticated user's selected Biashara business.
 
-    Market Intelligence is allowed to run without an
-    existing business account for discovery purposes.
+    General dataset discovery can still return an empty context when the user
+    has no business, but an existing tenant context is always permission-checked
+    before it can influence advice or forecasts.
     """
+    try:
+        business = biashara_services._require_business(user_id)
+    except APIError as error:
+        if error.code == "business_required":
+            return {}
+        raise
 
-    business = (
-        biashara_services.get_business_for_user(
-            user_id
-        )
-    )
-
-    if not isinstance(
-        business,
-        dict,
-    ):
-        return {}
-
+    business_id = str(business.get("id") or business.get("_id") or "")
+    if not business_id:
+        raise APIError("Business profile has no usable ID.", 409, "business_id_missing")
+    require_permission(user_id, "intelligence.view", business_id=business_id)
     return business
 
 
