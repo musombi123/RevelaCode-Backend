@@ -543,3 +543,38 @@ def test_oversized_webhook_body_is_rejected_before_persistence(integration_db):
     assert raised.value.code == "webhook_body_too_large"
     assert len(integration_db.webhook_deliveries.documents) == 0
 
+def test_webhook_review_decision_is_tenant_scoped_and_never_applies_effects(integration_db):
+    payload = _woocommerce_payload(name="Reviewable store")
+    payload["credentials"]["webhook_secret"] = "review-secret"
+    connection = integrations.create_connection("owner-1", payload)
+    body = b'{"id":456,"status":"created"}'
+    received = webhooks.receive_webhook(
+        connection["id"], body,
+        _woo_webhook_headers(body, "review-secret", delivery_id="woo-review-001", topic="order.created"),
+    )
+
+    with pytest.raises(APIError) as denied:
+        webhooks.decide_webhook_delivery("owner-2", received["id"], "acknowledge")
+    assert denied.value.code == "webhook_delivery_not_found"
+
+    reviewed = webhooks.decide_webhook_delivery(
+        "owner-1", received["id"], "acknowledge", "Checked source event; not imported."
+    )
+    assert reviewed["status"] == "acknowledged"
+    assert reviewed["decision"] == "acknowledge"
+    assert reviewed["decision_note"] == "Checked source event; not imported."
+    assert reviewed["effects_applied"] is False
+
+    replay = webhooks.receive_webhook(
+        connection["id"], body,
+        _woo_webhook_headers(body, "review-secret", delivery_id="woo-review-001", topic="order.created"),
+    )
+    assert replay["duplicate"] is True
+    assert replay["status"] == "acknowledged"
+    assert replay["effects_applied"] is False
+
+    with pytest.raises(APIError) as conflicting:
+        webhooks.decide_webhook_delivery("owner-1", received["id"], "dismiss")
+    assert conflicting.value.code == "webhook_delivery_already_reviewed"
+    assert len(integration_db.webhook_deliveries.documents) == 1
+
