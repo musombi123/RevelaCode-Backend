@@ -1133,9 +1133,17 @@ def _apply_callback_event(event):
         if payment.get("allocation_status") == "allocated":
             recovered_status = "applied"
             recovered_payment = payment
+            finance_services._post_provider_payment_journal(
+                recovered_payment,
+                recovered_payment.get("recorded_by_user_id") or "",
+            )
         elif payment.get("allocation_status") == "allocation_conflict":
             recovered_status = "allocation_conflict"
             recovered_payment = payment
+            finance_services._post_provider_payment_journal(
+                recovered_payment,
+                recovered_payment.get("recorded_by_user_id") or "",
+            )
         else:
             invoice = finance_services._get_invoice(business_id, str(payment["invoice_id"]))
             recovered_payment = finance_services._mark_payment_allocation(payment, invoice)
@@ -1274,7 +1282,7 @@ def _apply_callback_event(event):
 
     invoice = finance_services._get_invoice(business_id, str(updated["invoice_id"]))
     allocated = finance_services._mark_payment_allocation(updated, invoice)
-    if allocated.get("allocation_status") == "allocated":
+    if allocated.get("allocation_status") in {"allocated", "allocation_conflict"}:
         finance_services._post_provider_payment_journal(allocated, allocated.get("recorded_by_user_id") or "")
     # The received payment is now allocated or explicitly quarantined as an
     # allocation conflict, so the open-prompt balance reservation can be removed.
