@@ -94,3 +94,19 @@ def receive_provider_webhook(connection_id):
     result = webhooks.receive_webhook(connection_id, raw_body, request.headers)
     return ok(result, "Webhook signature verified and event safely queued for review.")
 
+@biashara_integrations_bp.post("/webhook-deliveries/<delivery_id>/decision")
+@require_authenticated
+@require_business_permission("integration.manage")
+def decide_webhook_delivery(delivery_id):
+    payload = _body()
+    result = webhooks.decide_webhook_delivery(
+        current_user_id(),
+        delivery_id,
+        payload.get("decision"),
+        payload.get("note", ""),
+    )
+    return ok(
+        result,
+        "Webhook delivery review decision saved. No commerce or payment data was applied.",
+    )
+
