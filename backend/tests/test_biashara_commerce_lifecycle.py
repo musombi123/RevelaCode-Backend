@@ -94,15 +94,30 @@ class FakeCollection:
 
     def _apply(self, document, update, array_filters=None):
         array_filters = array_filters or []
+        # MongoDB determines matching array-filter elements before applying any
+        # update fields. Snapshot matching objects so changing state in one
+        # field does not prevent the rest of that atomic update from applying.
+        matched_arrays = {}
+        for key in update.get("$set", {}):
+            if ".$[" not in key:
+                continue
+            array_name, tail = key.split(".$[", 1)
+            identifier, _nested_path = tail.split("].", 1)
+            filters = next((item for item in array_filters if any(k.startswith(identifier + ".") for k in item)), {})
+            predicates = {k[len(identifier) + 1:]: v for k, v in filters.items()}
+            cache_key = (array_name, identifier)
+            if cache_key not in matched_arrays:
+                matched_arrays[cache_key] = [
+                    member for member in document.setdefault(array_name, [])
+                    if _matches(member, predicates)
+                ]
+
         for key, value in update.get("$set", {}).items():
             if ".$[" in key:
                 array_name, tail = key.split(".$[", 1)
                 identifier, nested_path = tail.split("].", 1)
-                filters = next((item for item in array_filters if any(k.startswith(identifier + ".") for k in item)), {})
-                predicates = {k[len(identifier) + 1:]: v for k, v in filters.items()}
-                for member in document.setdefault(array_name, []):
-                    if _matches(member, predicates):
-                        _set_path(member, nested_path, value)
+                for member in matched_arrays.get((array_name, identifier), []):
+                    _set_path(member, nested_path, value)
             else:
                 _set_path(document, key, value)
         for key, value in update.get("$inc", {}).items():
