@@ -28,6 +28,7 @@ from backend.jumuiya.core.permissions import (
     require_authenticated,
 )
 from backend.jumuiya.core.responses import ok
+from backend.jumuiya.biashara.tenancy.service import require_business_permission
 
 from backend.jumuiya.biashara.intelligence.services import (
     economic_data_service,
@@ -189,6 +190,7 @@ def health():
     "/indicators"
 )
 @require_authenticated
+@require_business_permission("intelligence.view")
 def indicators():
     """
     Return the latest economic indicators.
@@ -233,6 +235,7 @@ def indicators():
     "/refresh"
 )
 @require_authenticated
+@require_business_permission("sync.manage")
 def refresh():
     """
     Force an immediate refresh of economic data.
@@ -262,6 +265,7 @@ def refresh():
     "/status"
 )
 @require_authenticated
+@require_business_permission("intelligence.view")
 def status():
     """
     Return the current economic-service status.
