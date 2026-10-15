@@ -14,6 +14,7 @@ _stub.get_db = lambda: None
 sys.modules["backend.db"] = _stub
 try:
     from backend.jumuiya.biashara.finance import services as finance
+    from backend.jumuiya.biashara.finance import ledger
     from backend.jumuiya.biashara import services as biashara
 finally:
     if _original is _missing:
@@ -185,10 +186,13 @@ def finance_db(monkeypatch):
         "jumuiya_invoices": Collection(),
         "jumuiya_payments": Collection(),
         "jumuiya_finance_counters": Collection(),
+        "jumuiya_journal_entries": Collection(),
         "jumuiya_orders": Collection([order]),
         "jumuiya_customers": Collection(),
     }
     monkeypatch.setattr(finance, "collection", lambda name: data[name])
+    monkeypatch.setattr(ledger, "collection", lambda name: data[name])
+    monkeypatch.setattr(ledger, "dispatch_manifest_for_record", lambda *args, **kwargs: {"enqueued": 1, "pending": 0, "errors": 0})
     monkeypatch.setattr(biashara, "collection", lambda name: data[name])
     monkeypatch.setattr(biashara, "_require_business", lambda user_id: {
         "id": "business-finance-1", "currency": "KES", "name": "Test Business"
