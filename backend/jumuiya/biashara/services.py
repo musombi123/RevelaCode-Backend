@@ -504,17 +504,33 @@ def low_stock(
     ).find({
         "business_id": business["id"],
         "status": "active",
-        "stock_quantity": {
-            "$lte": threshold
+        "$expr": {
+            "$lte": [
+                {
+                    "$subtract": [
+                        {"$ifNull": ["$stock_quantity", 0]},
+                        {"$ifNull": ["$reserved_quantity", 0]},
+                    ]
+                },
+                threshold,
+            ]
         },
     }).sort(
         "stock_quantity",
         1,
     )
 
-    return serialise_many(
-        documents
-    )
+    rows = list(documents)
+    for row in rows:
+        try:
+            row["available_quantity"] = max(
+                float(row.get("stock_quantity", 0) or 0)
+                - float(row.get("reserved_quantity", 0) or 0),
+                0,
+            )
+        except (TypeError, ValueError):
+            row["available_quantity"] = 0
+    return serialise_many(rows)
 
 
 
@@ -2032,7 +2048,10 @@ def get_public_biashara_website(slug):
                 "price": product.get("price", 0),
                 "currency": product.get("currency") or public_business["currency"],
                 "image_url": product.get("image_url", ""),
-                "available": float(product.get("stock_quantity", 0) or 0) > 0,
+                "available": (
+                    float(product.get("stock_quantity", 0) or 0)
+                    - float(product.get("reserved_quantity", 0) or 0)
+                ) > 0,
             })
 
     return {
