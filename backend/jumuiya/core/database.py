@@ -478,6 +478,66 @@ INDEX_DEFINITIONS = {
         ),
     ],
 
+    "jumuiya_invoices": [
+        (
+            [("business_id", ASCENDING), ("invoice_number", ASCENDING)],
+            {
+                "unique": True,
+                "name": "uq_biashara_invoice_number",
+                "partialFilterExpression": {"invoice_number": {"$type": "string"}},
+            },
+        ),
+        (
+            [("business_id", ASCENDING), ("idempotency_key", ASCENDING)],
+            {
+                "unique": True,
+                "name": "uq_biashara_invoice_idempotency",
+                "partialFilterExpression": {"idempotency_key": {"$type": "string"}},
+            },
+        ),
+        (
+            [("business_id", ASCENDING), ("source_order_id", ASCENDING)],
+            {
+                "unique": True,
+                "name": "uq_biashara_invoice_order",
+                "partialFilterExpression": {
+                    "canonical_order_invoice": True,
+                    "source_order_id": {"$type": "string"},
+                },
+            },
+        ),
+        (
+            [("business_id", ASCENDING), ("status", ASCENDING), ("created_at", DESCENDING)],
+            {"name": "ix_biashara_invoices_status_created"},
+        ),
+    ],
+
+    "jumuiya_payments": [
+        (
+            [("business_id", ASCENDING), ("idempotency_key", ASCENDING)],
+            {
+                "unique": True,
+                "name": "uq_biashara_payment_idempotency",
+                "partialFilterExpression": {"idempotency_key": {"$type": "string"}},
+            },
+        ),
+        (
+            [("business_id", ASCENDING), ("invoice_id", ASCENDING), ("created_at", DESCENDING)],
+            {"name": "ix_biashara_payments_invoice_created"},
+        ),
+        (
+            [("business_id", ASCENDING), ("payment_status", ASCENDING), ("created_at", DESCENDING)],
+            {"name": "ix_biashara_payments_status_created"},
+        ),
+    ],
+
+    "jumuiya_finance_counters": [
+        (
+            [("business_id", ASCENDING), ("sequence_name", ASCENDING), ("year", ASCENDING)],
+            {"unique": True, "name": "uq_biashara_finance_counter"},
+        ),
+    ],
+
     "jumuiya_expenses": [
         (
             [
