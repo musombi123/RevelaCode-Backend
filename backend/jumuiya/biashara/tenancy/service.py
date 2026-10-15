@@ -125,6 +125,7 @@ def _owner_membership_document(business, owner_user_id, actor_user_id=None):
         "updated_at": now,
         "joined_at": now,
         "revoked_at": None,
+        "source": "owner_access_bootstrap_v1",
     }
 
 
