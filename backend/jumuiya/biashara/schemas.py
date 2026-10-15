@@ -780,12 +780,10 @@ def expense_payload(data):
             max_len=120,
         ),
 
-        # Legacy clients may send an amount, but the service recalculates
-        # it from canonical product/order records.
         "amount": _money(
             data,
             "amount",
-            required=False,
+            required=True,
             minimum=0,
         ),
 
@@ -845,10 +843,12 @@ def sale_payload(data):
 
         "items": cleaned_items,
 
+        # Retained for compatibility. record_sale recomputes the amount
+        # from canonical order/product snapshots rather than trusting clients.
         "amount": _money(
             data,
             "amount",
-            required=True,
+            required=False,
             minimum=0,
         ),
 
