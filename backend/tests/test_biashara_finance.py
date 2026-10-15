@@ -245,6 +245,7 @@ def finance_db(monkeypatch):
         "jumuiya_customers": Collection(),
     }
     monkeypatch.setattr(finance, "collection", lambda name: data[name])
+    monkeypatch.setattr(finance, "require_permission", lambda user_id, permission, business_id=None: {"id": business_id or "business-finance-1"})
     monkeypatch.setattr(ledger, "collection", lambda name: data[name])
     monkeypatch.setattr(ledger, "dispatch_manifest_for_record", lambda *args, **kwargs: {"enqueued": 1, "pending": 0, "errors": 0})
     monkeypatch.setattr(biashara, "collection", lambda name: data[name])
