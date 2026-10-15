@@ -1,13 +1,13 @@
 """Authenticated API for commercial invoices and payment evidence."""
 from __future__ import annotations
 
-from flask import Blueprint, request
+from flask import Blueprint, jsonify, request
 
 from backend.jumuiya.core.errors import APIError
 from backend.jumuiya.core.permissions import current_user_id, require_authenticated
 from backend.jumuiya.core.responses import created, ok
 from backend.jumuiya.biashara.tenancy.service import require_business_permission
-from backend.jumuiya.biashara.finance import schemas, services
+from backend.jumuiya.biashara.finance import schemas, services, mpesa
 
 
 biashara_finance_bp = Blueprint("jumuiya_biashara_finance", __name__)
@@ -121,4 +121,62 @@ def ledger_entries():
         to_date=request.args.get("to_date"),
     )
     return ok(rows, "Biashara journal entries loaded.", meta={"count": len(rows), "limit": min(max(int(request.args.get("limit", 50)) if str(request.args.get("limit", 50)).isdigit() else 50, 1), 100)})
+
+
+@biashara_finance_bp.post("/invoices/<invoice_id>/mpesa/stk-push")
+@require_authenticated
+@require_business_permission("finance.manage")
+def request_mpesa_stk_push(invoice_id):
+    payload = _validate(schemas.mpesa_stk_payload, _body())
+    result = mpesa.start_stk_push(
+        current_user_id(),
+        invoice_id,
+        payload,
+        idempotency_key=request.headers.get("Idempotency-Key", ""),
+    )
+    return created(
+        result,
+        "M-Pesa STK Push requested. The invoice is not paid until a correlated, allow-listed Daraja callback is validated and allocated.",
+    )
+
+
+@biashara_finance_bp.get("/mpesa/intents")
+@require_authenticated
+@require_business_permission("finance.view")
+def list_mpesa_intents():
+    rows = mpesa.list_mpesa_intents(
+        current_user_id(),
+        limit=request.args.get("limit", 50),
+        status=request.args.get("status"),
+    )
+    return ok(rows, "Biashara M-Pesa payment intents loaded.", meta={"count": len(rows)})
+
+
+@biashara_finance_bp.post("/mpesa/callbacks/reprocess")
+@require_authenticated
+@require_business_permission("finance.manage")
+def reprocess_mpesa_callbacks():
+    report = mpesa.process_pending_callbacks(current_user_id(), limit=100)
+    return ok(report, "Pending M-Pesa callbacks checked for safe correlation recovery.")
+
+
+@biashara_finance_bp.post("/mpesa/callback/<connection_id>")
+def receive_mpesa_callback(connection_id):
+    if request.content_length is not None and request.content_length > mpesa.MAX_CALLBACK_BODY_BYTES:
+        raise APIError("M-Pesa callback body exceeds the allowed size.", 413, "mpesa_callback_body_invalid")
+    raw_body = request.stream.read(mpesa.MAX_CALLBACK_BODY_BYTES + 1)
+    result = mpesa.receive_stk_callback(
+        connection_id,
+        raw_body,
+        request.remote_addr,
+    )
+    # Daraja callbacks are server-to-server. Return the provider acknowledgement
+    # directly rather than the application's standard response envelope.
+    return jsonify({
+        "ResultCode": 0,
+        "ResultDesc": "Accepted",
+        "event_status": result.get("event_status"),
+        "duplicate": result.get("duplicate", False),
+        "effects_applied": result.get("effects_applied", False),
+    }), 200
 
