@@ -208,11 +208,11 @@ def _post_provider_payment_journal(payment, user_id):
 
 
 def _post_cash_payment_journal(payment, user_id):
-    """Post cash-on-hand against receivables only after an allocated cash attestation."""
+    """Post manual cash either to receivables or suspense if invoice allocation conflicts."""
     if (
         payment.get("payment_status") != "manual_attested"
         or payment.get("verification_status") != "manual_attested"
-        or payment.get("allocation_status") != "allocated"
+        or payment.get("allocation_status") not in {"allocated", "allocation_conflict"}
     ):
         return None
     amount_minor = int(payment.get("amount_minor", 0) or 0)
@@ -220,10 +220,18 @@ def _post_cash_payment_journal(payment, user_id):
         return None
     payment_id = str(payment.get("_id") or payment.get("id") or "")
     invoice_id = str(payment.get("invoice_id") or "")
+    allocated = payment.get("allocation_status") == "allocated"
+    source_key = ("cash-payment:" if allocated else "cash-payment-unallocated:") + payment_id
+    contra_account = "accounts_receivable" if allocated else "unallocated_customer_receipts"
+    contra_memo = (
+        "Cash payment allocated to invoice " + invoice_id[:80]
+        if allocated
+        else "Cash received but invoice allocation conflicts; reconcile or refund"
+    )
     return post_journal_entry(
         business_id=str(payment.get("business_id") or ""),
-        source_key="cash-payment:" + payment_id,
-        source_type="payment.cash_allocated",
+        source_key=source_key,
+        source_type="payment.cash_allocated" if allocated else "payment.cash_unallocated",
         source_id=payment_id,
         currency=payment.get("currency", "KES"),
         lines=[
@@ -234,17 +242,73 @@ def _post_cash_payment_journal(payment, user_id):
                 "memo": "Cash receipt recorded by manual attestation",
             },
             {
-                "account_code": "accounts_receivable",
+                "account_code": contra_account,
                 "debit_minor": 0,
                 "credit_minor": amount_minor,
-                "memo": "Cash payment allocated to invoice " + invoice_id[:80],
+                "memo": contra_memo,
             },
         ],
         actor_user_id=user_id,
-        basis="Manual cash attestation allocated to an issued invoice; not bank reconciliation or external-provider verification.",
+        basis=(
+            "Manual cash attestation allocated to an issued invoice; not bank reconciliation or external-provider verification."
+            if allocated
+            else "Manual cash receipt was attested, but invoice allocation conflicted. Receipt remains a liability until a separate reviewed allocation/refund is recorded."
+        ),
         effective_at=payment.get("allocated_at") or payment.get("updated_at") or now_utc(),
     )
 
+
+def _post_provider_payment_journal(payment, user_id):
+    """Post a verified M-Pesa receipt to clearing and receivables or suspense."""
+    if (
+        payment.get("payment_status") != "provider_confirmed"
+        or payment.get("verification_status") != "provider_verified"
+        or payment.get("provider_verified") is not True
+        or payment.get("provider_name") != "mpesa_daraja"
+        or payment.get("allocation_status") not in {"allocated", "allocation_conflict"}
+    ):
+        return None
+    amount_minor = int(payment.get("amount_minor", 0) or 0)
+    if amount_minor <= 0:
+        return None
+    payment_id = str(payment.get("_id") or payment.get("id") or "")
+    invoice_id = str(payment.get("invoice_id") or "")
+    allocated = payment.get("allocation_status") == "allocated"
+    source_key = ("provider-payment:" if allocated else "provider-payment-unallocated:") + payment_id
+    contra_account = "accounts_receivable" if allocated else "unallocated_customer_receipts"
+    contra_memo = (
+        "Provider payment allocated to invoice " + invoice_id[:80]
+        if allocated
+        else "Verified M-Pesa receipt could not be allocated; reconcile the invoice or refund"
+    )
+    return post_journal_entry(
+        business_id=str(payment.get("business_id") or ""),
+        source_key=source_key,
+        source_type="payment.mpesa_allocated" if allocated else "payment.mpesa_unallocated",
+        source_id=payment_id,
+        currency=payment.get("currency", "KES"),
+        lines=[
+            {
+                "account_code": "mpesa_clearing",
+                "debit_minor": amount_minor,
+                "credit_minor": 0,
+                "memo": "M-Pesa receipt verified; settlement still requires reconciliation",
+            },
+            {
+                "account_code": contra_account,
+                "debit_minor": 0,
+                "credit_minor": amount_minor,
+                "memo": contra_memo,
+            },
+        ],
+        actor_user_id=user_id,
+        basis=(
+            "Daraja STK callback passed the configured callback-IP allow-list, matched checkout/merchant identifiers, receipt uniqueness and exact amount checks. The provider clearing account is not bank settlement reconciliation."
+            if allocated
+            else "Daraja confirmed receipt evidence but invoice allocation conflicted. Funds are recorded in provider clearing against an unallocated-receipts liability until a separate reviewed allocation/refund is recorded."
+        ),
+        effective_at=payment.get("provider_transaction_at") or payment.get("provider_verified_at") or payment.get("updated_at") or now_utc(),
+    )
 
 def get_ledger_summary(user_id, currency=None, from_date=None, to_date=None):
     _business_data, business_id = _business(user_id, permission="finance.view")
