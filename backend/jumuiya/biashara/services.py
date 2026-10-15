@@ -452,61 +452,111 @@ def list_products(
 
 
 
-def update_product(user_id, product_id, payload):
-    business = _require_business(user_id)
-    allowed = {
-        "name", "description", "category", "sku", "price", "currency",
-        "stock_quantity", "unit", "image_url", "status",
-    }
-    update = {key: payload[key] for key in allowed if key in payload}
-    if not update:
-        raise APIError("No product fields were provided.", 422, "empty_update")
 
+def update_product(user_id, product_id, payload):
+    """Update catalogue metadata and route all stock changes through the stock ledger."""
+    business = _require_business(user_id)
+    business_id = str(business["id"])
     products = collection("jumuiya_products")
-    query = {"_id": clean_id(product_id), "business_id": business["id"]}
-    current = products.find_one(query)
+    product_query = {"_id": clean_id(product_id), "business_id": business_id}
+    current = products.find_one(product_query)
     if not current:
         raise APIError("Product not found.", 404, "product_not_found")
 
-    if "stock_quantity" in update:
+    allowed = {
+        "name", "description", "category", "sku", "price", "cost_price",
+        "currency", "low_stock_threshold", "unit", "image_url", "status",
+    }
+    update = {key: payload[key] for key in allowed if key in payload}
+    stock_was_requested = "stock_quantity" in payload
+    if not update and not stock_was_requested:
+        raise APIError("No product fields were provided.", 422, "empty_update")
+
+    desired_status = str(update.get("status", current.get("status", "active"))).lower()
+    reserved = Decimal(str(current.get("reserved_quantity", 0) or 0))
+    if not reserved.is_finite() or reserved < 0:
+        raise APIError("Product reserved stock state is invalid.", 409, "invalid_inventory_state")
+    if desired_status != "active" and reserved > 0:
+        raise APIError(
+            "A product with stock reserved for open orders cannot be archived or deactivated. Resolve those orders first.",
+            409,
+            "product_has_open_reservations",
+        )
+
+    updated = current
+    if update:
+        event_at = now_utc()
         try:
-            target_stock = Decimal(str(update["stock_quantity"]))
-            reserved_stock = Decimal(str(current.get("reserved_quantity", 0) or 0))
-            current_stock = Decimal(str(current.get("stock_quantity", 0) or 0))
+            price_minor = int(
+                (Decimal(str(update.get("price", current.get("price", 0)))).quantize(
+                    Decimal("0.01"), rounding=ROUND_HALF_UP
+                )) * 100
+            )
         except (InvalidOperation, TypeError, ValueError):
-            raise APIError("Stock quantity must be a valid number.", 422, "invalid_stock_quantity")
-        if not target_stock.is_finite() or target_stock < 0:
-            raise APIError("Stock quantity must be a non-negative finite number.", 422, "invalid_stock_quantity")
-        if target_stock < reserved_stock:
-            raise APIError(
-                "Stock cannot be set below the quantity reserved by open orders. Cancel or fulfil reservations first.",
-                409,
-                "stock_below_reserved",
-            )
-        # Compare-and-set prevents a stock edit from overwriting a concurrent
-        # order reservation. Other metadata edits remain independent.
-        query["stock_quantity"] = current.get("stock_quantity", 0)
-        if "reserved_quantity" in current:
-            query["reserved_quantity"] = current["reserved_quantity"]
-        else:
-            query["reserved_quantity"] = {"$exists": False}
+            raise APIError("Product price is invalid.", 422, "invalid_product_price")
 
-    document = products.find_one_and_update(
-        query,
-        {"$set": {**update, "updated_at": now_utc()}},
-        return_document=ReturnDocument.AFTER,
-    )
-    if not document:
-        if "stock_quantity" in update:
+        event_manifest = _build_outbox_manifest(
+            event_key=f"product:{current['_id']}:updated:{ObjectId()}",
+            event_type="product.updated",
+            entity_type="product",
+            entity_id=current["_id"],
+            payload={
+                "status": desired_status,
+                "currency": str(update.get("currency") or current.get("currency") or business.get("currency") or "KES").upper(),
+                "price_minor": price_minor,
+                "stock_quantity": float(current.get("stock_quantity", 0) or 0),
+                "reserved_quantity": float(current.get("reserved_quantity", 0) or 0),
+                "available_quantity": max(
+                    float(current.get("stock_quantity", 0) or 0)
+                    - float(current.get("reserved_quantity", 0) or 0),
+                    0,
+                ),
+                "sku": str(update.get("sku", current.get("sku", "")) or "")[:80],
+            },
+            actor_user_id=user_id,
+            occurred_at=event_at,
+        )
+        mutation_query = dict(product_query)
+        mutation_query["updated_at"] = current.get("updated_at")
+        # Some older product records have no updated_at. Use existence rather
+        # than null equality for those records to keep optimistic locking safe.
+        if "updated_at" not in current:
+            mutation_query.pop("updated_at", None)
+            mutation_query["$or"] = [
+                {"updated_at": {"$exists": False}},
+                {"updated_at": None},
+            ]
+        updated = products.find_one_and_update(
+            mutation_query,
+            {
+                "$set": {**update, "updated_at": event_at},
+                "$addToSet": {"outbox_event_manifest": event_manifest},
+            },
+            return_document=ReturnDocument.AFTER,
+        )
+        if not updated:
             raise APIError(
-                "Inventory changed while this product was being edited. Reload and retry.",
+                "The product changed while it was being edited. Reload and retry.",
                 409,
-                "inventory_concurrent_update",
+                "product_concurrent_update",
             )
-        raise APIError("Product not found.", 404, "product_not_found")
+        _dispatch_outbox_source("jumuiya_products", business_id, updated["_id"])
+        log_action(user_id, "product.updated", "product", updated["_id"])
 
-    log_action(user_id, "product.updated", "product", document["_id"])
-    return serialise(document)
+    if stock_was_requested:
+        stock_result = inventory_adjustment(
+            user_id,
+            product_id,
+            {
+                "movement_type": "set",
+                "quantity": payload["stock_quantity"],
+                "reason": "product_edit",
+                "idempotency_key": payload.get("idempotency_key", ""),
+            },
+        )
+        updated = products.find_one(product_query) or stock_result.get("product") or updated
+
+    return serialise(updated)
 
 def delete_product(
     user_id,
