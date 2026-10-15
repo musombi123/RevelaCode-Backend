@@ -109,7 +109,9 @@ def _fingerprint(entry):
         "source_type": entry["source_type"],
         "source_id": entry["source_id"],
         "currency": entry["currency"],
-        "effective_at": entry["effective_at"].isoformat(),
+        # Use the requested effective time only when the caller explicitly
+        # supplied one. A generated current-time default must not break retries.
+        "requested_effective_at": entry.get("idempotency_effective_at"),
         "basis": entry["basis"],
         "lines": entry["lines"],
     }
@@ -179,7 +181,9 @@ def post_journal_entry(
         "created_at": now_utc(),
         "immutable": True,
     }
+    document["idempotency_effective_at"] = when.isoformat() if effective_at is not None else None
     document["request_fingerprint"] = _fingerprint(document)
+    document.pop("idempotency_effective_at", None)
     event = build_outbox_manifest(
         event_key="journal:" + source_key,
         event_type="ledger.entry_posted",
