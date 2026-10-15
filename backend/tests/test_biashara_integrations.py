@@ -161,7 +161,7 @@ def test_credentials_are_encrypted_at_rest_and_never_returned(integration_db):
     assert "ck_private_123" not in json.dumps(response)
     assert "cs_private_456" not in json.dumps(response)
     assert "ck_private_123" not in json.dumps(stored, default=str)
-    assert "cs_private_456" not in json.dumps(stored)
+    assert "cs_private_456" not in json.dumps(stored, default=str)
     assert stored["credentials_ciphertext"] != ""
     assert stored["credential_key_id"] == "primary"
     assert integrations._decrypt_credentials(stored) == {
