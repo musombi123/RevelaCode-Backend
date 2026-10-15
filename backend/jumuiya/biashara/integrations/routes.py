@@ -1,13 +1,14 @@
 """Authenticated configuration API for Biashara provider connections."""
 from __future__ import annotations
 
-from flask import Blueprint, request
+from flask import Blueprint, Response, request
 
 from backend.jumuiya.core.errors import APIError
 from backend.jumuiya.core.permissions import current_user_id, require_authenticated
 from backend.jumuiya.core.responses import created, ok
 from backend.jumuiya.biashara.tenancy.service import require_business_permission
 from backend.jumuiya.biashara.integrations import service
+from backend.jumuiya.biashara.integrations import webhooks
 
 
 biashara_integrations_bp = Blueprint("jumuiya_biashara_integrations", __name__)
@@ -60,4 +61,36 @@ def patch_connection_enabled(connection_id):
 def delete_connection(connection_id):
     result = service.delete_connection(current_user_id(), connection_id)
     return ok(result, "Integration connection and its encrypted credentials were removed.")
+
+@biashara_integrations_bp.get("/webhook-deliveries")
+@require_authenticated
+@require_business_permission("integration.view")
+def get_webhook_deliveries():
+    rows = webhooks.list_webhook_deliveries(
+        current_user_id(),
+        limit=request.args.get("limit", 50),
+        status=request.args.get("status"),
+        provider=request.args.get("provider"),
+    )
+    return ok(rows, "Verified integration webhook inbox loaded.", meta={"count": len(rows)})
+
+
+@biashara_integrations_bp.get("/<connection_id>/webhook")
+def verify_whatsapp_webhook(connection_id):
+    challenge = webhooks.verify_whatsapp_challenge(
+        connection_id,
+        request.args.get("hub.mode"),
+        request.args.get("hub.verify_token"),
+        request.args.get("hub.challenge"),
+    )
+    return Response(challenge, status=200, mimetype="text/plain")
+
+
+@biashara_integrations_bp.post("/<connection_id>/webhook")
+def receive_provider_webhook(connection_id):
+    if request.content_length is not None and request.content_length > webhooks.MAX_WEBHOOK_BODY_BYTES:
+        raise APIError("Webhook body exceeds the allowed size.", 413, "webhook_body_too_large")
+    raw_body = request.get_data(cache=False, as_text=False)
+    result = webhooks.receive_webhook(connection_id, raw_body, request.headers)
+    return ok(result, "Webhook signature verified and event safely queued for review.")
 
