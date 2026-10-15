@@ -324,10 +324,10 @@ INDEX_DEFINITIONS = {
         (
             [
                 ("owner_user_id", ASCENDING),
+                ("created_at", ASCENDING),
             ],
             {
-                "unique": True,
-                "name": "uq_businesses_owner",
+                "name": "ix_businesses_owner_created",
             },
         ),
         (
@@ -346,6 +346,21 @@ INDEX_DEFINITIONS = {
                 ("status", ASCENDING),
             ],
             {"name": "ix_businesses_county_category_status"},
+        ),
+    ],
+
+    "jumuiya_business_memberships": [
+        (
+            [("business_id", ASCENDING), ("user_id", ASCENDING)],
+            {"unique": True, "name": "uq_biashara_membership_business_user"},
+        ),
+        (
+            [("user_id", ASCENDING), ("status", ASCENDING), ("created_at", DESCENDING)],
+            {"name": "ix_biashara_membership_user_status"},
+        ),
+        (
+            [("business_id", ASCENDING), ("status", ASCENDING), ("role", ASCENDING)],
+            {"name": "ix_biashara_membership_business_status_role"},
         ),
     ],
 
