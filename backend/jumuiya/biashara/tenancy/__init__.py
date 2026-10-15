@@ -6,6 +6,7 @@ from backend.jumuiya.biashara.tenancy.service import (
     list_accessible_businesses,
     list_members,
     remove_member,
+    require_any_business_permission,
     require_business_permission,
     require_permission,
 )
@@ -17,6 +18,7 @@ __all__ = [
     "list_accessible_businesses",
     "list_members",
     "remove_member",
+    "require_any_business_permission",
     "require_business_permission",
     "require_permission",
 ]
