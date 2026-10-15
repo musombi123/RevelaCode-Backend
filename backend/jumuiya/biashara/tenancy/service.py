@@ -443,6 +443,7 @@ def add_member(actor_user_id, business_id, member_user_id, role):
                 "updated_at": now,
                 "joined_at": existing.get("joined_at") or now,
                 "revoked_at": None,
+                "source": "team_membership_action_v1",
             }},
         )
         member = update or memberships.find_one(query) or existing
@@ -459,6 +460,7 @@ def add_member(actor_user_id, business_id, member_user_id, role):
             "updated_at": now,
             "joined_at": now,
             "revoked_at": None,
+            "source": "team_membership_action_v1",
         }
         try:
             memberships.insert_one(member)
@@ -474,6 +476,7 @@ def add_member(actor_user_id, business_id, member_user_id, role):
                         "permissions_snapshot": _permissions(role),
                         "updated_at": now,
                         "revoked_at": None,
+                        "source": "team_membership_action_v1",
                     }},
                 ) or prior
             else:
