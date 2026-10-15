@@ -219,20 +219,40 @@ def create_invoice(user_id, payload, idempotency_key=""):
 
     items = []
     for item in order.get("items") or []:
-        quantity = Decimal(str(item.get("quantity", 0)))
+        try:
+            quantity = Decimal(str(item.get("quantity", 0)))
+        except (InvalidOperation, TypeError, ValueError):
+            raise APIError("Stored order item quantity is invalid.", 409, "invalid_order_inventory")
+        if not quantity.is_finite() or quantity <= 0:
+            raise APIError("Stored order item quantity is invalid.", 409, "invalid_order_inventory")
+
         unit_minor = item.get("unit_price_minor")
         if unit_minor is None:
             unit_minor = _minor(item.get("unit_price", 0), "unit price", allow_zero=True)
+        try:
+            unit_minor = int(unit_minor)
+        except (TypeError, ValueError, OverflowError):
+            raise APIError("Stored order unit price is invalid.", 409, "invalid_order_amount")
+        if unit_minor < 0:
+            raise APIError("Stored order unit price is invalid.", 409, "invalid_order_amount")
+
         line_minor = item.get("line_total_minor")
         if line_minor is None:
-            line_minor = int((Decimal(str(unit_minor)) * quantity).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+            line_minor = int((Decimal(unit_minor) * quantity).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+        try:
+            line_minor = int(line_minor)
+        except (TypeError, ValueError, OverflowError):
+            raise APIError("Stored order line total is invalid.", 409, "invalid_order_amount")
+        if line_minor < 0:
+            raise APIError("Stored order line total is invalid.", 409, "invalid_order_amount")
+
         items.append({
             "product_id": str(item.get("product_id") or ""),
             "name": str(item.get("name") or "Product")[:160],
             "sku": str(item.get("sku") or "")[:80],
             "quantity": str(quantity.normalize()),
-            "unit_price_minor": int(unit_minor),
-            "line_total_minor": int(line_minor),
+            "unit_price_minor": unit_minor,
+            "line_total_minor": line_minor,
             "currency": currency,
             "tax_calculation_status": "not_configured",
             "tax_amount_minor": None,
