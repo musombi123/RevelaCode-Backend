@@ -930,7 +930,8 @@ def login():
 
         redirect=redirect,
 
-        api_key=api_key,
+        # Admin legacy views still use their scoped key. Support clients use JWTs.
+        api_key=api_key if role == "admin" else "",
 
         access_token=token,
 
