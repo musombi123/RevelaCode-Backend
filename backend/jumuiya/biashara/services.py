@@ -222,7 +222,11 @@ def _require_business(user_id, business_id=None):
 
 def _require_business_with_permission(user_id, permission, business_id=None):
     """Enforce role permission at the service boundary, not only at Flask routes."""
-    business = _require_business(user_id, business_id=business_id)
+    business = (
+        _require_business(user_id, business_id=business_id)
+        if business_id is not None
+        else _require_business(user_id)
+    )
     require_permission(user_id, permission, business_id=str(business["id"]))
     return business
 
