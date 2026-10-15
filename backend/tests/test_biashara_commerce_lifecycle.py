@@ -416,3 +416,61 @@ def test_sale_schema_allows_server_calculated_amount_but_expense_still_requires_
     with pytest.raises(ValueError):
         expense_payload({"title": "Rent"})
 
+def test_product_stock_edit_creates_ledger_movement_and_preserves_idempotency(commerce_db):
+    first = services.update_product(
+        "owner-1",
+        str(commerce_db["product_id"]),
+        {
+            "stock_quantity": 4,
+            "idempotency_key": "product-stock-edit-0001",
+        },
+    )
+    second = services.update_product(
+        "owner-1",
+        str(commerce_db["product_id"]),
+        {
+            "stock_quantity": 4,
+            "idempotency_key": "product-stock-edit-0001",
+        },
+    )
+
+    assert first["stock_quantity"] == 4
+    assert second["stock_quantity"] == 4
+    assert len(commerce_db["movements"].documents) == 1
+    movement = commerce_db["movements"].documents[0]
+    assert movement["movement_type"] == "set"
+    assert movement["idempotency_key"] == "product-stock-edit-0001"
+    assert movement["previous_stock_quantity"] == 5
+    assert movement["new_stock_quantity"] == 4
+
+
+def test_product_archive_is_blocked_while_stock_is_reserved(commerce_db):
+    commerce_db["products"].documents[0]["reserved_quantity"] = 1
+    commerce_db["products"].documents[0]["active_reservations"] = [{
+        "order_id": "order-open-1",
+        "quantity": 1,
+        "state": "reserved",
+    }]
+
+    with pytest.raises(APIError) as raised:
+        services.delete_product("owner-1", str(commerce_db["product_id"]))
+
+    assert raised.value.code == "product_has_open_reservations"
+    assert commerce_db["products"].documents[0]["status"] == "active"
+
+
+def test_inventory_adjustment_rejects_removal_that_would_consume_reserved_stock(commerce_db):
+    commerce_db["products"].documents[0]["reserved_quantity"] = 4
+
+    with pytest.raises(APIError) as raised:
+        services.inventory_adjustment("owner-1", str(commerce_db["product_id"]), {
+            "movement_type": "remove",
+            "quantity": 2,
+            "reason": "broken_item",
+            "idempotency_key": "stock-remove-reserved-1",
+        })
+
+    assert raised.value.code == "insufficient_stock"
+    assert commerce_db["products"].documents[0]["stock_quantity"] == 5
+    assert len(commerce_db["movements"].documents) == 0
+
