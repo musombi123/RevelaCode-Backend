@@ -540,6 +540,17 @@ INDEX_DEFINITIONS = {
         ),
     ],
 
+    "jumuiya_business_domains": [
+        (
+            [("hostname", ASCENDING)],
+            {"unique": True, "name": "uq_biashara_custom_domain_hostname"},
+        ),
+        (
+            [("business_id", ASCENDING), ("status", ASCENDING), ("created_at", DESCENDING)],
+            {"name": "ix_biashara_domains_business_status"},
+        ),
+    ],
+
     "jumuiya_revenue_subscriptions": [
         (
             [("user_id", ASCENDING), ("status", ASCENDING), ("expires_at", DESCENDING)],
