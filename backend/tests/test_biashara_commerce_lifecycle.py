@@ -1,4 +1,5 @@
 from copy import deepcopy
+import re
 import sys
 import types
 from types import SimpleNamespace
@@ -49,6 +50,13 @@ def _matches(document, query):
             for op, value in expected.items():
                 if op == "$exists" and exists != bool(value):
                     return False
+                if op == "$regex":
+                    options = expected.get("$options", "")
+                    flags = re.IGNORECASE if "i" in str(options) else 0
+                    if not any(re.search(str(value), str(item), flags) for item in values if item is not None):
+                        return False
+                if op == "$options":
+                    continue
                 if op == "$ne" and any(item == value for item in values):
                     return False
                 if op == "$in" and not any(item in value for item in values):
@@ -62,7 +70,7 @@ def _matches(document, query):
                     for item in values
                 ):
                     return False
-                if op not in {"$exists", "$ne", "$in", "$lte", "$gte", "$elemMatch"}:
+                if op not in {"$exists", "$ne", "$in", "$lte", "$gte", "$elemMatch", "$regex", "$options"}:
                     raise AssertionError(f"Unsupported fake query operator: {op}")
         elif not exists or not any(item == expected for item in values):
             return False
@@ -77,9 +85,31 @@ def _set_path(document, path, value):
     current[parts[-1]] = deepcopy(value)
 
 
+class FakeCursor:
+    def __init__(self, documents):
+        self.documents = list(documents)
+
+    def sort(self, field, direction=1):
+        def key_fn(document):
+            value = document.get(field)
+            return value is None, value
+        self.documents.sort(key=key_fn, reverse=direction < 0)
+        return self
+
+    def limit(self, amount):
+        self.documents = self.documents[:amount]
+        return self
+
+    def __iter__(self):
+        return iter(deepcopy(self.documents))
+
+
 class FakeCollection:
     def __init__(self, documents=None):
         self.documents = [deepcopy(doc) for doc in (documents or [])]
+
+    def find(self, query, projection=None):
+        return FakeCursor([doc for doc in self.documents if _matches(doc, query)])
 
     def find_one(self, query):
         for document in self.documents:
