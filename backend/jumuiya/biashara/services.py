@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import logging
 import re
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
@@ -29,11 +30,55 @@ from backend.jumuiya.biashara.models import (
     sale_document,
     inventory_movement_document,
 )
+from backend.jumuiya.biashara.sync.outbox import (
+    build_outbox_manifest,
+    dispatch_manifest_for_record,
+)
+
+
+logger = logging.getLogger("jumuiya.biashara.services")
 
 
 # =========================================================
 # HELPERS
 # =========================================================
+
+def _build_outbox_manifest(
+    event_key,
+    event_type,
+    entity_type,
+    entity_id,
+    payload,
+    actor_user_id,
+    occurred_at=None,
+):
+    return build_outbox_manifest(
+        event_key=event_key,
+        event_type=event_type,
+        entity_type=entity_type,
+        entity_id=str(entity_id),
+        payload=payload,
+        actor_user_id=actor_user_id,
+        occurred_at=occurred_at,
+    )
+
+
+def _dispatch_outbox_source(source_collection_name, business_id, record_id):
+    """Best-effort dispatch; the embedded manifest remains repairable on failure."""
+    try:
+        return dispatch_manifest_for_record(
+            source_collection_name,
+            str(business_id),
+            record_id,
+        )
+    except Exception as error:
+        logger.warning(
+            "Biashara outbox dispatch deferred (source=%s, error=%s)",
+            source_collection_name,
+            type(error).__name__,
+        )
+        return {"enqueued": 0, "pending": 1, "errors": 1}
+
 
 def now_utc():
     return datetime.now(timezone.utc)
