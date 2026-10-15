@@ -22,6 +22,7 @@ finally:
         sys.modules["backend.db"] = _original_db_module
 
 from backend.jumuiya.core.errors import APIError
+from backend.jumuiya.biashara.sync import outbox
 
 
 def _values(document, path):
@@ -167,8 +168,10 @@ def commerce_db(monkeypatch):
         "jumuiya_orders": FakeCollection([]),
         "jumuiya_sales": FakeCollection([]),
         "jumuiya_inventory_movements": FakeCollection([]),
+        "jumuiya_outbox_events": FakeCollection([]),
     }
     monkeypatch.setattr(services, "collection", lambda name: collections[name])
+    monkeypatch.setattr(outbox, "collection", lambda name: collections[name])
     monkeypatch.setattr(services, "_require_business", lambda user_id: {"id": "business-1", "currency": "KES"})
     monkeypatch.setattr(services, "log_action", lambda *args, **kwargs: None)
     return {
