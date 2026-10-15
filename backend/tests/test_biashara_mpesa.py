@@ -425,3 +425,98 @@ def test_missing_callback_ip_allowlist_stops_stk_before_any_provider_request(mpe
     assert calls["get"] == []
     assert calls["post"] == []
     assert mpesa_db["data"][mpesa.PAYMENTS_COLLECTION].documents == []
+
+def test_callback_phone_suffix_mismatch_is_not_allocated(mpesa_db, monkeypatch):
+    _ok_requests(monkeypatch)
+    payment = mpesa.start_stk_push(
+        "owner-1", str(INVOICE_ID), _payment_payload(), "stk-payment-request-0006"
+    )
+    callback = json.loads(_stk_callback().decode("utf-8"))
+    items = callback["Body"]["stkCallback"]["CallbackMetadata"]["Item"]
+    next(item for item in items if item["Name"] == "PhoneNumber")["Value"] = 254712345679
+
+    result = mpesa.receive_stk_callback(
+        str(CONNECTION_ID),
+        json.dumps(callback, separators=(",", ":")).encode("utf-8"),
+        "196.201.214.200",
+    )
+    assert result["event_status"] == "conflict"
+    assert result["effects_applied"] is False
+    stored = mpesa_db["data"][mpesa.PAYMENTS_COLLECTION].find_one({"_id": ObjectId(payment["id"])})
+    assert stored["payment_status"] == "pending_provider_confirmation"
+    assert stored["provider_verified"] is False
+
+
+def test_boolean_callback_result_code_is_rejected(mpesa_db):
+    malformed = {
+        "Body": {
+            "stkCallback": {
+                "MerchantRequestID": "merchant-request-001",
+                "CheckoutRequestID": "ws_CO_001",
+                "ResultCode": False,
+            }
+        }
+    }
+    with pytest.raises(APIError) as raised:
+        mpesa._callback_metadata(malformed)
+    assert raised.value.code == "mpesa_callback_invalid"
+
+
+def test_duplicate_callback_recovers_a_crash_after_provider_confirmation_before_allocation(mpesa_db, monkeypatch):
+    _ok_requests(monkeypatch)
+    payment = mpesa.start_stk_push(
+        "owner-1", str(INVOICE_ID), _payment_payload(), "stk-payment-request-0007"
+    )
+    payments = mpesa_db["data"][mpesa.PAYMENTS_COLLECTION]
+    payments.update_one(
+        {"_id": ObjectId(payment["id"])},
+        {"$set": {
+            "payment_status": "provider_confirmed",
+            "verification_status": "provider_verified",
+            "provider_verified": True,
+            "provider_event_id": "AB123CD456",
+            "reference": "AB123CD456",
+            "provider_verified_at": datetime(2026, 10, 15, 11, 0, tzinfo=timezone.utc),
+            "provider_transaction_at": datetime(2026, 10, 15, 11, 0, tzinfo=timezone.utc),
+            "allocation_status": "not_allocated_pending_verification",
+        }},
+    )
+
+    result = mpesa.receive_stk_callback(
+        str(CONNECTION_ID),
+        _stk_callback(),
+        "196.201.214.200",
+    )
+
+    assert result["event_status"] == "applied"
+    saved = payments.find_one({"_id": ObjectId(payment["id"])})
+    assert saved["allocation_status"] == "allocated"
+    invoice = mpesa_db["data"][mpesa.INVOICES_COLLECTION].find_one({"_id": INVOICE_ID})
+    assert invoice["amount_paid_minor"] == 2500
+    assert len(mpesa_db["data"][ledger.JOURNAL_COLLECTION].documents) == 1
+
+
+def test_callback_diagnostics_are_sanitized_and_tenant_scoped(mpesa_db, monkeypatch):
+    _ok_requests(monkeypatch)
+    payment = mpesa.start_stk_push(
+        "owner-1", str(INVOICE_ID), _payment_payload(), "stk-payment-request-0008"
+    )
+    result = mpesa.receive_stk_callback(
+        str(CONNECTION_ID),
+        _stk_callback(amount="24.00", receipt="AB123CD457"),
+        "196.201.214.200",
+    )
+    assert result["event_status"] == "conflict"
+
+    rows = mpesa.list_callback_events("owner-1", limit=10)
+    assert len(rows) == 1
+    assert rows[0]["status"] == "conflict"
+    assert rows[0]["conflict_reason"] == "receipt_or_amount_mismatch"
+    assert "payload_ciphertext" not in rows[0]
+    assert "phone_number" not in rows[0]
+
+    monkeypatch.setattr(mpesa, "require_permission", lambda user_id, permission, business_id=None: {
+        "id": "business-2", "permissions": ["*"]
+    })
+    assert mpesa.list_callback_events("other-owner", limit=10) == []
+
