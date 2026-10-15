@@ -25,6 +25,7 @@ import re
 from datetime import datetime, timezone, timedelta
 from decimal import Decimal, InvalidOperation
 from urllib.parse import urlparse
+from zoneinfo import ZoneInfo
 import base64
 
 import requests
@@ -288,7 +289,7 @@ def _issue_stk_request(connection, metadata, credentials, payment, invoice, phon
     )
     environment = metadata["environment"]
     root = _provider_root(environment)
-    timestamp = now_utc().strftime("%Y%m%d%H%M%S")
+    timestamp = datetime.now(ZoneInfo("Africa/Nairobi")).strftime("%Y%m%d%H%M%S")
     shortcode = str(metadata["shortcode"])
     password = base64.b64encode((shortcode + credentials["passkey"] + timestamp).encode("utf-8")).decode("ascii")
     invoice_number = str(invoice.get("invoice_number") or invoice.get("_id") or "")
@@ -1326,7 +1327,7 @@ def query_stk_status(user_id, payment_id):
     connection, metadata, credentials = _connection(business_id, connection_id, enabled=False)
     token = _access_token(credentials, metadata["environment"])
     shortcode = str(metadata["shortcode"])
-    timestamp = now_utc().strftime("%Y%m%d%H%M%S")
+    timestamp = datetime.now(ZoneInfo("Africa/Nairobi")).strftime("%Y%m%d%H%M%S")
     password = base64.b64encode(
         (shortcode + credentials["passkey"] + timestamp).encode("utf-8")
     ).decode("ascii")
