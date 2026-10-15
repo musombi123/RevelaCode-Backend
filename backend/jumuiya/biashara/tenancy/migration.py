@@ -104,6 +104,13 @@ def run_owner_membership_migration(dry_run=True, limit=DEFAULT_LIMIT):
             if dry_run:
                 report["owner_memberships_repaired"] += 1
             else:
+                previous_state = {
+                    "role": existing.get("role"),
+                    "status": existing.get("status"),
+                    "permissions_snapshot": existing.get("permissions_snapshot"),
+                    "source": existing.get("source"),
+                    "revoked_at": existing.get("revoked_at"),
+                }
                 memberships.update_one(
                     {"_id": existing["_id"], "business_id": business_id, "user_id": owner_id},
                     {"$set": {
@@ -112,6 +119,7 @@ def run_owner_membership_migration(dry_run=True, limit=DEFAULT_LIMIT):
                         "permissions_snapshot": _permissions("owner"),
                         "updated_at": now_utc(),
                         "revoked_at": None,
+                        "migration_previous_state": previous_state,
                         "source": OWNER_MEMBERSHIP_SOURCE,
                     }},
                 )
@@ -182,3 +190,45 @@ def run_owner_membership_migration(dry_run=True, limit=DEFAULT_LIMIT):
             "unknown_check_incomplete_because_business_scan_truncated": truncated,
         }
     return report
+
+
+def plan_owner_membership_rollback(limit=DEFAULT_LIMIT):
+    """Report reversible membership changes; never delete or demote by itself."""
+    try:
+        limit = min(max(int(limit), 1), 5000)
+    except (TypeError, ValueError):
+        limit = DEFAULT_LIMIT
+    memberships = collection(MEMBERSHIPS_COLLECTION)
+    businesses = collection(BUSINESSES_COLLECTION)
+    candidates = list(
+        memberships.find({"source": OWNER_MEMBERSHIP_SOURCE}).limit(limit + 1)
+    )
+    truncated = len(candidates) > limit
+    actions = []
+    skipped = []
+    for member in candidates[:limit]:
+        business_id = str(member.get("business_id") or "")
+        user_id = str(member.get("user_id") or "")
+        business = businesses.find_one({"_id": ObjectId(business_id) if len(business_id) == 24 else business_id})
+        if not business or str(business.get("owner_user_id") or "") != user_id:
+            skipped.append({
+                "membership_id": str(member.get("_id") or ""),
+                "business_id": business_id,
+                "reason": "owner_relationship_changed_or_business_missing",
+            })
+            continue
+        previous = member.get("migration_previous_state")
+        actions.append({
+            "membership_id": str(member.get("_id") or ""),
+            "business_id": business_id,
+            "user_id": user_id,
+            "action": "restore_previous_state" if isinstance(previous, dict) else "remove_migration_created_membership",
+        })
+    return {
+        "automatic_rollback_performed": False,
+        "memberships_inspected": min(len(candidates), limit),
+        "scan_truncated": truncated,
+        "rollback_candidates": actions,
+        "skipped": skipped,
+        "warning": "Review every candidate before executing rollback. Never remove a membership that was reused for a later staff/team assignment.",
+    }
