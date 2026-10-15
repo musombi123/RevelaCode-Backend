@@ -33,6 +33,7 @@ SOURCE_COLLECTIONS = (
     "jumuiya_sales",
     "jumuiya_inventory_movements",
     "jumuiya_products",
+    "jumuiya_customers",
     "jumuiya_invoices",
     "jumuiya_payments",
     "jumuiya_journal_entries",
