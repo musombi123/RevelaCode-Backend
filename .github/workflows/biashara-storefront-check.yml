@@ -31,8 +31,8 @@ jobs:
           python-version: "3.12"
           cache: pip
       - name: Install test dependencies
-        run: python -m pip install Flask pymongo pytest python-dotenv cryptography==50.0.2
+        run: python -m pip install Flask pymongo pytest python-dotenv cryptography==50.0.2 requests
       - name: Run Biashara storefront tests
         env:
           PYTHONPATH: backend
-        run: python -m compileall -q backend/jumuiya/biashara backend/jumuiya/core backend/revenue && python -m pytest -q backend/tests/test_biashara_website.py backend/tests/test_biashara_domains.py backend/tests/test_schemas.py backend/tests/test_biashara_commerce_lifecycle.py backend/tests/test_biashara_outbox.py backend/tests/test_biashara_finance.py backend/tests/test_biashara_automation.py backend/tests/test_biashara_tenancy.py backend/tests/test_biashara_integrations.py backend/tests/test_revenue_entitlements.py backend/tests/test_biashara_service_authorization.py
+        run: python -m compileall -q backend/jumuiya/biashara backend/jumuiya/core backend/revenue && python -m pytest -q backend/tests/test_biashara_website.py backend/tests/test_biashara_domains.py backend/tests/test_schemas.py backend/tests/test_biashara_commerce_lifecycle.py backend/tests/test_biashara_outbox.py backend/tests/test_biashara_finance.py backend/tests/test_biashara_automation.py backend/tests/test_biashara_tenancy.py backend/tests/test_biashara_integrations.py backend/tests/test_biashara_mpesa.py backend/tests/test_revenue_entitlements.py backend/tests/test_biashara_service_authorization.py
