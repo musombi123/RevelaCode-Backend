@@ -350,6 +350,146 @@ def _issue_stk_request(connection, metadata, credentials, payment, invoice, phon
     }
 
 
+def _reserve_invoice_balance(business_id, invoice_id, reservation_key, amount_minor):
+    """Atomically reserve invoice balance for one pending STK request."""
+    invoices = collection(INVOICES_COLLECTION)
+    for _attempt in range(12):
+        invoice = finance_services._get_invoice(business_id, invoice_id)
+        if invoice.get("status") != "issued":
+            raise APIError("M-Pesa payments can only be requested for issued invoices.", 409, "invoice_not_payable")
+        total = int(invoice.get("total_amount_minor", 0) or 0)
+        paid = int(invoice.get("amount_paid_minor", 0) or 0)
+        reservations = invoice.get("pending_mpesa_reservations") or []
+        if not isinstance(reservations, list):
+            raise APIError("Invoice payment-reservation state is invalid.", 409, "invoice_reservation_state_invalid")
+        own = next(
+            (item for item in reservations if str(item.get("reservation_key") or "") == str(reservation_key)),
+            None,
+        )
+        pending_sum = sum(
+            int(item.get("amount_minor", 0) or 0)
+            for item in reservations
+            if isinstance(item, dict)
+        )
+        pending_counter = int(invoice.get("pending_mpesa_amount_minor", pending_sum) or 0)
+        if pending_counter != pending_sum:
+            raise APIError(
+                "Invoice pending-payment reservation totals do not reconcile. Review the invoice before requesting another payment.",
+                409,
+                "invoice_reservation_state_invalid",
+            )
+        if own:
+            if int(own.get("amount_minor", 0) or 0) != int(amount_minor):
+                raise APIError("Payment reservation key is already used for a different amount.", 409, "mpesa_reservation_conflict")
+            available_without_own = total - paid - (pending_sum - int(amount_minor))
+            if available_without_own < int(amount_minor):
+                raise APIError(
+                    "The invoice balance changed before the STK request was submitted.",
+                    409,
+                    "payment_exceeds_invoice_balance",
+                )
+            return invoice
+
+        available = total - paid - pending_sum
+        if available < int(amount_minor):
+            raise APIError(
+                "The invoice balance is already reserved by another pending M-Pesa request or payment.",
+                409,
+                "invoice_balance_reserved",
+            )
+
+        query = {
+            "_id": invoice["_id"],
+            "business_id": str(business_id),
+            "status": "issued",
+            "amount_paid_minor": paid,
+            "pending_mpesa_reservations.reservation_key": {"$ne": str(reservation_key)},
+        }
+        if "pending_mpesa_amount_minor" in invoice:
+            query["pending_mpesa_amount_minor"] = pending_counter
+        else:
+            query["pending_mpesa_amount_minor"] = {"$exists": False}
+        now = now_utc()
+        updated = invoices.find_one_and_update(
+            query,
+            {
+                "$inc": {"pending_mpesa_amount_minor": int(amount_minor)},
+                "$addToSet": {
+                    "pending_mpesa_reservations": {
+                        "reservation_key": str(reservation_key),
+                        "amount_minor": int(amount_minor),
+                        "created_at": now,
+                    }
+                },
+                "$set": {"updated_at": now},
+            },
+            return_document=ReturnDocument.AFTER,
+        )
+        if updated:
+            return updated
+    raise APIError(
+        "Invoice balance changed repeatedly while reserving this payment. Reload and retry with the same Idempotency-Key.",
+        409,
+        "invoice_reservation_conflict",
+    )
+
+
+def _release_invoice_reservation(business_id, invoice_id, reservation_key):
+    """Remove one reservation at most once; decrement only when its marker exists."""
+    invoices = collection(INVOICES_COLLECTION)
+    invoice = invoices.find_one({
+        "_id": _clean_id(invoice_id),
+        "business_id": str(business_id),
+    })
+    if not invoice:
+        return False
+    marker = next(
+        (
+            item for item in (invoice.get("pending_mpesa_reservations") or [])
+            if isinstance(item, dict) and str(item.get("reservation_key") or "") == str(reservation_key)
+        ),
+        None,
+    )
+    if not marker:
+        return False
+    amount_minor = int(marker.get("amount_minor", 0) or 0)
+    if amount_minor <= 0:
+        raise APIError("Invoice reservation amount is invalid.", 409, "invoice_reservation_state_invalid")
+    updated = invoices.find_one_and_update(
+        {
+            "_id": invoice["_id"],
+            "business_id": str(business_id),
+            "pending_mpesa_reservations.reservation_key": str(reservation_key),
+            "pending_mpesa_amount_minor": {"$gte": amount_minor},
+        },
+        {
+            "$pull": {"pending_mpesa_reservations": {"reservation_key": str(reservation_key)}},
+            "$inc": {"pending_mpesa_amount_minor": -amount_minor},
+            "$set": {"updated_at": now_utc()},
+        },
+        return_document=ReturnDocument.AFTER,
+    )
+    return bool(updated)
+
+
+def _release_payment_reservation(payment):
+    """Release invoice balance reserved for a failed/conflicted or allocated intent."""
+    if not payment:
+        return False
+    business_id = str(payment.get("business_id") or "")
+    invoice_id = str(payment.get("invoice_id") or "")
+    key = str(payment.get("idempotency_key") or "")
+    if not (business_id and invoice_id and key):
+        return False
+    released = _release_invoice_reservation(business_id, invoice_id, key)
+    if released or payment.get("provider_reservation_active"):
+        collection(PAYMENTS_COLLECTION).update_one(
+            {"_id": payment["_id"], "business_id": business_id},
+            {"$set": {"provider_reservation_active": False, "updated_at": now_utc()}},
+        )
+    return released
+
+
 def start_stk_push(user_id, invoice_id, payload, idempotency_key):
     """Create one STK request intent; network retries never generate a second prompt."""
     context = require_permission(user_id, "finance.manage")
