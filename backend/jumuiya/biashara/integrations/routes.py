@@ -1,0 +1,55 @@
+"""Authenticated configuration API for Biashara provider connections."""
+from __future__ import annotations
+
+from flask import Blueprint, request
+
+from backend.jumuiya.core.errors import APIError
+from backend.jumuiya.core.permissions import current_user_id, require_authenticated
+from backend.jumuiya.core.responses import created, ok
+from backend.jumuiya.biashara.tenancy.service import require_business_permission
+from backend.jumuiya.biashara.integrations import service
+
+
+biashara_integrations_bp = Blueprint("jumuiya_biashara_integrations", __name__)
+
+
+def _body():
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        raise APIError("JSON request body is required.", 400, "invalid_json")
+    return data
+
+
+@biashara_integrations_bp.get("")
+@require_authenticated
+@require_business_permission("integration.view")
+def get_connections():
+    rows = service.list_connections(current_user_id())
+    return ok(rows, "Integration connection configuration loaded.", meta={"count": len(rows)})
+
+
+@biashara_integrations_bp.post("")
+@require_authenticated
+@require_business_permission("integration.manage")
+def post_connection():
+    result = service.create_connection(current_user_id(), _body())
+    return created(result, "Integration credentials stored encrypted. Provider connectivity has not been tested.")
+
+
+@biashara_integrations_bp.patch("/<connection_id>")
+@require_authenticated
+@require_business_permission("integration.manage")
+def patch_connection(connection_id):
+    result = service.update_connection(current_user_id(), connection_id, _body())
+    return ok(result, "Integration configuration updated. Provider connectivity has not been tested.")
+
+
+@biashara_integrations_bp.patch("/<connection_id>/enabled")
+@require_authenticated
+@require_business_permission("integration.manage")
+def patch_connection_enabled(connection_id):
+    payload = _body()
+    if "enabled" not in payload or not isinstance(payload["enabled"], bool):
+        raise APIError("enabled must be a boolean.", 422, "invalid_integration_configuration")
+    result = service.set_connection_enabled(current_user_id(), connection_id, payload["enabled"])
+    return ok(result, "Integration connection state saved; this does not confirm provider connectivity.")
