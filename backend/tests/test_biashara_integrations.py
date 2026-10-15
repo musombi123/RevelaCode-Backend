@@ -183,7 +183,7 @@ def test_provider_metadata_and_credentials_are_strictly_validated(integration_db
         {
             "name": "M-Pesa",
             "provider": "mpesa_daraja",
-            "metadata": {"shortcode": "123456", "environment": "production"},
+            "metadata": {"shortcode": "123456", "environment": "prod"},
             "credentials": {"consumer_key": "a", "consumer_secret": "b", "passkey": "c"},
         },
     ]
