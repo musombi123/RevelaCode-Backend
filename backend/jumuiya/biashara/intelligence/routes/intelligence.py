@@ -15,6 +15,7 @@ from backend.jumuiya.core.responses import (
 )
 
 from backend.jumuiya.core.errors import APIError
+from backend.jumuiya.biashara.tenancy.service import require_business_permission
 
 from backend.jumuiya.biashara.intelligence import (
     schemas,
@@ -215,6 +216,7 @@ def health():
     "/datasets/status"
 )
 @require_authenticated
+@require_business_permission("intelligence.view")
 def get_dataset_status():
     """
     Return the availability of local intelligence datasets.
@@ -235,6 +237,7 @@ def get_dataset_status():
     "/areas"
 )
 @require_authenticated
+@require_business_permission("intelligence.view")
 def get_market_areas():
     """
     List configured geographic market areas.
@@ -263,6 +266,7 @@ def get_market_areas():
     "/areas/<area_id>"
 )
 @require_authenticated
+@require_business_permission("intelligence.view")
 def get_market_area(
     area_id,
 ):
@@ -294,6 +298,7 @@ def get_market_area(
     "/trends"
 )
 @require_authenticated
+@require_business_permission("intelligence.view")
 def get_market_trends():
     """
     Return currently available market/economic trend data.
@@ -383,6 +388,7 @@ def get_market_trends():
     "/forecast"
 )
 @require_authenticated
+@require_business_permission("intelligence.view")
 def forecast():
     """
     Run a direct product/service forecast.
@@ -479,6 +485,7 @@ def forecast():
     "/analyze"
 )
 @require_authenticated
+@require_business_permission("intelligence.view")
 def analyze_market():
     """
     Run the complete Biashara Market Intelligence
@@ -550,6 +557,7 @@ def analyze_market():
     "/me/analyze"
 )
 @require_authenticated
+@require_business_permission("intelligence.view")
 def analyze_my_market():
     """
     Run Market Intelligence using the authenticated
@@ -578,6 +586,7 @@ def analyze_my_market():
     "/quick-analysis"
 )
 @require_authenticated
+@require_business_permission("intelligence.view")
 def quick_analysis():
     """
     Convenience endpoint for simple frontend requests.
@@ -684,6 +693,7 @@ def quick_analysis():
     "/business-analysis"
 )
 @require_authenticated
+@require_business_permission("intelligence.view")
 def business_analysis():
     """
     Analyze the authenticated business against a selected
@@ -769,6 +779,7 @@ def business_analysis():
     "/product-analysis"
 )
 @require_authenticated
+@require_business_permission("intelligence.view")
 def product_analysis():
     """
     Analyze one product/service in a selected market.
