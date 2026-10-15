@@ -35,6 +35,7 @@ ROLE_PERMISSIONS = {
         "finance.view", "finance.manage", "analytics.view", "intelligence.view",
         "website.view", "website.manage", "automation.view", "automation.manage",
         "sync.view", "sync.manage",
+        "integration.view", "integration.manage",
     },
     "cashier": {
         "business.view", "products.view", "inventory.view",
@@ -60,6 +61,7 @@ ROLE_PERMISSIONS = {
     "advisor": {
         "business.view", "products.view", "orders.view", "sales.view",
         "finance.view", "analytics.view", "intelligence.view", "automation.view", "sync.view",
+        "integration.view",
     },
     "read_only": {
         "business.view", "products.view", "inventory.view", "orders.view",
