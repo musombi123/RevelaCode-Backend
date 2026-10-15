@@ -598,6 +598,10 @@ def record_sale():
         body(),
     )
 
+    header_key = request.headers.get("Idempotency-Key", "").strip()
+    if header_key:
+        payload["idempotency_key"] = header_key
+
     return created(
         services.record_sale(
             user_id(),
