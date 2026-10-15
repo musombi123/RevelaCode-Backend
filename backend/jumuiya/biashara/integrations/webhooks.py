@@ -58,10 +58,71 @@ def _public_delivery(document, duplicate=False):
         "event_type": document.get("event_type"),
         "status": document.get("status", "pending_review"),
         "payload_sha256": document.get("payload_sha256"),
+        "event_summary": dict(document.get("event_summary") or {}),
         "received_at": _as_iso(document.get("received_at")),
         "duplicate": bool(duplicate),
         "effects_applied": False,
     }
+
+
+def _safe_summary_text(value, maximum=100):
+    if not isinstance(value, (str, int)):
+        return None
+    text = str(value).strip()
+    if not text or len(text) > maximum or any(ord(char) < 32 for char in text):
+        return None
+    return text
+
+
+def _event_summary(provider, event_type, payload):
+    """Return only non-sensitive operational identifiers and event counts."""
+    summary = {"payload_kind": "object" if isinstance(payload, dict) else "array"}
+    if provider == "woocommerce" and isinstance(payload, dict):
+        resource = str(event_type).split(".", 1)[0].lower()
+        if resource in {"order", "product", "customer", "coupon"}:
+            summary["resource_type"] = resource
+            resource_id = _safe_summary_text(payload.get("id"), 100)
+            if resource_id:
+                summary["resource_id"] = resource_id
+            status = _safe_summary_text(payload.get("status"), 40)
+            if status and re.fullmatch(r"[A-Za-z0-9_.-]{1,40}", status):
+                summary["resource_status"] = status
+            if resource == "order":
+                currency = _safe_summary_text(payload.get("currency"), 3)
+                total = _safe_summary_text(payload.get("total"), 32)
+                if currency and re.fullmatch(r"[A-Z]{3}", currency.upper()):
+                    summary["currency"] = currency.upper()
+                if total and re.fullmatch(r"[0-9]+(?:\.[0-9]{1,4})?", total):
+                    summary["reported_total"] = total
+        return summary
+
+    if provider == "whatsapp_cloud" and isinstance(payload, dict):
+        entries = payload.get("entry") if isinstance(payload.get("entry"), list) else []
+        fields = set()
+        message_count = 0
+        status_count = 0
+        for entry in entries[:1000]:
+            if not isinstance(entry, dict):
+                continue
+            changes = entry.get("changes") if isinstance(entry.get("changes"), list) else []
+            for change in changes[:1000]:
+                if not isinstance(change, dict):
+                    continue
+                field = _safe_summary_text(change.get("field"), 80)
+                if field and re.fullmatch(r"[A-Za-z0-9_.-]{1,80}", field):
+                    fields.add(field)
+                value = change.get("value") if isinstance(change.get("value"), dict) else {}
+                messages = value.get("messages") if isinstance(value.get("messages"), list) else []
+                statuses = value.get("statuses") if isinstance(value.get("statuses"), list) else []
+                message_count += len(messages)
+                status_count += len(statuses)
+        summary.update({
+            "entry_count": min(len(entries), 1000),
+            "change_fields": sorted(fields)[:40],
+            "message_count": message_count,
+            "status_count": status_count,
+        })
+    return summary
 
 
 def _load_connection(connection_id):
@@ -200,6 +261,7 @@ def receive_webhook(connection_id, raw_body, headers):
         "status": "pending_review",
         "effects_applied": False,
         "payload_sha256": payload_hash,
+        "event_summary": _event_summary(provider, event_type, payload),
         "payload_ciphertext": ciphertext,
         "payload_key_id": key_id,
         "payload_content_type": "application/json",
