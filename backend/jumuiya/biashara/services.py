@@ -1933,6 +1933,7 @@ def record_sale(user_id, payload):
                     "idempotency_key_reused",
                 )
             _apply_sale_payment_state(existing, user_id)
+            _dispatch_outbox_source("jumuiya_sales", business_id, existing["_id"])
             return serialise(existing)
 
     customer_id = payload.get("customer_id")
@@ -1972,6 +1973,7 @@ def record_sale(user_id, payload):
                     "sale_already_recorded",
                 )
             _apply_sale_payment_state(existing_for_order, user_id)
+            _dispatch_outbox_source("jumuiya_sales", business_id, existing_for_order["_id"])
             return serialise(existing_for_order)
     else:
         submitted_items = payload.get("items")
@@ -2030,6 +2032,7 @@ def record_sale(user_id, payload):
         "reference": str(payload.get("reference") or "")[:120],
     }
     document = sale_document(business_id, sale_payload_data)
+    document["_id"] = ObjectId()
     document.update({
         "order_id": order_id,
         "amount_minor": amount_minor,
@@ -2046,6 +2049,27 @@ def record_sale(user_id, payload):
     })
     if idempotency_key:
         document["idempotency_key"] = idempotency_key
+
+    sale_event_manifest = _build_outbox_manifest(
+        event_key=f"sale:{document['_id']}:created",
+        event_type="sale.created",
+        entity_type="sale",
+        entity_id=document["_id"],
+        payload={
+            "order_id": order_id,
+            "sale_id": str(document["_id"]),
+            "amount_minor": amount_minor,
+            "currency": currency,
+            "payment_status": payment_status,
+            "payment_verification_status": verification_status,
+            "payment_method": document.get("payment_method", "cash"),
+            "source_channel": document["source_channel"],
+        },
+        actor_user_id=user_id,
+        occurred_at=document.get("created_at") or now,
+    )
+    document["outbox_event_manifest"] = [sale_event_manifest]
+    document["outbox_enqueued_event_keys"] = []
 
     try:
         result = sales.insert_one(document)
@@ -2067,10 +2091,12 @@ def record_sale(user_id, payload):
             if existing.get("request_fingerprint") != fingerprint:
                 raise APIError("Sale already exists with different details.", 409, "sale_already_recorded")
             _apply_sale_payment_state(existing, user_id)
+            _dispatch_outbox_source("jumuiya_sales", business_id, existing["_id"])
             return serialise(existing)
         raise
 
     _apply_sale_payment_state(document, user_id)
+    _dispatch_outbox_source("jumuiya_sales", business_id, document["_id"])
     log_action(user_id, "sale.created", "sale", document["_id"], {
         "order_id": order_id,
         "amount_minor": amount_minor,
