@@ -380,10 +380,12 @@ def create_business(user_id, payload):
     document["_id"] = result.inserted_id
     ensure_owner_membership(document, actor_user_id=user_id)
     log_action(user_id, "biashara.business_created", "business", result.inserted_id, {"created_from": "multi_business"})
-    result_document = _serialise(document)
-    result_document["membership_role"] = "owner"
-    result_document["permissions"] = _permissions("owner")
-    return result_document
+    membership = collection(MEMBERSHIPS_COLLECTION).find_one({
+        "business_id": str(document["_id"]),
+        "user_id": str(user_id),
+        "status": "active",
+    })
+    return _context_from_documents(document, membership)
 
 
 def list_members(user_id, business_id):
