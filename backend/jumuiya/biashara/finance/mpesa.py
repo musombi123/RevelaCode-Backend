@@ -22,7 +22,7 @@ import ipaddress
 import json
 import os
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from decimal import Decimal, InvalidOperation
 from urllib.parse import urlparse
 import base64
@@ -582,7 +582,7 @@ def _callback_metadata(callback):
     raw_transaction_date = str(values.get("TransactionDate") or "").strip()
     if re.fullmatch(r"[0-9]{14}", raw_transaction_date):
         try:
-            transaction_date = datetime.strptime(raw_transaction_date, "%Y%m%d%H%M%S").replace(tzinfo=timezone.utc)
+            transaction_date = datetime.strptime(raw_transaction_date, "%Y%m%d%H%M%S").replace(tzinfo=timezone(timedelta(hours=3))).astimezone(timezone.utc)
         except ValueError:
             transaction_date = None
     return {
