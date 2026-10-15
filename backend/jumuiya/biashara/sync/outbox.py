@@ -515,6 +515,7 @@ def _leased_event(business_id, event_id, worker_id, lease_token):
         "state": "processing",
         "lease_owner": str(worker_id),
         "lease_token": str(lease_token),
+        "lease_expires_at": {"$gt": now_utc()},
     })
     if not document:
         raise APIError(
@@ -550,6 +551,7 @@ def mark_event_delivered(business_id, event_id, worker_id, lease_token, provider
             "state": "processing",
             "lease_owner": str(worker_id),
             "lease_token": str(lease_token),
+            "lease_expires_at": {"$gt": now},
         },
         update,
         return_document=ReturnDocument.AFTER,
@@ -597,6 +599,7 @@ def mark_event_failed(
             "state": "processing",
             "lease_owner": str(worker_id),
             "lease_token": str(lease_token),
+            "lease_expires_at": {"$gt": now},
             "attempt_count": attempt_count,
         },
         {
