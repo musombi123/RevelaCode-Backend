@@ -407,6 +407,17 @@ INDEX_DEFINITIONS = {
             ],
             {"name": "ix_customers_business_created"},
         ),
+        (
+            [
+                ("business_id", ASCENDING),
+                ("idempotency_key", ASCENDING),
+            ],
+            {
+                "unique": True,
+                "name": "uq_biashara_customer_idempotency",
+                "partialFilterExpression": {"idempotency_key": {"$type": "string"}},
+            },
+        ),
     ],
 
     "jumuiya_orders": [
