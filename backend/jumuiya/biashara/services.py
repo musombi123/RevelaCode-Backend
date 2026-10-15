@@ -1149,10 +1149,39 @@ def _reserve_order_inventory(order, user_id):
         _release_order_inventory(current, user_id, allow_missing=True)
         raise APIError("The order changed while inventory was being reserved.", 409, "order_state_conflict")
 
-    collection("jumuiya_orders").update_one(
-        {"_id": clean_id(order_id), "business_id": business_id, "status": {"$in": ["pending", "confirmed"]}},
-        {"$set": {"inventory_status": "reserved", "reserved_at": now_utc()}},
+    order_collection = collection("jumuiya_orders")
+    current_order = order_collection.find_one({
+        "_id": clean_id(order_id),
+        "business_id": business_id,
+    })
+    reserved_at = now_utc()
+    reserve_event = _build_outbox_manifest(
+        event_key=f"order:{order_id}:inventory:reserved",
+        event_type="order.inventory_reserved",
+        entity_type="order",
+        entity_id=order_id,
+        payload={
+            "status": (current_order or order).get("status", "pending"),
+            "inventory_status": "reserved",
+            "source_channel": (current_order or order).get("source_channel", "manual"),
+            "total_amount_minor": (current_order or order).get("total_amount_minor"),
+            "currency": (current_order or order).get("currency", "KES"),
+        },
+        actor_user_id=user_id,
+        occurred_at=reserved_at,
     )
+    order_collection.update_one(
+        {
+            "_id": clean_id(order_id),
+            "business_id": business_id,
+            "status": {"$in": ["pending", "confirmed"]},
+        },
+        {
+            "$set": {"inventory_status": "reserved", "reserved_at": reserved_at},
+            "$addToSet": {"outbox_event_manifest": reserve_event},
+        },
+    )
+    _dispatch_outbox_source("jumuiya_orders", business_id, clean_id(order_id))
 
 
 def _fail_order_reservation(order, user_id, error):
