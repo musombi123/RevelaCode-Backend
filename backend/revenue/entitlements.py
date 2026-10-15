@@ -149,6 +149,14 @@ def get_entitlement_snapshot(user_id, hub=None):
         None,
     ) if selected_hub else (active[0] if active else None)
 
+    paid = [
+        {
+            "plan_code": item["plan_code"],
+            "hub": item["hub"],
+            "features": item["features"],
+        }
+        for item in active
+    ]
     if selected:
         effective_plan = {
             "code": selected["plan_code"],
@@ -158,11 +166,6 @@ def get_entitlement_snapshot(user_id, hub=None):
             "features": selected["features"],
         }
         state = "active_verified_subscription"
-        paid = [{
-            "plan_code": selected["plan_code"],
-            "hub": selected["hub"],
-            "features": selected["features"],
-        }]
     else:
         effective_plan = {
             "code": free_plan.get("code", "free"),
@@ -172,7 +175,6 @@ def get_entitlement_snapshot(user_id, hub=None):
             "features": list(free_plan.get("features") or []),
         }
         state = "free_baseline"
-        paid = []
 
     return {
         "user_id": user_id,
