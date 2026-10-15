@@ -31,6 +31,22 @@ This document records code paths present on the branch. It does not assert produ
 - Invoice issue posts receivable / unclassified commercial revenue; allocated manual cash posts cash / receivable; expenses post operating expense / unclassified funding/payable.
 - These are **provisional operational postings**. The chart does not yet constitute a complete accountant-approved chart of accounts, tax calculation, financial close workflow or certified accounting product. The API states that tax/eTIMS is not configured.
 
+### Encrypted integration configuration
+
+- The API is registered at `/api/jumuiya/biashara/integrations` and currently accepts named WooCommerce, WhatsApp Cloud API and M-Pesa Daraja connection configurations.
+- Credential bundles are encrypted with Fernet before the MongoDB insert/update. Only credential field names and redacted configuration status are returned; ciphertext and raw credentials are never included in normal API responses or audit payloads.
+- The server fails closed when no valid encryption key is configured. The key must be kept in the hosting environment/secret manager, backed up securely, and never committed to the repository.
+- A multi-key ring supports rotation using `BIASHARA_INTEGRATION_ENCRYPTION_KEYS` (JSON mapping key IDs to Fernet keys) and `BIASHARA_INTEGRATION_CURRENT_KEY_ID`. Keep old keys available until every connection encrypted with them has been re-encrypted; changing a key without preserving the old key makes those credentials unreadable.
+- Configuration status intentionally reports `configured_unverified`, `connected: false`, and `connectivity_test_status: not_implemented`. No provider API call, synchronization, webhook verification, token refresh, payment request or WhatsApp message is performed by this registry.
+
+Generate a fresh Fernet key once in a trusted environment and store it in the platform's environment secret manager:
+
+```powershell
+python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+```
+
+Set the resulting value as `BIASHARA_INTEGRATION_ENCRYPTION_KEY` and keep a secure backup. For a staged key rotation, configure both old and new keys in `BIASHARA_INTEGRATION_ENCRYPTION_KEYS`, set `BIASHARA_INTEGRATION_CURRENT_KEY_ID` to the new key ID, and re-encrypt connections by issuing a credentials update with an empty `credentials` object for each connection. Keep the old key in the ring until verification is complete.
+
 ### Owner-controlled automation
 
 - Rules are versioned and limited to known trigger/action pairs; arbitrary scripts are not supported.
@@ -104,7 +120,8 @@ python -m pytest -q \
   backend/tests/test_biashara_outbox.py \
   backend/tests/test_biashara_finance.py \
   backend/tests/test_biashara_automation.py \
-  backend/tests/test_biashara_tenancy.py
+  backend/tests/test_biashara_tenancy.py \
+  backend/tests/test_biashara_integrations.py
 ```
 
 See the [Biashara validation workflow](https://github.com/musombi123/RevelaCode-Backend/actions/workflows/biashara-storefront-check.yml) for the current run result on the branch. A successful CI run validates these automated tests; it does not replace staging tests against a real MongoDB replica set or provider sandbox.
@@ -113,7 +130,7 @@ See the [Biashara validation workflow](https://github.com/musombi123/RevelaCode-
 
 - Run the membership migration in staging and verify multi-business switching end to end from the frontend.
 - Exercise access controls on every API route with each role using a real authenticated test account; keep the negative cross-tenant suite growing as resources are added.
-- Add encrypted provider-secret storage, credential rotation and least-privilege integration connections before accepting provider credentials.
+- Implement real provider adapters and connectivity verification, webhook-signature handling, credential scope review and token-refresh/revocation flows before enabling external sync or payment requests.
 - Implement a real M-Pesa/payment provider adapter with provider-specified verification and reconciliation; test duplicates, malformed callbacks, reordering and downtime.
 - Complete the actual KRA-approved eTIMS onboarding/certification path before claiming eTIMS compliance.
 - Add a real worker process and operational monitoring for provider sync; this branch currently provides durable queue primitives and internal automation dispatch, not a complete external-channel sync service.
