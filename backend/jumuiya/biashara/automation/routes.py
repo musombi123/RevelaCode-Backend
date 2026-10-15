@@ -73,7 +73,7 @@ def get_runs():
 
 @biashara_automation_bp.get("/tasks")
 @require_authenticated
-@require_business_permission("automation.view")
+@require_any_business_permission("automation.view", "orders.manage", "finance.manage", "inventory.manage")
 def get_tasks():
     rows = services.list_tasks(
         current_user_id(),
