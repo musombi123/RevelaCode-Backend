@@ -478,6 +478,43 @@ INDEX_DEFINITIONS = {
         ),
     ],
 
+    "jumuiya_automation_rules": [
+        (
+            [("business_id", ASCENDING), ("trigger_event", ASCENDING), ("enabled", ASCENDING), ("created_at", DESCENDING)],
+            {"name": "ix_biashara_automation_rules_trigger"},
+        ),
+    ],
+
+    "jumuiya_automation_runs": [
+        (
+            [("business_id", ASCENDING), ("run_key", ASCENDING)],
+            {"unique": True, "name": "uq_biashara_automation_run_key"},
+        ),
+        (
+            [("business_id", ASCENDING), ("created_at", DESCENDING)],
+            {"name": "ix_biashara_automation_runs_created"},
+        ),
+        (
+            [("business_id", ASCENDING), ("status", ASCENDING), ("created_at", DESCENDING)],
+            {"name": "ix_biashara_automation_runs_status"},
+        ),
+    ],
+
+    "jumuiya_automation_tasks": [
+        (
+            [("business_id", ASCENDING), ("task_key", ASCENDING)],
+            {"unique": True, "name": "uq_biashara_automation_task_key"},
+        ),
+        (
+            [("business_id", ASCENDING), ("status", ASCENDING), ("created_at", DESCENDING)],
+            {"name": "ix_biashara_automation_tasks_status"},
+        ),
+        (
+            [("business_id", ASCENDING), ("task_type", ASCENDING), ("status", ASCENDING), ("created_at", DESCENDING)],
+            {"name": "ix_biashara_automation_tasks_type_status"},
+        ),
+    ],
+
     "jumuiya_invoices": [
         (
             [("business_id", ASCENDING), ("invoice_number", ASCENDING)],
