@@ -192,10 +192,13 @@ class Collection:
                         if output_name == "_id":
                             continue
                         operation, field = next(iter(expression.items()))
-                        value = _get_path(doc, field.lstrip("$"))
-                        if isinstance(value, list):
-                            value = value[0] if value else 0
-                        value = 1 if value is _missing else value
+                        if isinstance(field, (int, float)):
+                            value = field
+                        else:
+                            value = _get_path(doc, field.lstrip("$"))
+                            if isinstance(value, list):
+                                value = value[0] if value else 0
+                            value = 1 if value is _missing else value
                         if operation == "$sum":
                             group[output_name] = group.get(output_name, 0) + value
                 rows = list(grouped.values())
