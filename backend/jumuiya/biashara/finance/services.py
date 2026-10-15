@@ -642,7 +642,7 @@ def void_invoice(user_id, invoice_id, reason=""):
 
 
 def _mark_payment_allocation(payment, invoice):
-    """Allocate only manual cash attestations or provider-verified payment events."""
+    """Allocate only attested cash or provider-verified receipts, respecting open STK reservations."""
     business_id = str(payment["business_id"])
     payment_id = payment["_id"]
     invoice_id = str(invoice["_id"])
@@ -673,38 +673,111 @@ def _mark_payment_allocation(payment, invoice):
             break
         if latest.get("status") != "issued":
             raise APIError("Payment cannot be allocated to a non-issued invoice.", 409, "invoice_not_payable")
-        total = int(latest.get("total_amount_minor", 0))
-        paid = int(latest.get("amount_paid_minor", 0))
-        if paid + amount_minor > total:
+
+        total = int(latest.get("total_amount_minor", 0) or 0)
+        paid = int(latest.get("amount_paid_minor", 0) or 0)
+        reservations = latest.get("pending_mpesa_reservations") or []
+        if not isinstance(reservations, list):
+            raise APIError("Invoice pending-payment reservation state is invalid.", 409, "invoice_reservation_state_invalid")
+        pending_sum = sum(
+            int(item.get("amount_minor", 0) or 0)
+            for item in reservations
+            if isinstance(item, dict)
+        )
+        pending_counter = int(latest.get("pending_mpesa_amount_minor", pending_sum) or 0)
+        if pending_counter != pending_sum:
+            raise APIError(
+                "Invoice pending-payment reservation totals do not reconcile. Review the invoice before allocating another payment.",
+                409,
+                "invoice_reservation_state_invalid",
+            )
+
+        own_reservation = None
+        if verified_mpesa and payment.get("source") == "mpesa_stk_push":
+            own_reservation = next(
+                (
+                    item for item in reservations
+                    if isinstance(item, dict)
+                    and str(item.get("reservation_key") or "") == payment_key
+                ),
+                None,
+            )
+        own_reserved_minor = int(own_reservation.get("amount_minor", 0) or 0) if own_reservation else 0
+        if own_reserved_minor > pending_counter:
+            raise APIError("Payment reservation amount is inconsistent.", 409, "invoice_reservation_state_invalid")
+        other_reserved_minor = pending_counter - own_reserved_minor
+
+        # Include every other open STK reservation in the budget. A manual
+        # receipt can be recorded but cannot consume balance already promised
+        # to another in-flight provider request.
+        if paid + amount_minor + other_reserved_minor > total:
             updated_payment = collection("jumuiya_payments").find_one_and_update(
                 {"_id": payment_id, "business_id": business_id},
-                {"$set": {"allocation_status": "allocation_conflict", "updated_at": now_utc()},
+                {"$set": {
+                    "allocation_status": "allocation_conflict",
+                    "allocation_conflict_reason": "invoice_balance_reserved_or_exceeded",
+                    "updated_at": now_utc(),
+                },
                  "$addToSet": {"outbox_event_manifest": _manifest(
-                     "payment:" + payment_key + ":allocation-conflict", "payment.allocation_conflict", "payment", payment_id,
-                     {"status": "allocation_conflict", "payment_status": payment.get("payment_status"),
-                      "amount_minor": amount_minor, "currency": payment.get("currency", "KES")},
+                     "payment:" + payment_key + ":allocation-conflict",
+                     "payment.allocation_conflict",
+                     "payment",
+                     payment_id,
+                     {"status": "allocation_conflict",
+                      "payment_status": payment.get("payment_status"),
+                      "amount_minor": amount_minor,
+                      "currency": payment.get("currency", "KES")},
                      payment.get("recorded_by_user_id")
                  )}},
                 return_document=ReturnDocument.AFTER
             ) or payment
             _dispatch("jumuiya_payments", business_id, payment_id)
+            if manual_cash:
+                _post_cash_payment_journal(updated_payment, payment.get("recorded_by_user_id") or "")
+            elif verified_mpesa:
+                _post_provider_payment_journal(updated_payment, payment.get("recorded_by_user_id") or "")
             return updated_payment
 
         new_paid = paid + amount_minor
         pay_state = "paid" if new_paid == total else "partially_paid"
         now = now_utc()
         event = _manifest(
-            "invoice:" + invoice_id + ":allocation:" + payment_key, "invoice.payment_allocated", "invoice", invoice_id,
+            "invoice:" + invoice_id + ":allocation:" + payment_key,
+            "invoice.payment_allocated",
+            "invoice",
+            invoice_id,
             {"status": "issued", "payment_status": pay_state, "amount_paid_minor": new_paid,
              "balance_due_minor": total - new_paid, "payment_id": str(payment_id),
              "amount_minor": amount_minor, "currency": latest.get("currency", "KES")},
             payment.get("recorded_by_user_id"), now
         )
+        update_query = {
+            "_id": latest["_id"],
+            "business_id": business_id,
+            "status": "issued",
+            "amount_paid_minor": paid,
+            "payment_allocation_keys": {"$ne": alloc_key},
+        }
+        if "pending_mpesa_amount_minor" in latest:
+            update_query["pending_mpesa_amount_minor"] = pending_counter
+        else:
+            update_query["pending_mpesa_amount_minor"] = {"$exists": False}
+
+        invoice_update = {
+            "$set": {"amount_paid_minor": new_paid, "payment_status": pay_state, "updated_at": now},
+            "$addToSet": {"payment_allocation_keys": alloc_key, "outbox_event_manifest": event},
+        }
+        reservation_consumed = bool(verified_mpesa and own_reserved_minor > 0)
+        if reservation_consumed:
+            update_query["pending_mpesa_reservations.reservation_key"] = payment_key
+            invoice_update["$pull"] = {
+                "pending_mpesa_reservations": {"reservation_key": payment_key}
+            }
+            invoice_update["$inc"] = {"pending_mpesa_amount_minor": -own_reserved_minor}
+
         updated_invoice = invoices.find_one_and_update(
-            {"_id": latest["_id"], "business_id": business_id, "status": "issued",
-             "amount_paid_minor": paid, "payment_allocation_keys": {"$ne": alloc_key}},
-            {"$set": {"amount_paid_minor": new_paid, "payment_status": pay_state, "updated_at": now},
-             "$addToSet": {"payment_allocation_keys": alloc_key, "outbox_event_manifest": event}},
+            update_query,
+            invoice_update,
             return_document=ReturnDocument.AFTER
         )
         if updated_invoice:
@@ -719,9 +792,16 @@ def _mark_payment_allocation(payment, invoice):
          "invoice_id": invoice_id},
         payment.get("recorded_by_user_id")
     )
+    payment_update_set = {
+        "allocation_status": "allocated",
+        "allocated_at": now_utc(),
+        "updated_at": now_utc(),
+    }
+    if reservation_consumed:
+        payment_update_set["provider_reservation_active"] = False
     updated_payment = collection("jumuiya_payments").find_one_and_update(
         {"_id": payment_id, "business_id": business_id},
-        {"$set": {"allocation_status": "allocated", "allocated_at": now_utc(), "updated_at": now_utc()},
+        {"$set": payment_update_set,
          "$addToSet": {"outbox_event_manifest": payment_event}},
         return_document=ReturnDocument.AFTER
     ) or payment
@@ -732,7 +812,6 @@ def _mark_payment_allocation(payment, invoice):
     elif verified_mpesa:
         _post_provider_payment_journal(updated_payment, payment.get("recorded_by_user_id") or "")
     return updated_payment
-
 
 def record_payment(user_id, invoice_id, payload, idempotency_key):
     """Persist payment evidence; only manual cash attestation affects invoice balance."""
