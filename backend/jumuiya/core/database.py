@@ -421,6 +421,17 @@ INDEX_DEFINITIONS = {
             ],
             {"name": "ix_sales_business_sold"},
         ),
+        (
+            [
+                ("business_id", ASCENDING),
+                ("idempotency_key", ASCENDING),
+            ],
+            {
+                "unique": True,
+                "name": "uq_sales_business_idempotency",
+                "partialFilterExpression": {"idempotency_key": {"$type": "string"}},
+            },
+        ),
     ],
 
     "jumuiya_expenses": [
