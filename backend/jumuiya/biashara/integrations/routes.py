@@ -90,7 +90,7 @@ def verify_whatsapp_webhook(connection_id):
 def receive_provider_webhook(connection_id):
     if request.content_length is not None and request.content_length > webhooks.MAX_WEBHOOK_BODY_BYTES:
         raise APIError("Webhook body exceeds the allowed size.", 413, "webhook_body_too_large")
-    raw_body = request.get_data(cache=False, as_text=False)
+    raw_body = request.stream.read(webhooks.MAX_WEBHOOK_BODY_BYTES + 1)
     result = webhooks.receive_webhook(connection_id, raw_body, request.headers)
     return ok(result, "Webhook signature verified and event safely queued for review.")
 
