@@ -600,6 +600,13 @@ def customer_payload(data):
             "notes",
             max_len=1000,
         ),
+
+        # Optional for existing clients; use Idempotency-Key for safe retries.
+        "idempotency_key": _text(
+            data,
+            "idempotency_key",
+            max_len=128,
+        ),
     }
 
 
