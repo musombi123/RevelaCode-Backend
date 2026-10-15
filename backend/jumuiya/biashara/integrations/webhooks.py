@@ -166,7 +166,7 @@ def receive_webhook(connection_id, raw_body, headers):
             if isinstance(interim, dict):
                 event_object = str(interim.get("object") or "webhook").strip().lower()
                 if re.fullmatch(r"[a-z0-9._-]{1,80}", event_object):
-                    event_type_value = "whatsapp." + event_object
+                    event_type_value = event_object
         except (UnicodeDecodeError, json.JSONDecodeError):
             interim = None
         event_type = event_type_value or "whatsapp.webhook"
