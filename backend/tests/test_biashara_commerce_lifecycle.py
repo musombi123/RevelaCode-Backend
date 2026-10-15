@@ -627,3 +627,49 @@ def test_cashier_can_record_pos_sale_without_order_management_permission(commerc
     assert commerce_db["product"]["stock_quantity"] == 4
     assert commerce_db["product"]["reserved_quantity"] == 0
 
+def test_zero_delta_stock_set_still_records_idempotency_and_cannot_be_reapplied_later(commerce_db):
+    first = services.inventory_adjustment(
+        "owner-1",
+        str(commerce_db["product_id"]),
+        {
+            "movement_type": "set",
+            "quantity": 5,
+            "reason": "opening_count_confirmed",
+            "idempotency_key": "stock-set-noop-0001",
+        },
+    )
+    replay = services.inventory_adjustment(
+        "owner-1",
+        str(commerce_db["product_id"]),
+        {
+            "movement_type": "set",
+            "quantity": 5,
+            "reason": "opening_count_confirmed",
+            "idempotency_key": "stock-set-noop-0001",
+        },
+    )
+
+    assert first["movement"]["id"] == replay["movement"]["id"]
+    assert first["replayed"] is False
+    assert replay["replayed"] is True
+    assert first["movement"]["previous_stock_quantity"] == 5
+    assert first["movement"]["new_stock_quantity"] == 5
+    assert len(commerce_db["movements"].documents) == 1
+
+    # Even a no-op set consumed the idempotency key. It cannot later be reused
+    # to overwrite a different stock state after another transaction occurs.
+    commerce_db["products"].documents[0]["stock_quantity"] = 4
+    with pytest.raises(APIError) as raised:
+        services.inventory_adjustment(
+            "owner-1",
+            str(commerce_db["product_id"]),
+            {
+                "movement_type": "set",
+                "quantity": 6,
+                "reason": "opening_count_confirmed",
+                "idempotency_key": "stock-set-noop-0001",
+            },
+        )
+    assert raised.value.code == "idempotency_key_reused"
+    assert commerce_db["products"].documents[0]["stock_quantity"] == 4
+
