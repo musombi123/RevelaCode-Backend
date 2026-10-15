@@ -1,15 +1,26 @@
 from copy import deepcopy
-import os
+import sys
+import types
 from types import SimpleNamespace
-
-# The service module imports the platform database configuration at import time.
-# No live connection is used: every collection is replaced by an in-memory fake.
-os.environ.setdefault("MONGO_URI", "mongodb://127.0.0.1:27017/biashara_test")
 
 import pytest
 from bson import ObjectId
 
-from backend.jumuiya.biashara import services
+# backend.db performs a connection ping at import time. Isolate that bootstrap
+# here because all service collections are replaced with in-memory fakes below.
+_missing_module = object()
+_original_db_module = sys.modules.get("backend.db", _missing_module)
+_test_db_module = types.ModuleType("backend.db")
+_test_db_module.get_db = lambda: None
+sys.modules["backend.db"] = _test_db_module
+try:
+    from backend.jumuiya.biashara import services
+finally:
+    if _original_db_module is _missing_module:
+        sys.modules.pop("backend.db", None)
+    else:
+        sys.modules["backend.db"] = _original_db_module
+
 from backend.jumuiya.core.errors import APIError
 
 
