@@ -263,3 +263,84 @@ def test_owner_membership_migration_supports_dry_run_apply_and_orphan_reporting(
     assert repeated["owner_memberships_created"] == 0
     assert repeated["owner_memberships_existing"] == 3
     assert len(tenancy_db["data"][tenancy.MEMBERSHIPS_COLLECTION].documents) == 3
+
+def test_owner_membership_migration_preserves_prior_state_for_reviewable_rollback(tenancy_db):
+    business_id = str(tenancy_db["business_one"])
+    membership = {
+        "_id": ObjectId("64b000000000000000000221"),
+        "business_id": business_id,
+        "user_id": "owner-1",
+        "role": "cashier",
+        "status": "active",
+        "permissions_snapshot": ["business.view"],
+        "source": "team_membership_action_v1",
+        "created_at": "2026-01-05",
+        "joined_at": "2026-01-05",
+        "revoked_at": None,
+    }
+    tenancy_db["data"][tenancy.MEMBERSHIPS_COLLECTION].documents.append(membership)
+
+    dry = migration.run_owner_membership_migration(dry_run=True, limit=50)
+    assert dry["owner_memberships_repaired"] == 1
+    assert dry["owner_memberships_would_create"] == 2
+    assert membership["role"] == "cashier"
+
+    applied = migration.run_owner_membership_migration(dry_run=False, limit=50)
+    assert applied["owner_memberships_repaired"] == 1
+    saved = tenancy_db["data"][tenancy.MEMBERSHIPS_COLLECTION].find_one({
+        "business_id": business_id,
+        "user_id": "owner-1",
+    })
+    assert saved["role"] == "owner"
+    assert saved["source"] == migration.OWNER_MEMBERSHIP_SOURCE
+    assert saved["migration_previous_state"]["role"] == "cashier"
+    assert saved["migration_previous_state"]["source"] == "team_membership_action_v1"
+
+    rollback = migration.plan_owner_membership_rollback(limit=50)
+    candidate = next(row for row in rollback["rollback_candidates"] if row["business_id"] == business_id)
+    assert candidate["action"] == "restore_previous_state"
+    assert rollback["automatic_rollback_performed"] is False
+
+
+def test_migration_rollback_plan_skips_malformed_business_ids_without_writes(tenancy_db):
+    migration.run_owner_membership_migration(dry_run=False, limit=50)
+    malformed = {
+        "_id": ObjectId("64b000000000000000000222"),
+        "business_id": "zzzzzzzzzzzzzzzzzzzzzzzz",
+        "user_id": "owner-unknown",
+        "role": "owner",
+        "status": "active",
+        "source": migration.OWNER_MEMBERSHIP_SOURCE,
+        "created_at": "2026-10-15",
+    }
+    memberships = tenancy_db["data"][tenancy.MEMBERSHIPS_COLLECTION]
+    memberships.documents.append(malformed)
+    before = deepcopy(memberships.documents)
+
+    rollback = migration.plan_owner_membership_rollback(limit=50)
+
+    assert rollback["automatic_rollback_performed"] is False
+    assert rollback["scan_truncated"] is False
+    assert any(
+        row["reason"] == "owner_relationship_changed_or_business_missing"
+        and row["business_id"] == "zzzzzzzzzzzzzzzzzzzzzzzz"
+        for row in rollback["skipped"]
+    )
+    assert memberships.documents == before
+
+
+def test_application_bootstrap_membership_is_not_mislabelled_for_rollback(tenancy_db):
+    business = tenancy_db["data"]["jumuiya_businesses"].find_one({
+        "_id": tenancy_db["business_one"],
+    })
+    tenancy.ensure_owner_membership(business, actor_user_id="owner-1")
+
+    membership = tenancy_db["data"][tenancy.MEMBERSHIPS_COLLECTION].find_one({
+        "business_id": str(tenancy_db["business_one"]),
+        "user_id": "owner-1",
+    })
+    assert membership["source"] == "owner_access_bootstrap_v1"
+
+    rollback = migration.plan_owner_membership_rollback(limit=50)
+    assert rollback["rollback_candidates"] == []
+
