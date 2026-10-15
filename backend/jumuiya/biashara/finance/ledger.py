@@ -27,6 +27,8 @@ CHART_OF_ACCOUNTS = {
     "accounts_receivable": {"name": "Accounts receivable", "type": "asset"},
     "cash_on_hand": {"name": "Cash on hand", "type": "asset"},
     "sales_revenue_unclassified": {"name": "Commercial revenue (tax classification pending)", "type": "income"},
+    "operating_expense": {"name": "Operating expense", "type": "expense"},
+    "expense_settlement_unclassified": {"name": "Expense funding or payable (classification pending)", "type": "liability"},
 }
 
 LEDGER_BASIS_WARNING = (
