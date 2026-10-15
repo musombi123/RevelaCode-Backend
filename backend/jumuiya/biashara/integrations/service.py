@@ -445,3 +445,32 @@ def set_connection_enabled(user_id, connection_id, enabled):
         "enabled": enabled,
     })
     return _public_connection(updated)
+
+def delete_connection(user_id, connection_id):
+    """Remove the encrypted configuration for a tenant-owned connection."""
+    _context, business_id = _business(user_id, "integration.manage")
+    connections = collection(CONNECTIONS_COLLECTION)
+    current = connections.find_one({
+        "_id": _clean_id(connection_id),
+        "business_id": business_id,
+    })
+    if not current:
+        raise APIError("Integration connection not found.", 404, "integration_connection_not_found")
+    result = connections.delete_one({
+        "_id": current["_id"],
+        "business_id": business_id,
+        "updated_at": current.get("updated_at"),
+    })
+    if not getattr(result, "deleted_count", 0):
+        raise APIError("Integration connection changed while deleting. Reload and retry.", 409, "integration_connection_conflict")
+    log_action(user_id, "biashara.integration_connection_deleted", "integration_connection", current["_id"], {
+        "provider": current.get("provider"),
+        "enabled": bool(current.get("enabled")),
+        "credentials_removed": bool(current.get("credentials_ciphertext")),
+    })
+    return {
+        "id": str(current["_id"]),
+        "status": "deleted",
+        "encrypted_credentials_removed": bool(current.get("credentials_ciphertext")),
+    }
+
