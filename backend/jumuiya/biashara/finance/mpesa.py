@@ -490,15 +490,218 @@ def _release_payment_reservation(payment):
     return released
 
 
+def _submit_stk_intent(user_id, business_id, invoice, payment, connection, metadata, credentials, phone, token):
+    """Resume a known-not-submitted intent or submit it exactly once."""
+    payments = collection(PAYMENTS_COLLECTION)
+    payment_id = payment["_id"]
+    internal_key = str(payment["idempotency_key"])
+
+    try:
+        _reserve_invoice_balance(
+            business_id,
+            str(invoice["_id"]),
+            internal_key,
+            int(payment["amount_minor"]),
+        )
+    except APIError as error:
+        # Reservation failure happens before any STK POST. A marker left by a
+        # previous safe-pre-submit attempt can therefore be released.
+        _release_invoice_reservation(business_id, str(invoice["_id"]), internal_key)
+        now = now_utc()
+        payments.update_one(
+            {
+                "_id": payment_id,
+                "business_id": str(business_id),
+                "payment_status": "provider_requesting",
+                "provider_request_status": {"$in": ["reservation_pending", "ready_to_submit"]},
+            },
+            {"$set": {
+                "payment_status": "provider_request_rejected",
+                "provider_request_status": "rejected",
+                "verification_status": "provider_request_rejected",
+                "provider_reservation_active": False,
+                "provider_error_code": error.code,
+                "updated_at": now,
+            }},
+        )
+        failed = payments.find_one({"_id": payment_id, "business_id": str(business_id)}) or payment
+        failed_event = _payment_event(
+            failed,
+            "payment:" + internal_key + ":stk-request-result",
+            "payment.stk_push_request_result",
+            {
+                "status": failed.get("provider_request_status"),
+                "payment_status": failed.get("payment_status"),
+                "payment_method": "mpesa",
+                "amount_minor": int(payment["amount_minor"]),
+                "currency": "KES",
+            },
+            user_id,
+        )
+        payments.update_one(
+            {"_id": payment_id, "business_id": str(business_id)},
+            {"$addToSet": {"outbox_event_manifest": failed_event},
+             "$set": {"provider_reservation_active": False}},
+        )
+        _dispatch_payment(payment_id, business_id)
+        raise
+
+    ready = payments.find_one_and_update(
+        {
+            "_id": payment_id,
+            "business_id": str(business_id),
+            "payment_status": "provider_requesting",
+            "provider_request_status": {"$in": ["reservation_pending", "ready_to_submit"]},
+        },
+        {"$set": {
+            "provider_request_status": "ready_to_submit",
+            "provider_reservation_active": True,
+            "updated_at": now_utc(),
+        }},
+        return_document=ReturnDocument.AFTER,
+    )
+    if not ready:
+        current = payments.find_one({"_id": payment_id, "business_id": str(business_id)})
+        if current and current.get("checkout_request_id"):
+            return _public_payment_intent(current)
+        raise APIError(
+            "The M-Pesa request is no longer in a safe pre-submit state. It was not submitted again.",
+            409,
+            "mpesa_request_state_conflict",
+        )
+
+    # This transition is the point-of-no-automatic-retry. A crash after the
+    # state change but before/during POST is ambiguous; replay must not send
+    # another customer prompt.
+    submitting = payments.find_one_and_update(
+        {
+            "_id": payment_id,
+            "business_id": str(business_id),
+            "payment_status": "provider_requesting",
+            "provider_request_status": "ready_to_submit",
+            "provider_reservation_active": True,
+        },
+        {"$set": {
+            "provider_request_status": "submitting",
+            "updated_at": now_utc(),
+        }},
+        return_document=ReturnDocument.AFTER,
+    )
+    if not submitting:
+        raise APIError(
+            "The M-Pesa request changed before submission. No additional prompt was sent.",
+            409,
+            "mpesa_request_state_conflict",
+        )
+
+    try:
+        request_result = _issue_stk_request(
+            connection, metadata, credentials, submitting, invoice, phone, token
+        )
+    except APIError as error:
+        details = error.details or {}
+        ambiguous = bool(details.get("outcome_may_be_unknown")) or error.code == "mpesa_request_outcome_unknown"
+        now = now_utc()
+        next_status = "provider_request_unknown" if ambiguous else "provider_request_rejected"
+        request_status = "outcome_unknown" if ambiguous else "rejected"
+        payments.update_one(
+            {
+                "_id": payment_id,
+                "business_id": str(business_id),
+                "payment_status": "provider_requesting",
+                "provider_request_status": "submitting",
+            },
+            {"$set": {
+                "payment_status": next_status,
+                "provider_request_status": request_status,
+                "verification_status": "provider_request_outcome_unknown" if ambiguous else "provider_request_rejected",
+                "provider_error_code": error.code,
+                "provider_result_code": details.get("provider_response_code"),
+                "updated_at": now,
+            }},
+        )
+        if not ambiguous:
+            _release_payment_reservation(
+                payments.find_one({"_id": payment_id, "business_id": str(business_id)}) or submitting
+            )
+        failed = payments.find_one({"_id": payment_id, "business_id": str(business_id)}) or submitting
+        failed_event = _payment_event(
+            failed,
+            "payment:" + internal_key + ":stk-request-result",
+            "payment.stk_push_request_result",
+            {
+                "status": failed.get("provider_request_status"),
+                "payment_status": failed.get("payment_status"),
+                "payment_method": "mpesa",
+                "amount_minor": int(payment["amount_minor"]),
+                "currency": "KES",
+            },
+            user_id,
+        )
+        payments.update_one(
+            {"_id": payment_id, "business_id": str(business_id)},
+            {"$addToSet": {"outbox_event_manifest": failed_event}},
+        )
+        _dispatch_payment(payment_id, business_id)
+        raise
+
+    now = now_utc()
+    updated = payments.find_one_and_update(
+        {
+            "_id": payment_id,
+            "business_id": str(business_id),
+            "payment_status": "provider_requesting",
+            "provider_request_status": "submitting",
+        },
+        {"$set": {
+            "payment_status": "pending_provider_confirmation",
+            "provider_request_status": "accepted",
+            "verification_status": "provider_pending",
+            "checkout_request_id": request_result["checkout_request_id"],
+            "merchant_request_id": request_result["merchant_request_id"],
+            "customer_message": request_result["customer_message"],
+            "updated_at": now,
+        }},
+        return_document=ReturnDocument.AFTER,
+    )
+    if not updated:
+        raise APIError(
+            "M-Pesa accepted the request but its persisted state changed; review the request before retrying.",
+            409,
+            "mpesa_request_state_conflict",
+        )
+    _dispatch_payment(payment_id, business_id)
+
+    # A callback can race the outbound response write. Keep early callbacks
+    # pending and match them once the provider's request IDs have been saved.
+    pending = collection(CALLBACKS_COLLECTION).find({
+        "business_id": str(business_id),
+        "connection_id": str(connection["_id"]),
+        "checkout_request_id": request_result["checkout_request_id"],
+        "status": "pending_match",
+    }).limit(5)
+    for callback in pending:
+        _apply_callback_event(callback)
+
+    current = payments.find_one({"_id": payment_id, "business_id": str(business_id)}) or updated
+    log_action(user_id, "biashara.mpesa_stk_requested", "payment", payment_id, {
+        "invoice_id": str(invoice["_id"]),
+        "amount_minor": int(payment["amount_minor"]),
+        "environment": metadata["environment"],
+        "request_status": current.get("provider_request_status"),
+    })
+    return _public_payment_intent(current)
+
+
 def start_stk_push(user_id, invoice_id, payload, idempotency_key):
-    """Create one STK request intent; network retries never generate a second prompt."""
+    """Create one STK request intent; ambiguous submissions are never auto-retried."""
     context = require_permission(user_id, "finance.manage")
     business_id = str(context.get("id") or "")
     if not business_id:
         raise APIError("Selected business is unavailable.", 409, "business_id_missing")
-
     if not isinstance(payload, dict):
         raise APIError("JSON request body is required.", 400, "invalid_json")
+
     raw_key = str(idempotency_key or "").strip()
     if not IDEMPOTENCY_RE.fullmatch(raw_key):
         raise APIError("Provide an Idempotency-Key of 8–128 safe characters.", 422, "invalid_idempotency_key")
@@ -529,14 +732,28 @@ def start_stk_push(user_id, invoice_id, payload, idempotency_key):
             "provider_confirmed", "provider_failed", "provider_request_rejected",
         }:
             return _public_payment_intent(prior)
+        # A request can be resumed only if it is known to be before the network
+        # submission boundary. 'submitting' and 'outcome_unknown' fail closed.
+        if (
+            prior.get("payment_status") == "provider_requesting"
+            and prior.get("provider_request_status") in {"reservation_pending", "ready_to_submit"}
+        ):
+            require_permission(user_id, "integration.view", business_id=business_id)
+            connection, metadata, credentials = _connection(business_id, connection_id, enabled=True)
+            _public_callback_base()
+            _allowed_callback_ips()
+            token = _access_token(credentials, metadata["environment"])
+            return _submit_stk_intent(
+                user_id, business_id, invoice, prior, connection, metadata, credentials, phone, token
+            )
         raise APIError(
-            "The previous M-Pesa request has no definitive outcome. Reuse the same key only after checking its status; a new prompt was not sent.",
+            "The previous M-Pesa request may have reached Safaricom. Check its status or reconcile the callback; it was not sent again.",
             409,
             "mpesa_request_outcome_unknown",
         )
 
-    # Only a genuinely new request is checked against the current invoice balance
-    # and live connection configuration. Replays return the original durable result.
+    # Validate the current commercial balance before creating the intent. The
+    # reservation CAS below includes other outstanding STK requests.
     if invoice.get("status") != "issued":
         raise APIError("M-Pesa payments can only be requested for issued invoices.", 409, "invoice_not_payable")
     if str(invoice.get("currency") or "KES").upper() != "KES":
@@ -549,16 +766,16 @@ def start_stk_push(user_id, invoice_id, payload, idempotency_key):
 
     require_permission(user_id, "integration.view", business_id=business_id)
     connection, metadata, credentials = _connection(business_id, connection_id, enabled=True)
-    # Validate all required deployment settings before creating a durable request intent.
     _public_callback_base()
     _allowed_callback_ips()
-    # OAuth is read-only. If this fails, do not create a dangling payment intent.
+    # OAuth is read-only. Do not persist a payment intent if credentials are invalid.
     token = _access_token(credentials, metadata["environment"])
+
     now = now_utc()
     payment_id = ObjectId()
     document = {
         "_id": payment_id,
-        "business_id": business_id,
+        "business_id": str(business_id),
         "invoice_id": str(invoice["_id"]),
         "order_id": str(invoice.get("source_order_id") or ""),
         "idempotency_key": internal_key,
@@ -573,7 +790,8 @@ def start_stk_push(user_id, invoice_id, payload, idempotency_key):
         "provider_name": "mpesa_daraja",
         "provider_connection_id": str(connection["_id"]),
         "provider_event_id": None,
-        "provider_request_status": "requesting",
+        "provider_request_status": "reservation_pending",
+        "provider_reservation_active": False,
         "checkout_request_id": None,
         "merchant_request_id": None,
         "provider_phone_hash": phone_hash,
@@ -594,93 +812,38 @@ def start_stk_push(user_id, invoice_id, payload, idempotency_key):
         document,
         "payment:" + internal_key + ":stk-requested",
         "payment.stk_push_requested",
-        {"status": "requesting", "payment_status": "provider_requesting",
-         "payment_method": "mpesa", "amount_minor": amount_minor, "currency": "KES",
-         "invoice_id": str(invoice["_id"]), "connection_id": str(connection["_id"])},
+        {
+            "status": "reservation_pending",
+            "payment_status": "provider_requesting",
+            "payment_method": "mpesa",
+            "amount_minor": amount_minor,
+            "currency": "KES",
+            "invoice_id": str(invoice["_id"]),
+            "connection_id": str(connection["_id"]),
+        },
         user_id,
     )
     document["outbox_event_manifest"] = [event]
     try:
         payments.insert_one(document)
     except DuplicateKeyError:
-        prior = payments.find_one({"business_id": business_id, "idempotency_key": internal_key})
+        prior = payments.find_one({"business_id": str(business_id), "idempotency_key": internal_key})
         if prior and prior.get("request_fingerprint") == fingerprint:
-            if prior.get("checkout_request_id"):
+            if prior.get("checkout_request_id") or prior.get("payment_status") in {
+                "provider_confirmed", "provider_failed", "provider_request_rejected",
+            }:
                 return _public_payment_intent(prior)
-            raise APIError("The prior request has no definitive result. It was not sent again.", 409, "mpesa_request_outcome_unknown")
+            raise APIError(
+                "The payment intent already exists. Retry with the same Idempotency-Key to safely resume only if it was not submitted.",
+                409,
+                "mpesa_request_outcome_unknown",
+            )
         raise APIError("M-Pesa idempotency key conflicts with a different request.", 409, "idempotency_key_reused")
+
     _dispatch_payment(payment_id, business_id)
-
-    try:
-        request_result = _issue_stk_request(connection, metadata, credentials, document, invoice, phone, token)
-    except APIError as error:
-        details = error.details or {}
-        ambiguous = bool(details.get("outcome_may_be_unknown")) or error.code == "mpesa_request_outcome_unknown"
-        now = now_utc()
-        payments.update_one(
-            {"_id": payment_id, "business_id": business_id, "payment_status": "provider_requesting"},
-            {"$set": {
-                "payment_status": "provider_request_unknown" if ambiguous else "provider_request_rejected",
-                "provider_request_status": "outcome_unknown" if ambiguous else "rejected",
-                "verification_status": "provider_request_outcome_unknown" if ambiguous else "provider_request_rejected",
-                "provider_error_code": error.code,
-                "provider_result_code": details.get("provider_response_code"),
-                "updated_at": now,
-            }},
-        )
-        failed = payments.find_one({"_id": payment_id, "business_id": business_id}) or document
-        failed_event = _payment_event(
-            failed,
-            "payment:" + internal_key + ":stk-request-result",
-            "payment.stk_push_request_result",
-            {"status": failed.get("provider_request_status"),
-             "payment_status": failed.get("payment_status"),
-             "payment_method": "mpesa", "amount_minor": amount_minor, "currency": "KES"},
-            user_id,
-        )
-        payments.update_one(
-            {"_id": payment_id, "business_id": business_id},
-            {"$addToSet": {"outbox_event_manifest": failed_event}},
-        )
-        _dispatch_payment(payment_id, business_id)
-        raise
-
-    now = now_utc()
-    updated = payments.find_one_and_update(
-        {"_id": payment_id, "business_id": business_id, "payment_status": "provider_requesting"},
-        {"$set": {
-            "payment_status": "pending_provider_confirmation",
-            "provider_request_status": "accepted",
-            "verification_status": "provider_pending",
-            "checkout_request_id": request_result["checkout_request_id"],
-            "merchant_request_id": request_result["merchant_request_id"],
-            "customer_message": request_result["customer_message"],
-            "updated_at": now,
-        }},
-        return_document=ReturnDocument.AFTER,
+    return _submit_stk_intent(
+        user_id, business_id, invoice, document, connection, metadata, credentials, phone, token
     )
-    if not updated:
-        raise APIError("M-Pesa request intent changed while saving the provider response.", 409, "mpesa_request_state_conflict")
-    _dispatch_payment(payment_id, business_id)
-
-    # A callback can race the outbound response write. Any already received
-    # event remains pending_match and is retried now that IDs are persisted.
-    pending = collection(CALLBACKS_COLLECTION).find({
-        "business_id": business_id,
-        "connection_id": str(connection["_id"]),
-        "checkout_request_id": request_result["checkout_request_id"],
-        "status": "pending_match",
-    }).limit(5)
-    for callback in pending:
-        _apply_callback_event(callback)
-    current = payments.find_one({"_id": payment_id, "business_id": business_id}) or updated
-    log_action(user_id, "biashara.mpesa_stk_requested", "payment", payment_id, {
-        "invoice_id": str(invoice["_id"]),
-        "amount_minor": amount_minor,
-        "environment": metadata["environment"],
-        "request_status": current.get("provider_request_status"),
-    })
-    return _public_payment_intent(current)
 
 
 def _callback_metadata(callback):
