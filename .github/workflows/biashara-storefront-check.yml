@@ -35,4 +35,4 @@ jobs:
       - name: Run Biashara storefront tests
         env:
           PYTHONPATH: backend
-        run: python -m compileall -q backend/jumuiya/biashara backend/jumuiya/core && python -m pytest -q backend/tests/test_biashara_website.py backend/tests/test_schemas.py backend/tests/test_biashara_commerce_lifecycle.py backend/tests/test_biashara_outbox.py backend/tests/test_biashara_finance.py backend/tests/test_biashara_automation.py
+        run: python -m compileall -q backend/jumuiya/biashara backend/jumuiya/core && python -m pytest -q backend/tests/test_biashara_website.py backend/tests/test_schemas.py backend/tests/test_biashara_commerce_lifecycle.py backend/tests/test_biashara_outbox.py backend/tests/test_biashara_finance.py backend/tests/test_biashara_automation.py backend/tests/test_biashara_tenancy.py
