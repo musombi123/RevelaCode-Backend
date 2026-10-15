@@ -192,7 +192,7 @@ def _context_from_documents(business, membership):
     allowed_fields = (
         "name", "slug", "description", "business_type", "category",
         "phone", "email", "location", "county", "logo_url", "currency",
-        "payment_methods", "opening_hours", "status", "profile_complete",
+        "payment_methods", "opening_hours", "website", "status", "profile_complete",
         "created_at", "updated_at",
     )
     result = {"id": str(business.get("_id") or business.get("id") or "")}
