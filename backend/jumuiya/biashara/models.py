@@ -257,6 +257,13 @@ def product_document(
             )
         ),
 
+        # Physical stock on hand is separate from stock reserved for open orders.
+        "reserved_quantity": 0.0,
+
+        # Temporary per-order markers make reservations recoverable after a
+        # process crash without allowing the same order to reserve twice.
+        "active_reservations": [],
+
         "low_stock_threshold": float(
             payload.get(
                 "low_stock_threshold",
