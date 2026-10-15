@@ -317,3 +317,26 @@ def test_invoice_cannot_be_issued_after_void_or_voided_with_allocated_payment(fi
     with pytest.raises(APIError) as raised:
         finance.void_invoice("owner-1", issued["id"], "mistake")
     assert raised.value.code == "invoice_has_allocated_payments"
+
+def test_invoice_lookup_is_scoped_to_current_business(finance_db, monkeypatch):
+    draft = _draft_invoice(finance_db)
+    monkeypatch.setattr(biashara, "_require_business", lambda user_id: {
+        "id": "different-business", "currency": "KES"
+    })
+    with pytest.raises(APIError) as raised:
+        finance.get_invoice("other-owner", draft["id"])
+    assert raised.value.code == "invoice_not_found"
+
+
+def test_invoice_cannot_be_voided_while_external_payment_evidence_is_unverified(finance_db):
+    draft = _draft_invoice(finance_db)
+    invoice = finance.issue_invoice("owner-1", draft["id"])
+    finance.record_payment(
+        "owner-1", invoice["id"],
+        {"amount": "25.00", "payment_method": "mpesa", "reference": "unverified-reference"},
+        "mpesa-payment-0002",
+    )
+    with pytest.raises(APIError) as raised:
+        finance.void_invoice("owner-1", invoice["id"], "mistake")
+    assert raised.value.code == "invoice_has_unresolved_payment"
+
