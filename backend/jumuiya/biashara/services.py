@@ -1979,8 +1979,14 @@ def _consume_order_inventory(order, user_id):
     )
 
 
-def update_order_status(user_id, order_id, status):
-    """Apply legal order transitions and make stock effects recoverable."""
+def update_order_status(user_id, order_id, status, _internal=False):
+    """Apply legal order transitions and make stock effects recoverable.
+
+    Public service calls require orders.manage. A POS sale can use the same
+    transition logic after its own sales.create permission is checked.
+    """
+    if not isinstance(_internal, bool):
+        raise APIError("Internal transition flag is invalid.", 422, "invalid_order_transition")
     transitions = {
         "pending": {"confirmed", "cancelled"},
         "confirmed": {"processing", "cancelled"},
@@ -1991,7 +1997,11 @@ def update_order_status(user_id, order_id, status):
     if not isinstance(status, str) or status not in transitions:
         raise APIError("Invalid order status.", 422, "invalid_order_status")
 
-    business = _require_business(user_id)
+    business = (
+        _require_business(user_id)
+        if _internal
+        else _require_business_with_permission(user_id, "orders.manage")
+    )
     orders = collection("jumuiya_orders")
     document = orders.find_one({
         "_id": clean_id(order_id),
@@ -2235,10 +2245,10 @@ def _complete_order_for_manual_sale(order, user_id):
     if status == "cancelled":
         raise APIError("A cancelled order cannot be recorded as a sale.", 409, "cancelled_order_sale")
     if status == "pending":
-        order = update_order_status(user_id, order_id, "confirmed")
+        order = update_order_status(user_id, order_id, "confirmed", _internal=True)
         status = str(order.get("status") or "").lower()
     if status == "confirmed":
-        order = update_order_status(user_id, order_id, "processing")
+        order = update_order_status(user_id, order_id, "processing", _internal=True)
         status = str(order.get("status") or "").lower()
     elif status == "processing":
         # Repair a prior interrupted reservation-consumption step safely.
@@ -2250,7 +2260,7 @@ def _complete_order_for_manual_sale(order, user_id):
 
     status = str(order.get("status") or status).lower()
     if status == "processing":
-        order = update_order_status(user_id, order_id, "completed")
+        order = update_order_status(user_id, order_id, "completed", _internal=True)
     elif status != "completed":
         raise APIError("Order is not in a saleable lifecycle state.", 409, "invalid_sale_order_state")
 
