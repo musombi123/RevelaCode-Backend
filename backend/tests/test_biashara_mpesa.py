@@ -86,7 +86,10 @@ def _matches(document, query):
                         return False
                 else:
                     raise AssertionError("Unsupported fake Mongo operator: " + operator)
-        elif actual is _missing or actual != expected:
+        elif actual is _missing or (
+            actual != expected
+            and not (isinstance(actual, list) and expected in actual)
+        ):
             return False
     return True
 
