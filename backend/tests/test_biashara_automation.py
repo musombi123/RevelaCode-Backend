@@ -172,6 +172,22 @@ def automation_db(monkeypatch):
     }
     monkeypatch.setattr(automation, "collection", lambda name: data[name])
     monkeypatch.setattr(automation, "log_action", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        automation,
+        "require_permission",
+        lambda user_id, permission, business_id=None: {
+            "id": business_id or ("business-1" if user_id != "other-owner" else "business-2"),
+            "permissions": ["*"],
+        },
+    )
+    monkeypatch.setattr(
+        automation,
+        "get_business_context",
+        lambda user_id, business_id=None: {
+            "id": business_id or ("business-1" if user_id != "other-owner" else "business-2"),
+            "permissions": ["*"],
+        },
+    )
     monkeypatch.setattr(biashara, "_require_business", lambda user_id: {
         "id": "business-1" if user_id != "other-owner" else "business-2",
         "currency": "KES",
