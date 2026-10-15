@@ -32,6 +32,7 @@ SOURCE_COLLECTIONS = (
     "jumuiya_orders",
     "jumuiya_sales",
     "jumuiya_inventory_movements",
+    "jumuiya_products",
 )
 
 OUTBOX_STATES = {"pending", "processing", "retry", "delivered", "dead_letter"}
@@ -62,6 +63,12 @@ SAFE_PAYLOAD_FIELDS = {
     "reason",
     "previous_quantity",
     "new_quantity",
+    "price_minor",
+    "cost_minor",
+    "stock_quantity",
+    "reserved_quantity",
+    "available_quantity",
+    "sku",
 }
 
 
