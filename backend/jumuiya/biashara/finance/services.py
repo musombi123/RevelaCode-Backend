@@ -375,6 +375,18 @@ def void_invoice(user_id, invoice_id, reason=""):
     if int(invoice.get("amount_paid_minor", 0) or 0) > 0:
         raise APIError("An invoice with allocated payments cannot be voided. Record a refund or credit-note workflow instead.", 409, "invoice_has_allocated_payments")
 
+    unresolved_payment = collection("jumuiya_payments").find_one({
+        "business_id": business_id,
+        "invoice_id": str(invoice.get("_id") or invoice.get("id")),
+        "allocation_status": {"$in": ["pending", "not_allocated_pending_verification", "allocated"]},
+    })
+    if unresolved_payment:
+        raise APIError(
+            "This invoice has payment evidence that must be resolved before voiding.",
+            409,
+            "invoice_has_unresolved_payment",
+        )
+
     now = now_utc()
     event = _manifest(
         "invoice:" + str(invoice["_id"]) + ":voided", "invoice.voided", "invoice", invoice["_id"],
