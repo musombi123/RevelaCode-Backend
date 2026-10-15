@@ -69,7 +69,12 @@ def retry_sync_event(event_id):
 def repair_pending_sync_manifests():
     user_id = current_user_id()
     business = services._require_business(user_id)
-    report = repair_outbox_manifests(business_id=business["id"], limit=100)
+    inventory_report = services.repair_pending_inventory_movements(user_id, limit=100)
+    outbox_report = repair_outbox_manifests(business_id=business["id"], limit=100)
+    report = {
+        "inventory_recovery": inventory_report,
+        "outbox_recovery": outbox_report,
+    }
     log_action(
         user_id,
         "biashara.sync_manifest_repair_requested",
@@ -78,5 +83,5 @@ def repair_pending_sync_manifests():
     )
     return ok(
         report,
-        "Pending sync manifests were checked. Provider delivery remains a separate worker outcome.",
+        "Pending inventory and sync manifests were checked. Provider delivery remains a separate worker outcome.",
     )
