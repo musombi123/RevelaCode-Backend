@@ -19,6 +19,7 @@ from pymongo.errors import DuplicateKeyError
 from backend.jumuiya.core.database import collection
 from backend.jumuiya.core.errors import APIError
 from backend.jumuiya.core.audit import log_action
+from backend.jumuiya.biashara.tenancy.service import require_permission
 from backend.jumuiya.biashara import services as biashara_services
 from backend.jumuiya.biashara.sync.outbox import build_outbox_manifest, dispatch_manifest_for_record
 from backend.jumuiya.biashara.finance.ledger import (
@@ -52,11 +53,13 @@ def _ser(value):
     return value
 
 
-def _business(user_id):
+def _business(user_id, permission=None):
     business = biashara_services._require_business(user_id)
     business_id = str(business.get("id") or business.get("_id") or "")
     if not business_id:
         raise APIError("Business profile has no usable ID.", 409, "business_id_missing")
+    if permission:
+        require_permission(user_id, permission, business_id=business_id)
     return business, business_id
 
 
@@ -203,7 +206,7 @@ def _post_cash_payment_journal(payment, user_id):
 
 
 def get_ledger_summary(user_id, currency=None, from_date=None, to_date=None):
-    _business_data, business_id = _business(user_id)
+    _business_data, business_id = _business(user_id, permission="finance.view")
     return _ledger_summary(
         business_id=business_id,
         currency=currency,
@@ -213,7 +216,7 @@ def get_ledger_summary(user_id, currency=None, from_date=None, to_date=None):
 
 
 def get_journal_entries(user_id, limit=50, source_type=None, from_date=None, to_date=None):
-    _business_data, business_id = _business(user_id)
+    _business_data, business_id = _business(user_id, permission="finance.view")
     return _list_journal_entries(
         business_id=business_id,
         limit=limit,
@@ -249,7 +252,7 @@ def _invoice_view(invoice, include_payments=True):
 
 
 def list_invoices(user_id, status=None, limit=50):
-    _business_data, business_id = _business(user_id)
+    _business_data, business_id = _business(user_id, permission="finance.view")
     try:
         limit = min(max(int(limit), 1), 100)
     except (TypeError, ValueError):
@@ -265,12 +268,12 @@ def list_invoices(user_id, status=None, limit=50):
 
 
 def get_invoice(user_id, invoice_id):
-    _business_data, business_id = _business(user_id)
+    _business_data, business_id = _business(user_id, permission="finance.view")
     return _invoice_view(_get_invoice(business_id, invoice_id))
 
 
 def create_invoice(user_id, payload, idempotency_key=""):
-    business, business_id = _business(user_id)
+    business, business_id = _business(user_id, permission="finance.manage")
     key = _key(idempotency_key, required=False)
     order_id = str(payload.get("order_id") or "").strip()
     if not order_id:
@@ -438,7 +441,7 @@ def create_invoice(user_id, payload, idempotency_key=""):
 
 
 def issue_invoice(user_id, invoice_id):
-    _business_data, business_id = _business(user_id)
+    _business_data, business_id = _business(user_id, permission="finance.manage")
     invoices = collection("jumuiya_invoices")
     invoice = _get_invoice(business_id, invoice_id)
     if invoice.get("status") == "issued":
@@ -487,7 +490,7 @@ def issue_invoice(user_id, invoice_id):
 
 def void_invoice(user_id, invoice_id, reason=""):
     """Void an invoice only if no payment has been allocated to it."""
-    _business_data, business_id = _business(user_id)
+    _business_data, business_id = _business(user_id, permission="finance.manage")
     invoices = collection("jumuiya_invoices")
     invoice = _get_invoice(business_id, invoice_id)
     if invoice.get("status") == "voided":
@@ -617,7 +620,7 @@ def _mark_payment_allocation(payment, invoice):
 
 def record_payment(user_id, invoice_id, payload, idempotency_key):
     """Persist payment evidence; only manual cash attestation affects invoice balance."""
-    _business_data, business_id = _business(user_id)
+    _business_data, business_id = _business(user_id, permission="finance.manage")
     key = _key(idempotency_key, required=True)
     invoice = _get_invoice(business_id, invoice_id)
     if invoice.get("status") != "issued":
