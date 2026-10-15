@@ -1048,12 +1048,8 @@ def inventory_adjustment(user_id, product_id, payload):
             )
         new_stock = quantity
 
-    if new_stock == previous_stock:
-        return {
-            "product": serialise(product),
-            "movement": None,
-            "replayed": True,
-        }
+    # A no-op "set" still gets a durable mutation key and zero-delta movement.
+    # Otherwise a delayed retry could reapply this command after stock later changed.
 
     now = now_utc()
     marker = {
