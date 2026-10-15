@@ -356,7 +356,6 @@ def start_stk_push(user_id, invoice_id, payload, idempotency_key):
     business_id = str(context.get("id") or "")
     if not business_id:
         raise APIError("Selected business is unavailable.", 409, "business_id_missing")
-    require_permission(user_id, "integration.view", business_id=business_id)
 
     if not isinstance(payload, dict):
         raise APIError("JSON request body is required.", 400, "invalid_json")
@@ -372,26 +371,12 @@ def start_stk_push(user_id, invoice_id, payload, idempotency_key):
         raise APIError("STK Push payments must be at least KES 1.00 and use whole-shilling amounts.", 422, "invalid_mpesa_amount")
 
     invoice = finance_services._get_invoice(business_id, invoice_id)
-    if invoice.get("status") != "issued":
-        raise APIError("M-Pesa payments can only be requested for issued invoices.", 409, "invoice_not_payable")
-    if str(invoice.get("currency") or "KES").upper() != "KES":
-        raise APIError("Daraja STK Push currently supports KES invoices only.", 409, "mpesa_currency_unsupported")
-    due_minor = int(invoice.get("total_amount_minor", 0) or 0) - int(invoice.get("amount_paid_minor", 0) or 0)
-    if due_minor <= 0:
-        raise APIError("This invoice has no outstanding balance.", 409, "invoice_already_paid")
-    if amount_minor > due_minor:
-        raise APIError("The STK amount exceeds the invoice balance due.", 409, "payment_exceeds_invoice_balance")
-
-    connection, metadata, credentials = _connection(business_id, connection_id, enabled=True)
-    # Validate all required deployment settings before creating a durable request intent.
-    callback_base = _public_callback_base()
-    _allowed_callback_ips()
     phone_hash = hashlib.sha256(phone.encode("utf-8")).hexdigest()
     internal_key = "mpesa-stk:" + raw_key
     fingerprint = _fingerprint({
         "business_id": business_id,
         "invoice_id": str(invoice["_id"]),
-        "connection_id": str(connection["_id"]),
+        "connection_id": connection_id,
         "amount_minor": amount_minor,
         "phone_hash": phone_hash,
     })
@@ -410,6 +395,23 @@ def start_stk_push(user_id, invoice_id, payload, idempotency_key):
             "mpesa_request_outcome_unknown",
         )
 
+    # Only a genuinely new request is checked against the current invoice balance
+    # and live connection configuration. Replays return the original durable result.
+    if invoice.get("status") != "issued":
+        raise APIError("M-Pesa payments can only be requested for issued invoices.", 409, "invoice_not_payable")
+    if str(invoice.get("currency") or "KES").upper() != "KES":
+        raise APIError("Daraja STK Push currently supports KES invoices only.", 409, "mpesa_currency_unsupported")
+    due_minor = int(invoice.get("total_amount_minor", 0) or 0) - int(invoice.get("amount_paid_minor", 0) or 0)
+    if due_minor <= 0:
+        raise APIError("This invoice has no outstanding balance.", 409, "invoice_already_paid")
+    if amount_minor > due_minor:
+        raise APIError("The STK amount exceeds the invoice balance due.", 409, "payment_exceeds_invoice_balance")
+
+    require_permission(user_id, "integration.view", business_id=business_id)
+    connection, metadata, credentials = _connection(business_id, connection_id, enabled=True)
+    # Validate all required deployment settings before creating a durable request intent.
+    _public_callback_base()
+    _allowed_callback_ips()
     # OAuth is read-only. If this fails, do not create a dangling payment intent.
     token = _access_token(credentials, metadata["environment"])
     now = now_utc()
