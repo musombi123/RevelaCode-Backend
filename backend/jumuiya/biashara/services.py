@@ -19,6 +19,7 @@ from backend.jumuiya.biashara.tenancy.service import require_permission
 
 from backend.jumuiya.biashara.website import (
     DEFAULT_BIASHARA_WEBSITE_SETTINGS,
+    build_biashara_seo_metadata,
     normalize_biashara_website_settings,
 )
 
@@ -2930,9 +2931,15 @@ def get_public_biashara_website(slug):
                 ) > 0,
             })
 
+    seo = build_biashara_seo_metadata(
+        public_business,
+        public_website,
+        normalized_slug,
+    )
     return {
         "business": public_business,
         "website": public_website,
+        "seo": seo,
         "products": products,
     }
 
