@@ -87,9 +87,21 @@ class FakeCollection:
         return SimpleNamespace(inserted_id=saved["_id"])
 
     def find_one_and_update(self, query, update, return_document=None):
+        from pymongo.errors import DuplicateKeyError
         for doc in self.documents:
             if _matches(doc, query):
-                doc.update(deepcopy(update.get("$set", {})))
+                changes = deepcopy(update.get("$set", {}))
+                proposed = {**doc, **changes}
+                for other in self.documents:
+                    if other is doc:
+                        continue
+                    if (
+                        other.get("business_id") == proposed.get("business_id")
+                        and other.get("provider") == proposed.get("provider")
+                        and other.get("name") == proposed.get("name")
+                    ):
+                        raise DuplicateKeyError("duplicate integration provider/name")
+                doc.update(changes)
                 return deepcopy(doc)
         return None
 
@@ -265,3 +277,15 @@ def test_integration_updates_cannot_change_provider_or_business(integration_db):
     assert saved["provider"] == "woocommerce"
     assert saved["business_id"] == "business-1"
     assert saved["name"] == "Online store"
+
+def test_renaming_connection_to_an_existing_provider_name_returns_conflict(integration_db):
+    integrations.create_connection("owner-1", _woocommerce_payload(name="Primary store"))
+    second = integrations.create_connection("owner-1", _woocommerce_payload(name="Outlet store"))
+
+    with pytest.raises(APIError) as raised:
+        integrations.update_connection("owner-1", second["id"], {"name": "Primary store"})
+
+    assert raised.value.code == "integration_connection_exists"
+    current = integration_db.find_one({"_id": ObjectId(second["id"])})
+    assert current["name"] == "Outlet store"
+
