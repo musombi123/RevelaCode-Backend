@@ -882,7 +882,7 @@ def _release_order_inventory(order, user_id, allow_missing=False):
                         409,
                         "order_inventory_consumed",
                     )
-                if allow_missing or order.get("inventory_status") in {"not_reserved", "reservation_failed"}:
+                if allow_missing or order.get("inventory_status") in {None, "", "not_reserved", "reservation_failed", "reservation_pending"}:
                     break
                 raise APIError(
                     "The order reservation marker is missing; inventory needs reconciliation.",
@@ -1075,12 +1075,12 @@ def _reserve_order_inventory(order, user_id):
     })
     if not current:
         raise APIError("Order record disappeared during reservation.", 409, "order_reservation_missing")
-    if current.get("status") != "pending":
+    if current.get("status") not in {"pending", "confirmed"}:
         _release_order_inventory(current, user_id, allow_missing=True)
         raise APIError("The order changed while inventory was being reserved.", 409, "order_state_conflict")
 
     collection("jumuiya_orders").update_one(
-        {"_id": clean_id(order_id), "business_id": business_id, "status": "pending"},
+        {"_id": clean_id(order_id), "business_id": business_id, "status": {"$in": ["pending", "confirmed"]}},
         {"$set": {"inventory_status": "reserved", "reserved_at": now_utc()}},
     )
 
@@ -1164,7 +1164,7 @@ def create_order(user_id, payload):
                     409,
                     "idempotency_key_reused",
                 )
-            if existing.get("inventory_status") == "reservation_pending" and existing.get("status") == "pending":
+            if existing.get("inventory_status") == "reservation_pending" and existing.get("status") in {"pending", "confirmed"}:
                 try:
                     _reserve_order_inventory(existing, user_id)
                 except APIError as error:
@@ -1342,16 +1342,145 @@ def get_order(
     )
 
 
-def update_order_status(
-    user_id,
-    order_id,
-    status,
-):
-    """Apply a legal order transition and append an immutable status event."""
+
+def _consume_order_inventory(order, user_id):
+    """Convert reserved units into sold/on-hand stock exactly once."""
+    business_id = str(order["business_id"])
+    order_id = str(order.get("_id") or order.get("id"))
+    products = collection("jumuiya_products")
+    movements = collection("jumuiya_inventory_movements")
+    quantities = _order_quantities(order)
+
+    # Legacy orders created before reservations existed are reserved now before
+    # processing. This prevents old records from bypassing stock validation.
+    has_reservation = False
+    for product_id in quantities:
+        product = products.find_one({"_id": clean_id(product_id), "business_id": business_id})
+        if product and _reservation_for(product, order_id):
+            has_reservation = True
+            break
+    if not has_reservation and order.get("inventory_status") in {None, "", "not_reserved"}:
+        _reserve_order_inventory(order, user_id)
+        order = collection("jumuiya_orders").find_one({
+            "_id": clean_id(order_id),
+            "business_id": business_id,
+        }) or order
+
+    for product_id, quantity in quantities.items():
+        consume_key = _inventory_movement_key(order_id, product_id, "consume")
+        done = False
+        for _attempt in range(12):
+            product = products.find_one({
+                "_id": clean_id(product_id),
+                "business_id": business_id,
+            })
+            if not product:
+                if movements.find_one({"business_id": business_id, "idempotency_key": consume_key}):
+                    done = True
+                    break
+                raise APIError("Reserved product is missing; inventory needs reconciliation.", 409, "inventory_reservation_missing")
+
+            reservation = _reservation_for(product, order_id)
+            if reservation is None:
+                if movements.find_one({"business_id": business_id, "idempotency_key": consume_key}):
+                    done = True
+                    break
+                raise APIError("Order stock reservation is missing; inventory needs reconciliation.", 409, "inventory_reservation_missing")
+
+            state = reservation.get("state", "reserved")
+            if state == "released":
+                raise APIError("Order stock reservation has already been released.", 409, "order_inventory_released")
+            if state == "consumed":
+                _ensure_order_movement(
+                    business_id, user_id, order_id, product_id, "consume", "remove",
+                    "order_fulfilled", reservation["quantity"],
+                    reservation["consumption_previous_stock_quantity"],
+                    reservation["consumption_new_stock_quantity"],
+                )
+                products.update_one(
+                    {"_id": product["_id"], "business_id": business_id},
+                    {"$pull": {"active_reservations": {"order_id": order_id}}},
+                )
+                done = True
+                break
+
+            try:
+                stock = Decimal(str(product.get("stock_quantity", 0) or 0))
+                reserved = Decimal(str(product.get("reserved_quantity", 0) or 0))
+            except (InvalidOperation, TypeError, ValueError):
+                raise APIError("Product inventory state is invalid.", 409, "invalid_inventory_state")
+            if not stock.is_finite() or not reserved.is_finite() or stock < quantity or reserved < quantity:
+                raise APIError("Reserved inventory is inconsistent and needs reconciliation.", 409, "invalid_inventory_state")
+
+            new_stock = stock - quantity
+            new_reserved = reserved - quantity
+            now = now_utc()
+            updated = products.find_one_and_update(
+                {
+                    "_id": product["_id"],
+                    "business_id": business_id,
+                    "stock_quantity": product.get("stock_quantity", 0),
+                    "reserved_quantity": product.get("reserved_quantity", 0),
+                    "active_reservations": {
+                        "$elemMatch": {"order_id": order_id, "state": "reserved"}
+                    },
+                },
+                {
+                    "$inc": {
+                        "stock_quantity": -float(quantity),
+                        "reserved_quantity": -float(quantity),
+                    },
+                    "$set": {
+                        "updated_at": now,
+                        "active_reservations.$[reservation].state": "consumed",
+                        "active_reservations.$[reservation].consumption_previous_stock_quantity": float(stock),
+                        "active_reservations.$[reservation].consumption_new_stock_quantity": float(new_stock),
+                        "active_reservations.$[reservation].consumption_previous_available_quantity": float(stock - reserved),
+                        "active_reservations.$[reservation].consumption_new_available_quantity": float(new_stock - new_reserved),
+                        "active_reservations.$[reservation].consumed_at": now,
+                    },
+                },
+                array_filters=[{"reservation.order_id": order_id, "reservation.state": "reserved"}],
+                return_document=ReturnDocument.AFTER,
+            )
+            if not updated:
+                continue
+
+            saved_reservation = _reservation_for(updated, order_id)
+            if not saved_reservation:
+                raise APIError("Stock consumption needs reconciliation.", 409, "inventory_reservation_missing")
+            _ensure_order_movement(
+                business_id, user_id, order_id, product_id, "consume", "remove",
+                "order_fulfilled", quantity,
+                saved_reservation["consumption_previous_stock_quantity"],
+                saved_reservation["consumption_new_stock_quantity"],
+            )
+            products.update_one(
+                {"_id": product["_id"], "business_id": business_id},
+                {"$pull": {"active_reservations": {"order_id": order_id}}},
+            )
+            done = True
+            break
+
+        if not done:
+            raise APIError(
+                "Inventory changed while fulfilling this order. Retry the same status update.",
+                409,
+                "inventory_consumption_conflict",
+            )
+
+    collection("jumuiya_orders").update_one(
+        {"_id": clean_id(order_id), "business_id": business_id, "status": "confirmed"},
+        {"$set": {"inventory_status": "consumed", "inventory_consumed_at": now_utc()}},
+    )
+
+
+def update_order_status(user_id, order_id, status):
+    """Apply legal order transitions and make stock effects recoverable."""
     transitions = {
         "pending": {"confirmed", "cancelled"},
         "confirmed": {"processing", "cancelled"},
-        "processing": {"completed", "cancelled"},
+        "processing": {"completed"},
         "completed": set(),
         "cancelled": set(),
     }
@@ -1370,7 +1499,6 @@ def update_order_status(
     previous_status = str(document.get("status") or "pending").lower()
     if previous_status == status:
         return serialise(document)
-
     if status not in transitions.get(previous_status, set()):
         raise APIError(
             f"Order cannot move from {previous_status} to {status}.",
@@ -1378,11 +1506,17 @@ def update_order_status(
             "invalid_order_transition",
         )
 
+    order_id_string = str(document.get("_id") or document.get("id"))
+    if status == "processing":
+        _consume_order_inventory(document, user_id)
+    elif status == "cancelled":
+        _release_order_inventory(document, user_id)
+
     now = now_utc()
     update = {"status": status, "updated_at": now}
     if status == "completed":
         update["completed_at"] = now
-    if status == "cancelled":
+    elif status == "cancelled":
         update["cancelled_at"] = now
 
     event = {
@@ -1404,13 +1538,22 @@ def update_order_status(
         return_document=ReturnDocument.AFTER,
     )
     if not updated:
+        # Inventory operations are idempotent, so a retry can complete the
+        # state transition without decrementing or releasing stock twice.
+        latest = orders.find_one({"_id": document["_id"], "business_id": business["id"]})
+        if latest and latest.get("status") == status:
+            return serialise(latest)
         raise APIError(
-            "The order changed while this update was being saved. Reload and try again.",
+            "The order changed while this update was being saved. Reload and retry.",
             409,
             "order_state_conflict",
         )
 
-    log_action(user_id, "order.status_updated", "order", document["_id"])
+    log_action(user_id, "order.status_updated", "order", order_id_string, {
+        "from": previous_status,
+        "to": status,
+        "inventory_status": updated.get("inventory_status"),
+    })
     return serialise(updated)
 
 
