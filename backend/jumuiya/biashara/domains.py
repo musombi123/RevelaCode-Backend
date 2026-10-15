@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 
 from bson import ObjectId
 from bson.errors import InvalidId
+from pymongo import ReturnDocument
 from pymongo.errors import DuplicateKeyError
 
 from backend.jumuiya.core.audit import log_action
@@ -241,6 +242,7 @@ def verify_domain_claim(user_id, domain_id):
             "verified_by_user_id": str(user_id) if verified_at else None,
             "updated_at": checked_at,
         }},
+        return_document=ReturnDocument.AFTER,
     )
     if not updated:
         # Some test adapters or concurrent requests may return no post-update
