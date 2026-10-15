@@ -375,7 +375,7 @@ def create_or_update_business(
 
 
 def create_product(user_id, payload):
-    business = _require_business(user_id)
+    business = _require_business_with_permission(user_id, "products.manage")
     document = product_document(business["id"], payload)
     document["_id"] = ObjectId()
     now = document.get("created_at") or now_utc()
@@ -463,7 +463,7 @@ def list_products(
     limit=50,
 ):
     """List this business's products with filtering and a bounded limit."""
-    business = _require_business(user_id)
+    business = _require_business_with_permission(user_id, "products.view")
     query = {"business_id": business["id"]}
 
     if status:
@@ -493,7 +493,7 @@ def list_products(
 
 def update_product(user_id, product_id, payload):
     """Update catalogue metadata and route all stock changes through the stock ledger."""
-    business = _require_business(user_id)
+    business = _require_business_with_permission(user_id, "products.manage")
     business_id = str(business["id"])
     products = collection("jumuiya_products")
     product_query = {"_id": clean_id(product_id), "business_id": business_id}
@@ -599,7 +599,7 @@ def update_product(user_id, product_id, payload):
 
 def delete_product(user_id, product_id):
     """Archive a product safely while preserving all historical references."""
-    business = _require_business(user_id)
+    business = _require_business_with_permission(user_id, "products.manage")
     business_id = str(business["id"])
     products = collection("jumuiya_products")
     query = {"_id": clean_id(product_id), "business_id": business_id}
@@ -686,9 +686,7 @@ def low_stock(
     threshold=5,
 ):
 
-    business = _require_business(
-        user_id
-    )
+    business = _require_business_with_permission(user_id, "inventory.view")
 
     try:
         threshold = float(
@@ -921,7 +919,7 @@ def _persist_inventory_adjustment_movement(business_id, user_id, product, marker
 
 def inventory_adjustment(user_id, product_id, payload):
     """Adjust inventory using compare-and-set, durable recovery markers and idempotent movements."""
-    business = _require_business(user_id)
+    business = _require_business_with_permission(user_id, "inventory.manage")
     business_id = str(business["id"])
     products = collection("jumuiya_products")
     movements = collection("jumuiya_inventory_movements")
@@ -1121,7 +1119,7 @@ def inventory_adjustment(user_id, product_id, payload):
 
 def repair_pending_inventory_movements(user_id, limit=100):
     """Recover stock mutations whose product write committed before movement insert."""
-    business = _require_business(user_id)
+    business = _require_business_with_permission(user_id, "inventory.manage")
     try:
         limit = int(limit)
     except (TypeError, ValueError):
@@ -1617,7 +1615,7 @@ def _fail_order_reservation(order, user_id, error):
 
 def create_order(user_id, payload):
     """Create an order with catalogue-authoritative pricing and recoverable stock reservation."""
-    business = _require_business(user_id)
+    business = _require_business_with_permission(user_id, "orders.create")
     customer_id = payload.get("customer_id")
     if customer_id:
         customer = collection("jumuiya_customers").find_one({
@@ -1800,7 +1798,7 @@ def list_orders(
     limit=50,
 ):
     """List this business's orders with optional status and bounded limit."""
-    business = _require_business(user_id)
+    business = _require_business_with_permission(user_id, "orders.view")
     query = {"business_id": business["id"]}
 
     if status:
@@ -1820,9 +1818,7 @@ def get_order(
     order_id,
 ):
 
-    business = _require_business(
-        user_id
-    )
+    business = _require_business_with_permission(user_id, "orders.view")
 
     document = collection(
         "jumuiya_orders"
@@ -2274,7 +2270,7 @@ def record_sale(user_id, payload):
     The submitted amount, unit price, item name and currency are not trusted.
     Provider payment is never considered verified by this manual endpoint.
     """
-    business = _require_business(user_id)
+    business = _require_business_with_permission(user_id, "sales.create")
     business_id = str(business["id"])
     idempotency_key = str(payload.get("idempotency_key") or "").strip()
     if idempotency_key and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{7,127}", idempotency_key):
@@ -2512,7 +2508,7 @@ def _post_expense_journal(document, user_id):
 
 def create_expense(user_id, payload):
     """Record an expense with safe retries, an outbox intent and a provisional journal."""
-    business = _require_business(user_id)
+    business = _require_business_with_permission(user_id, "finance.manage")
     business_id = str(business["id"])
     key = str(payload.get("idempotency_key") or "").strip()
     if key and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{7,127}", key):
@@ -2614,9 +2610,7 @@ def list_expenses(
     user_id,
 ):
 
-    business = _require_business(
-        user_id
-    )
+    business = _require_business_with_permission(user_id, "finance.view")
 
     documents = (
         collection(
@@ -2644,9 +2638,7 @@ def dashboard(
     user_id,
 ):
 
-    business = _require_business(
-        user_id
-    )
+    business = _require_business_with_permission(user_id, "analytics.view")
 
     business_id = business["id"]
 
@@ -2796,7 +2788,7 @@ def dashboard(
 
 
 def get_biashara_website_settings(user_id):
-    business = _require_business(user_id)
+    business = _require_business_with_permission(user_id, "website.view")
     settings = dict(DEFAULT_BIASHARA_WEBSITE_SETTINGS)
     stored = business.get("website")
     if isinstance(stored, dict):
@@ -2809,7 +2801,7 @@ def get_biashara_website_settings(user_id):
 
 
 def save_biashara_website_settings(user_id, payload):
-    business = _require_business(user_id)
+    business = _require_business_with_permission(user_id, "website.manage")
     now = now_utc()
     current = business.get("website") if isinstance(business.get("website"), dict) else {}
     settings = normalize_biashara_website_settings(payload, current)
@@ -2972,7 +2964,7 @@ def submit_public_biashara_inquiry(slug, payload):
 
 
 def list_biashara_website_inquiries(user_id, limit=30):
-    business = _require_business(user_id)
+    business = _require_business_with_permission(user_id, "website.view")
     documents = collection("jumuiya_business_website_inquiries").find(
         {
             "business_id": business["id"],
