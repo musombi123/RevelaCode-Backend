@@ -1639,6 +1639,7 @@ def update_order_status(user_id, order_id, status):
 
     previous_status = str(document.get("status") or "pending").lower()
     if previous_status == status:
+        _dispatch_outbox_source("jumuiya_orders", business["id"], document["_id"])
         return serialise(document)
     if status not in transitions.get(previous_status, set()):
         raise APIError(
@@ -1654,6 +1655,26 @@ def update_order_status(user_id, order_id, status):
         _release_order_inventory(document, user_id)
 
     now = now_utc()
+    order_after_inventory = orders.find_one({
+        "_id": document["_id"],
+        "business_id": business["id"],
+    }) or document
+    status_event_manifest = _build_outbox_manifest(
+        event_key=f"order:{order_id_string}:status:{status}",
+        event_type="order.status_changed",
+        entity_type="order",
+        entity_id=order_id_string,
+        payload={
+            "previous_status": previous_status,
+            "status": status,
+            "inventory_status": order_after_inventory.get("inventory_status", "unknown"),
+            "source_channel": order_after_inventory.get("source_channel", "manual"),
+            "total_amount_minor": order_after_inventory.get("total_amount_minor"),
+            "currency": order_after_inventory.get("currency", "KES"),
+        },
+        actor_user_id=user_id,
+        occurred_at=now,
+    )
     update = {"status": status, "updated_at": now}
     if status == "completed":
         update["completed_at"] = now
@@ -1675,6 +1696,7 @@ def update_order_status(user_id, order_id, status):
         {
             "$set": update,
             "$push": {"status_history": event},
+            "$addToSet": {"outbox_event_manifest": status_event_manifest},
         },
         return_document=ReturnDocument.AFTER,
     )
@@ -1683,6 +1705,7 @@ def update_order_status(user_id, order_id, status):
         # state transition without decrementing or releasing stock twice.
         latest = orders.find_one({"_id": document["_id"], "business_id": business["id"]})
         if latest and latest.get("status") == status:
+            _dispatch_outbox_source("jumuiya_orders", business["id"], document["_id"])
             return serialise(latest)
         raise APIError(
             "The order changed while this update was being saved. Reload and retry.",
@@ -1690,6 +1713,7 @@ def update_order_status(user_id, order_id, status):
             "order_state_conflict",
         )
 
+    _dispatch_outbox_source("jumuiya_orders", business["id"], document["_id"])
     log_action(user_id, "order.status_updated", "order", order_id_string, {
         "from": previous_status,
         "to": status,
