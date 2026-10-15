@@ -229,10 +229,33 @@ def create_or_update_business(
     )
 
     owner_id = str(user_id)
+    from backend.jumuiya.biashara.tenancy.service import (
+        _request_business_id,
+        ensure_owner_membership,
+        require_permission,
+    )
 
-    old = businesses.find_one({
-        "owner_user_id": owner_id
-    })
+    selected_business_id = _request_business_id()
+    if selected_business_id:
+        selected_context = require_permission(
+            user_id,
+            "business.manage",
+            business_id=selected_business_id,
+        )
+        old = businesses.find_one({"_id": clean_id(selected_context["id"])})
+        if not old:
+            raise APIError("Business not found or access denied.", 404, "business_access_denied")
+    else:
+        owned_businesses = list(
+            businesses.find({"owner_user_id": owner_id}).sort("created_at", 1).limit(2)
+        )
+        if len(owned_businesses) > 1:
+            raise APIError(
+                "Select which business to update by sending X-Biashara-Business-ID, or use the multi-business API to create another business.",
+                409,
+                "business_selection_required",
+            )
+        old = owned_businesses[0] if owned_businesses else None
 
     # -----------------------------------------------------
     # UPDATE
@@ -276,6 +299,7 @@ def create_or_update_business(
             return_document=ReturnDocument.AFTER,
         )
 
+        ensure_owner_membership(document, actor_user_id=user_id)
         log_action(
             user_id,
             "business.updated",
@@ -304,6 +328,7 @@ def create_or_update_business(
     )
 
     document["_id"] = result.inserted_id
+    ensure_owner_membership(document, actor_user_id=user_id)
 
     log_action(
         user_id,
