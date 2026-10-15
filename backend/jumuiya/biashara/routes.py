@@ -16,6 +16,7 @@ from backend.jumuiya.core.responses import (
 
 from backend.jumuiya.core.errors import APIError
 from backend.jumuiya.biashara.tenancy.service import require_business_permission
+from backend.jumuiya.biashara import domains as website_domains
 
 from backend.jumuiya.biashara import (
     schemas,
@@ -764,3 +765,45 @@ def create_public_website_inquiry(slug):
         services.submit_public_biashara_inquiry(slug, body()),
         "Thank you. Your inquiry has been received.",
     )
+
+@biashara_bp.get("/website/domains")
+@require_authenticated
+@require_business_permission("website.view")
+def list_website_domains():
+    rows = website_domains.list_domain_claims(current_user_id())
+    return ok(rows, "Custom-domain claims loaded.", meta={"count": len(rows)})
+
+
+@biashara_bp.post("/website/domains")
+@require_authenticated
+@require_business_permission("website.manage")
+def create_website_domain():
+    payload = body()
+    if not isinstance(payload, dict):
+        raise APIError("A JSON request body is required.", 400, "invalid_json")
+    result = website_domains.create_domain_claim(current_user_id(), payload.get("hostname"))
+    return created(
+        result,
+        "Domain claim created. Add the supplied DNS TXT record, then verify ownership. Hosting and TLS are not configured by this step.",
+    )
+
+
+@biashara_bp.post("/website/domains/<domain_id>/verify")
+@require_authenticated
+@require_business_permission("website.manage")
+def verify_website_domain(domain_id):
+    result = website_domains.verify_domain_claim(current_user_id(), domain_id)
+    if result.get("status") == "verified":
+        message = "DNS ownership verified. This does not configure hosting or TLS."
+    else:
+        message = "The verification TXT record was not confirmed yet. Check DNS propagation and retry."
+    return ok(result, message)
+
+
+@biashara_bp.delete("/website/domains/<domain_id>")
+@require_authenticated
+@require_business_permission("website.manage")
+def delete_website_domain(domain_id):
+    result = website_domains.delete_domain_claim(current_user_id(), domain_id)
+    return ok(result, "Custom-domain claim removed. DNS records at the registrar were not changed.")
+
