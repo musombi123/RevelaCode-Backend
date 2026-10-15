@@ -356,82 +356,62 @@ def list_products(
     return serialise_many(documents)
 
 
-def update_product(
-    user_id,
-    product_id,
-    payload,
-):
 
-    business = _require_business(
-        user_id
-    )
-
+def update_product(user_id, product_id, payload):
+    business = _require_business(user_id)
     allowed = {
-        "name",
-        "description",
-        "category",
-        "sku",
-        "price",
-        "currency",
-        "stock_quantity",
-        "unit",
-        "image_url",
-        "status",
+        "name", "description", "category", "sku", "price", "currency",
+        "stock_quantity", "unit", "image_url", "status",
     }
-
-    update = {
-        key: payload[key]
-        for key in allowed
-        if key in payload
-    }
-
+    update = {key: payload[key] for key in allowed if key in payload}
     if not update:
+        raise APIError("No product fields were provided.", 422, "empty_update")
 
-        raise APIError(
-            "No product fields were provided.",
-            422,
-            "empty_update",
-        )
+    products = collection("jumuiya_products")
+    query = {"_id": clean_id(product_id), "business_id": business["id"]}
+    current = products.find_one(query)
+    if not current:
+        raise APIError("Product not found.", 404, "product_not_found")
 
-    products = collection(
-        "jumuiya_products"
-    )
+    if "stock_quantity" in update:
+        try:
+            target_stock = Decimal(str(update["stock_quantity"]))
+            reserved_stock = Decimal(str(current.get("reserved_quantity", 0) or 0))
+            current_stock = Decimal(str(current.get("stock_quantity", 0) or 0))
+        except (InvalidOperation, TypeError, ValueError):
+            raise APIError("Stock quantity must be a valid number.", 422, "invalid_stock_quantity")
+        if not target_stock.is_finite() or target_stock < 0:
+            raise APIError("Stock quantity must be a non-negative finite number.", 422, "invalid_stock_quantity")
+        if target_stock < reserved_stock:
+            raise APIError(
+                "Stock cannot be set below the quantity reserved by open orders. Cancel or fulfil reservations first.",
+                409,
+                "stock_below_reserved",
+            )
+        # Compare-and-set prevents a stock edit from overwriting a concurrent
+        # order reservation. Other metadata edits remain independent.
+        query["stock_quantity"] = current.get("stock_quantity", 0)
+        if "reserved_quantity" in current:
+            query["reserved_quantity"] = current["reserved_quantity"]
+        else:
+            query["reserved_quantity"] = {"$exists": False}
 
     document = products.find_one_and_update(
-        {
-            "_id": clean_id(
-                product_id
-            ),
-            "business_id": business["id"],
-        },
-        {
-            "$set": {
-                **update,
-                "updated_at": now_utc(),
-            }
-        },
+        query,
+        {"$set": {**update, "updated_at": now_utc()}},
         return_document=ReturnDocument.AFTER,
     )
-
     if not document:
+        if "stock_quantity" in update:
+            raise APIError(
+                "Inventory changed while this product was being edited. Reload and retry.",
+                409,
+                "inventory_concurrent_update",
+            )
+        raise APIError("Product not found.", 404, "product_not_found")
 
-        raise APIError(
-            "Product not found.",
-            404,
-            "product_not_found",
-        )
-
-    log_action(
-        user_id,
-        "product.updated",
-        "product",
-        document["_id"],
-    )
-
-    return serialise(
-        document
-    )
-
+    log_action(user_id, "product.updated", "product", document["_id"])
+    return serialise(document)
 
 def delete_product(
     user_id,
@@ -537,130 +517,109 @@ def low_stock(
     )
 
 
-def inventory_adjustment(
-    user_id,
-    product_id,
-    payload,
-):
 
-    business = _require_business(
-        user_id
-    )
-
-    products = collection(
-        "jumuiya_products"
-    )
-
-    product = products.find_one({
-        "_id": clean_id(
-            product_id
-        ),
+def inventory_adjustment(user_id, product_id, payload):
+    """Compare-and-set stock adjustment that never consumes reserved units."""
+    business = _require_business(user_id)
+    products = collection("jumuiya_products")
+    product_query = {
+        "_id": clean_id(product_id),
         "business_id": business["id"],
-    })
-
+    }
+    product = products.find_one(product_query)
     if not product:
+        raise APIError("Product not found.", 404, "product_not_found")
 
-        raise APIError(
-            "Product not found.",
-            404,
-            "product_not_found",
-        )
+    try:
+        previous_stock = Decimal(str(product.get("stock_quantity", 0) or 0))
+        reserved_stock = Decimal(str(product.get("reserved_quantity", 0) or 0))
+        quantity = Decimal(str(payload["quantity"]))
+    except (InvalidOperation, TypeError, ValueError, KeyError):
+        raise APIError("Stock quantities must be valid numbers.", 422, "invalid_stock_quantity")
+    if (
+        not previous_stock.is_finite()
+        or not reserved_stock.is_finite()
+        or not quantity.is_finite()
+        or previous_stock < 0
+        or reserved_stock < 0
+        or reserved_stock > previous_stock
+        or quantity <= 0
+    ):
+        raise APIError("Product inventory state or adjustment quantity is invalid.", 422, "invalid_stock_quantity")
 
-    previous_quantity = float(
-        product.get(
-            "stock_quantity",
-            0,
-        )
-    )
-
-    movement_type = payload[
-        "movement_type"
-    ]
-
-    quantity = float(
-        payload["quantity"]
-    )
-
+    movement_type = payload.get("movement_type")
     if movement_type == "add":
-
-        new_quantity = (
-            previous_quantity
-            + quantity
-        )
-
+        new_stock = previous_stock + quantity
     elif movement_type == "remove":
-
-        new_quantity = (
-            previous_quantity
-            - quantity
-        )
-
-        if new_quantity < 0:
-
+        available_stock = previous_stock - reserved_stock
+        if quantity > available_stock:
             raise APIError(
-                "Insufficient stock.",
+                "Insufficient available stock. Some units are reserved for open orders.",
                 409,
                 "insufficient_stock",
             )
-
+        new_stock = previous_stock - quantity
     elif movement_type == "set":
-
-        new_quantity = quantity
-
+        if quantity < reserved_stock:
+            raise APIError(
+                "Stock cannot be set below the quantity reserved by open orders.",
+                409,
+                "stock_below_reserved",
+            )
+        new_stock = quantity
     else:
+        raise APIError("Invalid inventory movement.", 422, "invalid_movement")
 
-        raise APIError(
-            "Invalid inventory movement.",
-            422,
-            "invalid_movement",
-        )
+    filter_doc = {
+        **product_query,
+        "stock_quantity": product.get("stock_quantity", 0),
+    }
+    if "reserved_quantity" in product:
+        filter_doc["reserved_quantity"] = product["reserved_quantity"]
+    else:
+        filter_doc["reserved_quantity"] = {"$exists": False}
 
     updated = products.find_one_and_update(
-        {
-            "_id": product["_id"],
-            "business_id": business["id"],
-        },
+        filter_doc,
         {
             "$set": {
-                "stock_quantity": new_quantity,
+                "stock_quantity": float(new_stock),
                 "updated_at": now_utc(),
             }
         },
         return_document=ReturnDocument.AFTER,
     )
+    if not updated:
+        raise APIError(
+            "Inventory changed while this adjustment was being saved. Reload and retry.",
+            409,
+            "inventory_concurrent_update",
+        )
 
+    movement_payload = {
+        **payload,
+        "quantity": float(quantity),
+        "reason": str(payload.get("reason") or "manual_adjustment"),
+    }
     movement = inventory_movement_document(
         business["id"],
         product["_id"],
-        payload,
-        previous_quantity,
-        new_quantity,
+        movement_payload,
+        float(previous_stock - reserved_stock),
+        float(new_stock - reserved_stock),
     )
+    movement["actor_user_id"] = str(user_id)
+    movement["source"] = "manual_adjustment"
+    movement_result = collection("jumuiya_inventory_movements").insert_one(movement)
+    movement["_id"] = movement_result.inserted_id
 
-    movement_result = collection(
-        "jumuiya_inventory_movements"
-    ).insert_one(
-        movement
-    )
-
-    movement["_id"] = (
-        movement_result.inserted_id
-    )
-
-    log_action(
-        user_id,
-        "inventory.adjusted",
-        "product",
-        product["_id"],
-    )
-
+    log_action(user_id, "inventory.adjusted", "product", product["_id"], {
+        "movement_type": movement_type,
+        "quantity": float(quantity),
+    })
     return {
-        "product": serialise(
-            updated
-        ),
-        "movement": serialise(
-            movement
-        ),
+        "product": serialise(updated),
+        "movement": serialise(movement),
     }
 
 
