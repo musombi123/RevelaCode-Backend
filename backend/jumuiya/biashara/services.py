@@ -335,37 +335,87 @@ def create_or_update_business(
 # PRODUCTS
 # =========================================================
 
-def create_product(
-    user_id,
-    payload,
-):
 
-    business = _require_business(
-        user_id
+def create_product(user_id, payload):
+    business = _require_business(user_id)
+    document = product_document(business["id"], payload)
+    document["_id"] = ObjectId()
+    now = document.get("created_at") or now_utc()
+    try:
+        price_minor = int(
+            Decimal(str(document.get("price", 0))).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP) * 100
+        )
+    except (InvalidOperation, TypeError, ValueError):
+        raise APIError("Product price is invalid.", 422, "invalid_product_price")
+    stock = Decimal(str(document.get("stock_quantity", 0) or 0))
+    reserved = Decimal(str(document.get("reserved_quantity", 0) or 0))
+    event = _build_outbox_manifest(
+        event_key=f"product:{document['_id']}:created",
+        event_type="product.created",
+        entity_type="product",
+        entity_id=document["_id"],
+        payload={
+            "status": document.get("status", "active"),
+            "currency": str(document.get("currency") or business.get("currency") or "KES").upper(),
+            "price_minor": price_minor,
+            "stock_quantity": float(stock),
+            "reserved_quantity": float(reserved),
+            "available_quantity": float(stock - reserved),
+            "sku": str(document.get("sku") or "")[:200],
+        },
+        actor_user_id=user_id,
+        occurred_at=now,
     )
+    document["outbox_event_manifest"] = [event]
+    document["outbox_enqueued_event_keys"] = []
 
-    document = product_document(
-        business["id"],
-        payload,
-    )
+    collection("jumuiya_products").insert_one(document)
+    _dispatch_outbox_source("jumuiya_products", business["id"], document["_id"])
 
-    result = collection(
-        "jumuiya_products"
-    ).insert_one(document)
+    # Initial stock is an auditable movement rather than a hidden starting
+    # balance. Zero-stock products need no opening movement.
+    if stock > 0:
+        movement_key = f"product:{document['_id']}:opening-stock"
+        movement = inventory_movement_document(
+            business["id"],
+            document["_id"],
+            {
+                "movement_type": "add",
+                "quantity": float(stock),
+                "reason": "opening_balance",
+            },
+            0.0,
+            float(stock),
+        )
+        movement.update({
+            "idempotency_key": movement_key,
+            "source": "product_creation",
+            "actor_user_id": str(user_id),
+        })
+        movement["_id"] = ObjectId()
+        movement_event = _build_outbox_manifest(
+            event_key=f"inventory:{movement_key}",
+            event_type="inventory.movement_recorded",
+            entity_type="inventory_movement",
+            entity_id=movement_key,
+            payload={
+                "product_id": str(document["_id"]),
+                "movement_type": "add",
+                "quantity": float(stock),
+                "reason": "opening_balance",
+                "previous_quantity": 0.0,
+                "new_quantity": float(stock),
+            },
+            actor_user_id=user_id,
+            occurred_at=movement.get("created_at") or now,
+        )
+        movement["outbox_event_manifest"] = [movement_event]
+        movement["outbox_enqueued_event_keys"] = []
+        collection("jumuiya_inventory_movements").insert_one(movement)
+        _dispatch_outbox_source("jumuiya_inventory_movements", business["id"], movement["_id"])
 
-    document["_id"] = result.inserted_id
-
-    log_action(
-        user_id,
-        "product.created",
-        "product",
-        result.inserted_id,
-    )
-
-    return serialise(
-        document
-    )
-
+    log_action(user_id, "product.created", "product", document["_id"])
+    return serialise(document)
 
 def list_products(
     user_id,
