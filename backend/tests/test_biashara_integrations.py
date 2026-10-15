@@ -424,8 +424,12 @@ def test_woocommerce_webhook_rejects_bad_signature_and_disabled_connection(integ
     assert invalid.value.code == "webhook_signature_invalid"
     assert len(integration_db.webhook_deliveries.documents) == 0
 
+    disabled_payload = _woocommerce_payload(name="Disabled store")
+    disabled_payload["credentials"]["webhook_secret"] = "right-secret"
+    disabled_payload["enabled"] = False
+    disabled_connection = integrations.create_connection("owner-1", disabled_payload)
     with pytest.raises(APIError) as disabled:
-        webhooks.receive_webhook("64b000000000000000000099", body, headers)
+        webhooks.receive_webhook(disabled_connection["id"], body, headers)
     assert disabled.value.code == "webhook_connection_unavailable"
 
 
@@ -460,7 +464,7 @@ def test_whatsapp_challenge_and_signature_verification_are_required(integration_
     received = webhooks.receive_webhook(
         connection["id"], body, {"X-Hub-Signature-256": signature}
     )
-    assert received["event_type"] == "whatsapp.whatsapp_business_account"
+    assert received["event_type"] == "whatsapp_business_account"
     assert received["status"] == "pending_review"
     assert received["effects_applied"] is False
 
@@ -491,7 +495,7 @@ def test_webhook_inbox_read_is_tenant_scoped_and_payload_is_redacted(integration
     assert "id" in owner_rows[0]
 
 
-def test_mpesа_webhook_is_not_silently_treated_as_verified(integration_db):
+def test_mpesa_webhook_is_not_silently_treated_as_verified(integration_db):
     connection = integrations.create_connection("owner-1", {
         "name": "M-Pesa sandbox hook",
         "provider": "mpesa_daraja",
