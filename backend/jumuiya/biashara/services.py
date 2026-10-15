@@ -629,36 +629,172 @@ def low_stock(
 
 
 
-def inventory_adjustment(user_id, product_id, payload):
-    """Compare-and-set stock adjustment that never consumes reserved units."""
-    business = _require_business(user_id)
-    products = collection("jumuiya_products")
-    product_query = {
-        "_id": clean_id(product_id),
-        "business_id": business["id"],
+
+def _inventory_adjustment_fingerprint(product_id, movement_type, quantity, reason):
+    canonical = {
+        "product_id": str(product_id),
+        "movement_type": str(movement_type),
+        "quantity": format(Decimal(str(quantity)).normalize(), "f"),
+        "reason": str(reason or "manual_adjustment").strip(),
     }
+    return hashlib.sha256(
+        json.dumps(canonical, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
+def _persist_inventory_adjustment_movement(business_id, user_id, product, marker):
+    """Finish the movement side of a committed CAS mutation and clear its marker."""
+    movements = collection("jumuiya_inventory_movements")
+    products = collection("jumuiya_products")
+    key = str(marker["idempotency_key"])
+    query = {"business_id": str(business_id), "idempotency_key": key}
+    movement = movements.find_one(query)
+    if movement:
+        if movement.get("request_fingerprint") != marker.get("request_fingerprint"):
+            raise APIError("Stock idempotency key was reused with different data.", 409, "idempotency_key_reused")
+    else:
+        movement = inventory_movement_document(
+            str(business_id),
+            product["_id"],
+            {
+                "movement_type": marker["movement_type"],
+                "quantity": marker["quantity"],
+                "reason": marker["reason"],
+            },
+            marker["previous_available_quantity"],
+            marker["new_available_quantity"],
+        )
+        movement.update({
+            "idempotency_key": key,
+            "request_fingerprint": marker["request_fingerprint"],
+            "source": marker.get("source", "manual_adjustment"),
+            "actor_user_id": str(marker.get("actor_user_id") or user_id),
+            "previous_stock_quantity": marker["previous_stock_quantity"],
+            "new_stock_quantity": marker["new_stock_quantity"],
+        })
+        movement["_id"] = ObjectId()
+        occurred_at = marker.get("applied_at") or now_utc()
+        manifest = _build_outbox_manifest(
+            event_key=f"inventory:{key}",
+            event_type="inventory.movement_recorded",
+            entity_type="inventory_movement",
+            entity_id=key,
+            payload={
+                "product_id": str(product["_id"]),
+                "movement_type": marker["movement_type"],
+                "quantity": marker["quantity"],
+                "reason": marker["reason"],
+                "previous_quantity": marker["previous_available_quantity"],
+                "new_quantity": marker["new_available_quantity"],
+                "stock_quantity": marker["new_stock_quantity"],
+                "reserved_quantity": marker["new_reserved_quantity"],
+                "available_quantity": marker["new_available_quantity"],
+            },
+            actor_user_id=marker.get("actor_user_id") or user_id,
+            occurred_at=occurred_at,
+        )
+        movement["outbox_event_manifest"] = [manifest]
+        movement["outbox_enqueued_event_keys"] = []
+        try:
+            movements.insert_one(movement)
+        except DuplicateKeyError:
+            existing = movements.find_one(query)
+            if not existing or existing.get("request_fingerprint") != marker.get("request_fingerprint"):
+                raise APIError("Stock mutation conflicts with an existing movement.", 409, "inventory_mutation_conflict")
+            movement = existing
+
+    products.update_one(
+        {"_id": product["_id"], "business_id": str(business_id)},
+        {"$pull": {"pending_inventory_mutations": {"idempotency_key": key}}},
+    )
+    _dispatch_outbox_source("jumuiya_inventory_movements", business_id, movement["_id"])
+    _dispatch_outbox_source("jumuiya_products", business_id, product["_id"])
+    latest_product = products.find_one({"_id": product["_id"], "business_id": str(business_id)}) or product
+    return latest_product, movement
+
+
+def inventory_adjustment(user_id, product_id, payload):
+    """Adjust inventory using compare-and-set, durable recovery markers and idempotent movements."""
+    business = _require_business(user_id)
+    business_id = str(business["id"])
+    products = collection("jumuiya_products")
+    movements = collection("jumuiya_inventory_movements")
+    product_query = {"_id": clean_id(product_id), "business_id": business_id}
+
+    movement_type = str(payload.get("movement_type") or "").strip().lower()
+    if movement_type not in {"add", "remove", "set"}:
+        raise APIError("Invalid inventory movement.", 422, "invalid_movement")
+    try:
+        quantity = Decimal(str(payload["quantity"]))
+    except (InvalidOperation, TypeError, ValueError, KeyError):
+        raise APIError("Stock quantities must be valid numbers.", 422, "invalid_stock_quantity")
+    if not quantity.is_finite() or quantity < 0 or (movement_type != "set" and quantity <= 0):
+        raise APIError("Stock adjustment quantity is invalid.", 422, "invalid_stock_quantity")
+
+    reason = str(payload.get("reason") or "manual_adjustment").strip()[:300]
+    client_key = str(payload.get("idempotency_key") or "").strip()
+    if client_key and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{7,127}", client_key):
+        raise APIError("Idempotency-Key must be 8–128 safe characters.", 422, "invalid_idempotency_key")
+    # Give every persisted mutation a unique movement key. Clients should
+    # provide Idempotency-Key to make network retries refer to the same action.
+    mutation_key = client_key or ("stock-adjust:" + str(ObjectId()))
+    fingerprint = _inventory_adjustment_fingerprint(product_id, movement_type, quantity, reason)
+
     product = products.find_one(product_query)
     if not product:
         raise APIError("Product not found.", 404, "product_not_found")
 
+    existing_movement = movements.find_one({
+        "business_id": business_id,
+        "idempotency_key": mutation_key,
+    })
+    if existing_movement:
+        if existing_movement.get("request_fingerprint") != fingerprint:
+            raise APIError("Idempotency-Key was reused with different stock adjustment data.", 409, "idempotency_key_reused")
+        products.update_one(
+            product_query,
+            {"$pull": {"pending_inventory_mutations": {"idempotency_key": mutation_key}}},
+        )
+        _dispatch_outbox_source("jumuiya_inventory_movements", business_id, existing_movement["_id"])
+        return {
+            "product": serialise(products.find_one(product_query) or product),
+            "movement": serialise(existing_movement),
+            "replayed": True,
+        }
+
+    pending_marker = next(
+        (
+            marker for marker in (product.get("pending_inventory_mutations") or [])
+            if str(marker.get("idempotency_key")) == mutation_key
+        ),
+        None,
+    )
+    if pending_marker:
+        if pending_marker.get("request_fingerprint") != fingerprint:
+            raise APIError("Idempotency-Key was reused with different stock adjustment data.", 409, "idempotency_key_reused")
+        repaired_product, repaired_movement = _persist_inventory_adjustment_movement(
+            business_id, user_id, product, pending_marker
+        )
+        return {
+            "product": serialise(repaired_product),
+            "movement": serialise(repaired_movement),
+            "replayed": True,
+        }
+
     try:
         previous_stock = Decimal(str(product.get("stock_quantity", 0) or 0))
         reserved_stock = Decimal(str(product.get("reserved_quantity", 0) or 0))
-        quantity = Decimal(str(payload["quantity"]))
-    except (InvalidOperation, TypeError, ValueError, KeyError):
-        raise APIError("Stock quantities must be valid numbers.", 422, "invalid_stock_quantity")
+    except (InvalidOperation, TypeError, ValueError):
+        raise APIError("Product inventory state is invalid.", 409, "invalid_inventory_state")
     if (
         not previous_stock.is_finite()
         or not reserved_stock.is_finite()
-        or not quantity.is_finite()
         or previous_stock < 0
         or reserved_stock < 0
         or reserved_stock > previous_stock
-        or quantity <= 0
     ):
-        raise APIError("Product inventory state or adjustment quantity is invalid.", 422, "invalid_stock_quantity")
+        raise APIError("Product inventory state is inconsistent.", 409, "invalid_inventory_state")
 
-    movement_type = payload.get("movement_type")
     if movement_type == "add":
         new_stock = previous_stock + quantity
     elif movement_type == "remove":
@@ -670,7 +806,7 @@ def inventory_adjustment(user_id, product_id, payload):
                 "insufficient_stock",
             )
         new_stock = previous_stock - quantity
-    elif movement_type == "set":
+    else:
         if quantity < reserved_stock:
             raise APIError(
                 "Stock cannot be set below the quantity reserved by open orders.",
@@ -678,12 +814,53 @@ def inventory_adjustment(user_id, product_id, payload):
                 "stock_below_reserved",
             )
         new_stock = quantity
-    else:
-        raise APIError("Invalid inventory movement.", 422, "invalid_movement")
 
+    if new_stock == previous_stock:
+        return {
+            "product": serialise(product),
+            "movement": None,
+            "replayed": True,
+        }
+
+    now = now_utc()
+    marker = {
+        "idempotency_key": mutation_key,
+        "request_fingerprint": fingerprint,
+        "movement_type": movement_type,
+        "quantity": float(quantity),
+        "reason": reason,
+        "source": "manual_adjustment",
+        "actor_user_id": str(user_id),
+        "previous_stock_quantity": float(previous_stock),
+        "new_stock_quantity": float(new_stock),
+        "previous_reserved_quantity": float(reserved_stock),
+        "new_reserved_quantity": float(reserved_stock),
+        "previous_available_quantity": float(previous_stock - reserved_stock),
+        "new_available_quantity": float(new_stock - reserved_stock),
+        "applied_at": now,
+    }
+    product_event = _build_outbox_manifest(
+        event_key=f"product:{product['_id']}:inventory:{mutation_key}",
+        event_type="product.inventory_adjusted",
+        entity_type="product",
+        entity_id=product["_id"],
+        payload={
+            "product_id": str(product["_id"]),
+            "movement_type": movement_type,
+            "quantity": float(quantity),
+            "reason": reason,
+            "stock_quantity": float(new_stock),
+            "reserved_quantity": float(reserved_stock),
+            "available_quantity": float(new_stock - reserved_stock),
+            "currency": str(product.get("currency") or business.get("currency") or "KES").upper(),
+        },
+        actor_user_id=user_id,
+        occurred_at=now,
+    )
     filter_doc = {
         **product_query,
         "stock_quantity": product.get("stock_quantity", 0),
+        "pending_inventory_mutations.idempotency_key": {"$ne": mutation_key},
     }
     if "reserved_quantity" in product:
         filter_doc["reserved_quantity"] = product["reserved_quantity"]
@@ -693,156 +870,89 @@ def inventory_adjustment(user_id, product_id, payload):
     updated = products.find_one_and_update(
         filter_doc,
         {
-            "$set": {
-                "stock_quantity": float(new_stock),
-                "updated_at": now_utc(),
-            }
+            "$set": {"stock_quantity": float(new_stock), "updated_at": now},
+            "$addToSet": {
+                "pending_inventory_mutations": marker,
+                "outbox_event_manifest": product_event,
+            },
         },
         return_document=ReturnDocument.AFTER,
     )
     if not updated:
+        # A duplicate idempotency-key call may have committed between our read
+        # and compare-and-set. Return that result only if its fingerprint matches.
+        existing_movement = movements.find_one({
+            "business_id": business_id,
+            "idempotency_key": mutation_key,
+        })
+        if existing_movement and existing_movement.get("request_fingerprint") == fingerprint:
+            _dispatch_outbox_source("jumuiya_inventory_movements", business_id, existing_movement["_id"])
+            return {
+                "product": serialise(products.find_one(product_query) or product),
+                "movement": serialise(existing_movement),
+                "replayed": True,
+            }
         raise APIError(
             "Inventory changed while this adjustment was being saved. Reload and retry.",
             409,
             "inventory_concurrent_update",
         )
 
-    movement_payload = {
-        **payload,
-        "quantity": float(quantity),
-        "reason": str(payload.get("reason") or "manual_adjustment"),
-    }
-    movement = inventory_movement_document(
-        business["id"],
-        product["_id"],
-        movement_payload,
-        float(previous_stock - reserved_stock),
-        float(new_stock - reserved_stock),
+    repaired_product, movement = _persist_inventory_adjustment_movement(
+        business_id, user_id, updated, marker
     )
-    movement["actor_user_id"] = str(user_id)
-    movement["source"] = "manual_adjustment"
-    movement_result = collection("jumuiya_inventory_movements").insert_one(movement)
-    movement["_id"] = movement_result.inserted_id
-
     log_action(user_id, "inventory.adjusted", "product", product["_id"], {
         "movement_type": movement_type,
         "quantity": float(quantity),
+        "idempotency_key": mutation_key,
     })
     return {
-        "product": serialise(updated),
+        "product": serialise(repaired_product),
         "movement": serialise(movement),
+        "replayed": False,
     }
 
 
-# =========================================================
-# CUSTOMERS
-# =========================================================
-
-def create_customer(
-    user_id,
-    payload,
-):
-
-    business = _require_business(
-        user_id
-    )
-
-    document = customer_document(
-        business["id"],
-        payload,
-    )
-
-    result = collection(
-        "jumuiya_customers"
-    ).insert_one(document)
-
-    document["_id"] = (
-        result.inserted_id
-    )
-
-    log_action(
-        user_id,
-        "customer.created",
-        "customer",
-        result.inserted_id,
-    )
-
-    return serialise(
-        document
-    )
-
-
-def list_customers(
-    user_id,
-    search=None,
-    limit=50,
-):
-    """List this business's customers with search and bounded pagination."""
+def repair_pending_inventory_movements(user_id, limit=100):
+    """Recover stock mutations whose product write committed before movement insert."""
     business = _require_business(user_id)
-    query = {"business_id": business["id"]}
-
-    search_text = str(search or "").strip()
-    if search_text:
-        expression = {"$regex": re.escape(search_text), "$options": "i"}
-        query["$or"] = [
-            {"name": expression},
-            {"phone": expression},
-            {"email": expression},
-        ]
-
-    documents = (
-        collection("jumuiya_customers")
-        .find(query)
-        .sort("created_at", -1)
-        .limit(_bounded_list_limit(limit))
-    )
-    return serialise_many(documents)
-
-
-# =========================================================
-# ORDERS
-# =========================================================
-
-
-
-def _order_fingerprint(payload):
-    """Stable fingerprint of customer intent, excluding client prices/totals."""
-    items = []
-    for item in payload.get("items", []):
-        quantity = Decimal(str(item.get("quantity", 0)))
-        items.append({
-            "product_id": str(item.get("product_id") or ""),
-            "quantity": format(quantity.normalize(), "f"),
-        })
-    canonical = {
-        "customer_id": str(payload.get("customer_id") or ""),
-        "items": items,
-        "notes": str(payload.get("notes") or "").strip(),
+    try:
+        limit = int(limit)
+    except (TypeError, ValueError):
+        limit = 100
+    limit = min(max(limit, 1), 100)
+    products = collection("jumuiya_products")
+    query = {
+        "business_id": str(business["id"]),
+        "pending_inventory_mutations.0": {"$exists": True},
     }
-    encoded = json.dumps(canonical, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    return hashlib.sha256(encoded).hexdigest()
-
-
-def _order_quantities(order):
-    quantities = {}
-    for item in order.get("items", []):
-        product_id = str(item.get("product_id") or "")
-        try:
-            quantity = Decimal(str(item.get("quantity")))
-        except (InvalidOperation, TypeError, ValueError):
-            raise APIError("Stored order quantity is invalid.", 409, "invalid_order_inventory")
-        if not product_id or not quantity.is_finite() or quantity <= 0:
-            raise APIError("Stored order item is invalid.", 409, "invalid_order_inventory")
-        quantities[product_id] = quantities.get(product_id, Decimal("0")) + quantity
-    return quantities
-
-
-def _reservation_for(product, order_id):
-    for reservation in product.get("active_reservations", []) or []:
-        if str(reservation.get("order_id")) == str(order_id):
-            return reservation
-    return None
-
+    report = {"products_scanned": 0, "movements_repaired": 0, "errors": 0}
+    for product in products.find(query).limit(limit):
+        report["products_scanned"] += 1
+        for marker in product.get("pending_inventory_mutations") or []:
+            try:
+                existing = collection("jumuiya_inventory_movements").find_one({
+                    "business_id": str(business["id"]),
+                    "idempotency_key": marker.get("idempotency_key"),
+                })
+                if existing:
+                    if existing.get("request_fingerprint") != marker.get("request_fingerprint"):
+                        raise APIError("Pending inventory marker conflicts with a movement.", 409, "inventory_mutation_conflict")
+                    products.update_one(
+                        {"_id": product["_id"], "business_id": str(business["id"])},
+                        {"$pull": {"pending_inventory_mutations": {"idempotency_key": marker.get("idempotency_key")}}},
+                    )
+                    _dispatch_outbox_source("jumuiya_inventory_movements", business["id"], existing["_id"])
+                else:
+                    _persist_inventory_adjustment_movement(business["id"], user_id, product, marker)
+                    report["movements_repaired"] += 1
+            except Exception as error:
+                report["errors"] += 1
+                logger.warning(
+                    "Biashara inventory movement repair deferred (error=%s)",
+                    type(error).__name__,
+                )
+    return report
 
 def _inventory_movement_key(order_id, product_id, operation):
     return f"biashara:order:{order_id}:{operation}:{product_id}"
