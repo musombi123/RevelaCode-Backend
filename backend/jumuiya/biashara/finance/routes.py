@@ -88,3 +88,28 @@ def record_payment(invoice_id):
         else "Cash receipt recorded by manual attestation and allocated to the invoice."
     )
     return created(result, message)
+
+@biashara_finance_bp.get("/ledger/summary")
+@require_authenticated
+def ledger_summary():
+    result = services.get_ledger_summary(
+        current_user_id(),
+        currency=request.args.get("currency"),
+        from_date=request.args.get("from_date"),
+        to_date=request.args.get("to_date"),
+    )
+    return ok(result, "Biashara operational ledger summary loaded.")
+
+
+@biashara_finance_bp.get("/ledger/entries")
+@require_authenticated
+def ledger_entries():
+    rows = services.get_journal_entries(
+        current_user_id(),
+        limit=request.args.get("limit", 50),
+        source_type=request.args.get("source_type"),
+        from_date=request.args.get("from_date"),
+        to_date=request.args.get("to_date"),
+    )
+    return ok(rows, "Biashara journal entries loaded.", meta={"count": len(rows), "limit": min(max(int(request.args.get("limit", 50)) if str(request.args.get("limit", 50)).isdigit() else 50, 1), 100)})
+
