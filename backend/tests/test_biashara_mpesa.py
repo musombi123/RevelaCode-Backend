@@ -39,6 +39,14 @@ def _get(document, path):
     for part in path.split("."):
         if isinstance(value, dict):
             value = value.get(part, _missing)
+        elif isinstance(value, list):
+            value = [
+                item.get(part, _missing)
+                for item in value
+                if isinstance(item, dict) and part in item
+            ]
+            if not value:
+                return _missing
         else:
             return _missing
     return value
@@ -69,6 +77,9 @@ def _matches(document, query):
                     if actual is not _missing and (
                         actual == value or isinstance(actual, list) and value in actual
                     ):
+                        return False
+                elif operator == "$gte":
+                    if actual is _missing or actual < value:
                         return False
                 elif operator == "$type":
                     if value == "string" and not isinstance(actual, str):
@@ -163,6 +174,13 @@ class FakeCollection:
             target = item.setdefault(key, [])
             if value not in target:
                 target.append(deepcopy(value))
+        for key, condition in update.get("$pull", {}).items():
+            target = item.get(key)
+            if isinstance(target, list):
+                item[key] = [
+                    entry for entry in target
+                    if not (isinstance(entry, dict) and isinstance(condition, dict) and _matches(entry, condition))
+                ]
         for key, value in update.get("$unset", {}).items():
             item.pop(key, None)
 
@@ -329,6 +347,8 @@ def test_stk_push_saves_one_idempotent_request_and_allocates_only_correlated_ver
     invoice = mpesa_db["data"][mpesa.INVOICES_COLLECTION].find_one({"_id": INVOICE_ID})
     assert invoice["amount_paid_minor"] == 2500
     assert invoice["payment_status"] == "paid"
+    assert invoice["pending_mpesa_amount_minor"] == 0
+    assert invoice["pending_mpesa_reservations"] == []
     assert len(mpesa_db["data"][mpesa.PAYMENTS_COLLECTION].documents) == 1
     journal = mpesa_db["data"][ledger.JOURNAL_COLLECTION].documents
     assert len(journal) == 1
@@ -407,6 +427,9 @@ def test_ambiguous_provider_timeout_is_not_resent_on_idempotent_retry(mpesa_db, 
     })
     assert saved["payment_status"] == "provider_request_unknown"
     assert saved["provider_verified"] is False
+    assert saved["provider_reservation_active"] is True
+    invoice = mpesa_db["data"][mpesa.INVOICES_COLLECTION].find_one({"_id": INVOICE_ID})
+    assert invoice["pending_mpesa_amount_minor"] == 2500
 
     with pytest.raises(APIError) as retry_error:
         mpesa.start_stk_push("owner-1", str(INVOICE_ID), _payment_payload(), "stk-payment-request-0004")
@@ -519,4 +542,102 @@ def test_callback_diagnostics_are_sanitized_and_tenant_scoped(mpesa_db, monkeypa
         "id": "business-2", "permissions": ["*"]
     })
     assert mpesa.list_callback_events("other-owner", limit=10) == []
+
+def test_pending_stk_reservations_prevent_overlapping_invoice_requests(mpesa_db, monkeypatch):
+    calls = _ok_requests(monkeypatch)
+    first = mpesa.start_stk_push(
+        "owner-1", str(INVOICE_ID), _payment_payload("20.00"), "stk-reservation-first-0001"
+    )
+    assert first["payment_status"] == "pending_provider_confirmation"
+
+    with pytest.raises(APIError) as second_error:
+        mpesa.start_stk_push(
+            "owner-1", str(INVOICE_ID), _payment_payload("10.00"), "stk-reservation-second-0002"
+        )
+    assert second_error.value.code == "invoice_balance_reserved"
+    assert len(calls["post"]) == 1
+    invoice = mpesa_db["data"][mpesa.INVOICES_COLLECTION].find_one({"_id": INVOICE_ID})
+    assert invoice["pending_mpesa_amount_minor"] == 2000
+    assert len(invoice["pending_mpesa_reservations"]) == 1
+    records = mpesa_db["data"][mpesa.PAYMENTS_COLLECTION].documents
+    rejected = next(row for row in records if row["idempotency_key"] == "mpesa-stk:stk-reservation-second-0002")
+    assert rejected["payment_status"] == "provider_request_rejected"
+    assert rejected["provider_reservation_active"] is False
+
+
+def test_definitive_provider_rejection_releases_the_invoice_reservation(mpesa_db, monkeypatch):
+    calls = {"get": 0, "post": 0}
+    monkeypatch.setattr(mpesa.requests, "get", lambda url, **kwargs: (
+        calls.__setitem__("get", calls["get"] + 1) or FakeResponse(200, {"access_token": "mock-only-access-token"})
+    ))
+    monkeypatch.setattr(mpesa.requests, "post", lambda url, **kwargs: (
+        calls.__setitem__("post", calls["post"] + 1) or FakeResponse(400, {"errorCode": "400.001", "errorMessage": "Rejected"})
+    ))
+
+    with pytest.raises(APIError) as raised:
+        mpesa.start_stk_push(
+            "owner-1", str(INVOICE_ID), _payment_payload(), "stk-definitive-rejection-0001"
+        )
+    assert raised.value.code == "mpesa_provider_http_error"
+    assert calls == {"get": 1, "post": 1}
+    invoice = mpesa_db["data"][mpesa.INVOICES_COLLECTION].find_one({"_id": INVOICE_ID})
+    assert invoice["pending_mpesa_amount_minor"] == 0
+    assert invoice["pending_mpesa_reservations"] == []
+    payment = mpesa_db["data"][mpesa.PAYMENTS_COLLECTION].find_one({
+        "business_id": BUSINESS_ID,
+        "idempotency_key": "mpesa-stk:stk-definitive-rejection-0001",
+    })
+    assert payment["payment_status"] == "provider_request_rejected"
+    assert payment["provider_reservation_active"] is False
+
+
+def test_failed_stk_callback_releases_invoice_reservation(mpesa_db, monkeypatch):
+    _ok_requests(monkeypatch)
+    payment = mpesa.start_stk_push(
+        "owner-1", str(INVOICE_ID), _payment_payload(), "stk-provider-failed-0001"
+    )
+    result = mpesa.receive_stk_callback(
+        str(CONNECTION_ID),
+        _stk_callback(amount=None, receipt=None, result_code=1032),
+        "196.201.214.200",
+    )
+    assert result["event_status"] == "processed_failure"
+    saved = mpesa_db["data"][mpesa.PAYMENTS_COLLECTION].find_one({"_id": ObjectId(payment["id"])})
+    assert saved["payment_status"] == "provider_failed"
+    assert saved["provider_reservation_active"] is False
+    invoice = mpesa_db["data"][mpesa.INVOICES_COLLECTION].find_one({"_id": INVOICE_ID})
+    assert invoice["amount_paid_minor"] == 0
+    assert invoice["pending_mpesa_amount_minor"] == 0
+    assert invoice["pending_mpesa_reservations"] == []
+
+
+def test_safe_pre_submit_intent_can_resume_after_process_crash_without_duplicate_prompt(mpesa_db, monkeypatch):
+    calls = _ok_requests(monkeypatch)
+    original_submit = mpesa._submit_stk_intent
+
+    def simulate_crash_before_reservation(*args, **kwargs):
+        raise RuntimeError("synthetic crash before reservation")
+    monkeypatch.setattr(mpesa, "_submit_stk_intent", simulate_crash_before_reservation)
+
+    with pytest.raises(RuntimeError):
+        mpesa.start_stk_push(
+            "owner-1", str(INVOICE_ID), _payment_payload(), "stk-pre-submit-recovery-0001"
+        )
+    assert calls["post"] == []
+    saved = mpesa_db["data"][mpesa.PAYMENTS_COLLECTION].find_one({
+        "business_id": BUSINESS_ID,
+        "idempotency_key": "mpesa-stk:stk-pre-submit-recovery-0001",
+    })
+    assert saved["provider_request_status"] == "reservation_pending"
+    assert saved["provider_reservation_active"] is False
+
+    monkeypatch.setattr(mpesa, "_submit_stk_intent", original_submit)
+    result = mpesa.start_stk_push(
+        "owner-1", str(INVOICE_ID), _payment_payload(), "stk-pre-submit-recovery-0001"
+    )
+    assert result["payment_status"] == "pending_provider_confirmation"
+    assert len(calls["post"]) == 1
+    invoice = mpesa_db["data"][mpesa.INVOICES_COLLECTION].find_one({"_id": INVOICE_ID})
+    assert invoice["pending_mpesa_amount_minor"] == 2500
+    assert len(invoice["pending_mpesa_reservations"]) == 1
 
