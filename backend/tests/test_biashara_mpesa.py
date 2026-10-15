@@ -815,3 +815,48 @@ def test_stk_query_refuses_intent_without_checkout_id(mpesa_db, monkeypatch):
     assert raised.value.code == "mpesa_checkout_id_missing"
     assert calls == {"get": 1, "post": 1}
 
+def test_manual_cash_cannot_consume_reserved_stk_balance_and_is_ledgered_to_suspense(mpesa_db, monkeypatch):
+    _ok_requests(monkeypatch)
+    stk = mpesa.start_stk_push(
+        "owner-1", str(INVOICE_ID), _payment_payload(), "stk-cash-conflict-0001"
+    )
+    monkeypatch.setattr(finance_services, "_business", lambda user_id, permission=None: (
+        {"id": BUSINESS_ID, "currency": "KES"}, BUSINESS_ID
+    ))
+    monkeypatch.setattr(finance_services, "require_permission", lambda user_id, permission, business_id=None: {
+        "id": business_id or BUSINESS_ID, "permissions": ["*"]
+    })
+    monkeypatch.setattr(finance_services, "log_action", lambda *args, **kwargs: None)
+    monkeypatch.setattr(finance_services, "_dispatch", lambda *args, **kwargs: None)
+
+    cash = finance_services.record_payment(
+        "owner-1",
+        str(INVOICE_ID),
+        {"amount": "25.00", "payment_method": "cash", "reference": "manual-cash-receipt"},
+        "cash-record-during-stk-0001",
+    )
+    assert cash["allocation_status"] == "allocation_conflict"
+    invoice = mpesa_db["data"][mpesa.INVOICES_COLLECTION].find_one({"_id": INVOICE_ID})
+    assert invoice["amount_paid_minor"] == 0
+    assert invoice["pending_mpesa_amount_minor"] == 2500
+    journal = mpesa_db["data"][ledger.JOURNAL_COLLECTION].documents
+    cash_entry = next(entry for entry in journal if entry["source_type"] == "payment.cash_unallocated")
+    assert cash_entry["lines"][0]["account_code"] == "cash_on_hand"
+    assert cash_entry["lines"][1]["account_code"] == "unallocated_customer_receipts"
+    assert cash_entry["total_debit_minor"] == cash_entry["total_credit_minor"] == 2500
+
+    result = mpesa.receive_stk_callback(
+        str(CONNECTION_ID),
+        _stk_callback(),
+        "196.201.214.200",
+    )
+    assert result["event_status"] == "applied"
+    invoice = mpesa_db["data"][mpesa.INVOICES_COLLECTION].find_one({"_id": INVOICE_ID})
+    assert invoice["amount_paid_minor"] == 2500
+    assert invoice["pending_mpesa_amount_minor"] == 0
+    assert invoice["pending_mpesa_reservations"] == []
+    assert len(journal) == 2
+    provider_entry = next(entry for entry in journal if entry["source_type"] == "payment.mpesa_allocated")
+    assert provider_entry["lines"][0]["account_code"] == "mpesa_clearing"
+    assert provider_entry["lines"][1]["account_code"] == "accounts_receivable"
+
