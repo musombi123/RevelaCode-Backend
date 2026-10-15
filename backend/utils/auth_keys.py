@@ -47,9 +47,19 @@ def _role_from_bearer(authorization: str) -> str | None:
     except jwt.InvalidTokenError:
         return None
 
-    role = payload.get("role")
-    if role in {"admin", "support"}:
-        return role
+    # Normalize claim values because older accounts may store roles
+    # with mixed casing or surrounding whitespace.
+    candidates = [payload.get("role")]
+    roles = payload.get("roles", [])
+    if isinstance(roles, str):
+        candidates.append(roles)
+    elif isinstance(roles, (list, tuple, set)):
+        candidates.extend(roles)
+
+    for candidate in candidates:
+        role = str(candidate or "").strip().lower()
+        if role in {"admin", "support"}:
+            return role
 
     return None
 
