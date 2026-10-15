@@ -654,6 +654,32 @@ INDEX_DEFINITIONS = {
             [("business_id", ASCENDING), ("payment_status", ASCENDING), ("created_at", DESCENDING)],
             {"name": "ix_biashara_payments_status_created"},
         ),
+        (
+            [("business_id", ASCENDING), ("provider_name", ASCENDING), ("provider_event_id", ASCENDING)],
+            {
+                "unique": True,
+                "name": "uq_biashara_provider_payment_event",
+                "partialFilterExpression": {
+                    "provider_name": {"$type": "string"},
+                    "provider_event_id": {"$type": "string"},
+                },
+            },
+        ),
+        (
+            [("business_id", ASCENDING), ("provider_connection_id", ASCENDING), ("checkout_request_id", ASCENDING)],
+            {"name": "ix_biashara_mpesa_checkout_lookup"},
+        ),
+    ],
+
+    "jumuiya_mpesa_callback_events": [
+        (
+            [("business_id", ASCENDING), ("connection_id", ASCENDING), ("checkout_request_id", ASCENDING)],
+            {"unique": True, "name": "uq_biashara_mpesa_callback_checkout"},
+        ),
+        (
+            [("business_id", ASCENDING), ("status", ASCENDING), ("received_at", ASCENDING)],
+            {"name": "ix_biashara_mpesa_callback_recovery"},
+        ),
     ],
 
     "jumuiya_finance_counters": [
