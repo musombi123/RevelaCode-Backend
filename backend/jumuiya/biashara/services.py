@@ -1536,189 +1536,338 @@ def update_order_status(user_id, order_id, status):
 # SALES
 # =========================================================
 
-def record_sale(
-    user_id,
-    payload,
-):
 
-    business = _require_business(
-        user_id
+def _sale_fingerprint(payload):
+    """Fingerprint business intent, deliberately excluding client totals/prices."""
+    order_id = str(payload.get("order_id") or "")
+    items = []
+    if not order_id:
+        for item in payload.get("items", []) or []:
+            try:
+                quantity = Decimal(str(item.get("quantity")))
+            except (InvalidOperation, TypeError, ValueError):
+                raise APIError("Sale quantity is invalid.", 422, "invalid_sale_quantity")
+            if not quantity.is_finite() or quantity <= 0:
+                raise APIError("Sale quantities must be positive finite numbers.", 422, "invalid_sale_quantity")
+            items.append({
+                "product_id": str(item.get("product_id") or ""),
+                "quantity": format(quantity.normalize(), "f"),
+            })
+    canonical = {
+        "order_id": order_id,
+        "customer_id": str(payload.get("customer_id") or ""),
+        "items": items,
+        "payment_method": str(payload.get("payment_method") or "cash").lower(),
+        "reference": str(payload.get("reference") or "").strip(),
+    }
+    encoded = json.dumps(canonical, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _sale_payment_state(payment_method):
+    """Return honest manual-entry state; no method here means provider-verified."""
+    method = str(payment_method or "cash").strip().lower()
+    if method == "cash":
+        return "manual_attested", "manual_attested"
+    if method in {"mpesa", "mobile_money", "card", "bank"}:
+        return "verification_required", "unverified_manual"
+    return "manual_recorded", "unverified_manual"
+
+
+def _apply_sale_payment_state(sale, user_id):
+    """Repair the order's payment projection after an interrupted sale write."""
+    order_id = sale.get("order_id")
+    if not order_id:
+        return
+    sale_id = str(sale.get("_id") or sale.get("id") or "")
+    recorded_at = sale.get("created_at") or now_utc()
+    event = {
+        "event_id": "manual-sale:" + sale_id,
+        "source": "manual_sale_record",
+        "status": sale.get("payment_status", "manual_recorded"),
+        "verification_status": sale.get("payment_verification_status", "unverified_manual"),
+        "payment_method": sale.get("payment_method", "cash"),
+        "reference": sale.get("reference", ""),
+        "recorded_at": recorded_at,
+        "actor_user_id": str(user_id),
+    }
+    collection("jumuiya_orders").update_one(
+        {
+            "_id": clean_id(order_id),
+            "business_id": str(sale.get("business_id") or ""),
+        },
+        {
+            "$set": {
+                "payment_status": sale.get("payment_status", "manual_recorded"),
+                "payment_method": sale.get("payment_method", "cash"),
+                "payment_reference": sale.get("reference", ""),
+                "payment_verification_status": sale.get("payment_verification_status", "unverified_manual"),
+                "payment_recorded_at": recorded_at,
+                "updated_at": now_utc(),
+            },
+            "$addToSet": {"payment_history": event},
+        },
     )
 
-    # -----------------------------------------------------
-    # Validate customer
-    # -----------------------------------------------------
 
-    customer_id = payload.get(
-        "customer_id"
-    )
+def _order_sale_amount(order):
+    """Use a server-held total snapshot, recomputing only for legacy orders lacking it."""
+    if order.get("total_amount_minor") is not None:
+        try:
+            minor = int(order["total_amount_minor"])
+            if minor < 0:
+                raise ValueError
+            return minor, minor / 100
+        except (TypeError, ValueError, OverflowError):
+            raise APIError("Stored order total is invalid.", 409, "invalid_order_amount")
 
+    items = order.get("items") if isinstance(order.get("items"), list) else []
+    if items and all(
+        item.get("unit_price") is not None and item.get("quantity") is not None
+        for item in items
+    ):
+        total = Decimal("0.00")
+        for item in items:
+            try:
+                price = Decimal(str(item.get("unit_price")))
+                quantity = Decimal(str(item.get("quantity")))
+            except (InvalidOperation, TypeError, ValueError):
+                raise APIError("Stored order line is invalid.", 409, "invalid_order_amount")
+            if not price.is_finite() or price < 0 or not quantity.is_finite() or quantity <= 0:
+                raise APIError("Stored order line is invalid.", 409, "invalid_order_amount")
+            line_total = (price.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP) * quantity).quantize(
+                Decimal("0.01"), rounding=ROUND_HALF_UP
+            )
+            total += line_total
+        total = total.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        minor = int(total * 100)
+        return minor, float(total)
+
+    try:
+        legacy_total = Decimal(str(order.get("total_amount", 0)))
+    except (InvalidOperation, TypeError, ValueError):
+        raise APIError("Stored order total is invalid.", 409, "invalid_order_amount")
+    if not legacy_total.is_finite() or legacy_total < 0:
+        raise APIError("Stored order total is invalid.", 409, "invalid_order_amount")
+    legacy_total = legacy_total.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    minor = int(legacy_total * 100)
+    return minor, float(legacy_total)
+
+
+def _complete_order_for_manual_sale(order, user_id):
+    """Ensure the canonical order's inventory lifecycle completes before recording a sale."""
+    order_id = str(order.get("_id") or order.get("id") or "")
+    status = str(order.get("status") or "pending").lower()
+
+    if status == "cancelled":
+        raise APIError("A cancelled order cannot be recorded as a sale.", 409, "cancelled_order_sale")
+    if status == "pending":
+        order = update_order_status(user_id, order_id, "confirmed")
+        status = str(order.get("status") or "").lower()
+    if status == "confirmed":
+        order = update_order_status(user_id, order_id, "processing")
+        status = str(order.get("status") or "").lower()
+    elif status == "processing":
+        # Repair a prior interrupted reservation-consumption step safely.
+        _consume_order_inventory(order, user_id)
+        order = collection("jumuiya_orders").find_one({
+            "_id": clean_id(order_id),
+            "business_id": str(order.get("business_id") or ""),
+        }) or order
+
+    status = str(order.get("status") or status).lower()
+    if status == "processing":
+        order = update_order_status(user_id, order_id, "completed")
+    elif status != "completed":
+        raise APIError("Order is not in a saleable lifecycle state.", 409, "invalid_sale_order_state")
+
+    if order.get("inventory_status") != "consumed":
+        order = collection("jumuiya_orders").find_one({
+            "_id": clean_id(order_id),
+            "business_id": str(order.get("business_id") or ""),
+        }) or order
+    if order.get("inventory_status") != "consumed":
+        raise APIError(
+            "Order inventory has not been consumed. Reconcile the order before recording the sale.",
+            409,
+            "order_inventory_not_consumed",
+        )
+    return order
+
+
+def record_sale(user_id, payload):
+    """Record a manual sale through the canonical order/inventory lifecycle.
+
+    The submitted amount, unit price, item name and currency are not trusted.
+    Provider payment is never considered verified by this manual endpoint.
+    """
+    business = _require_business(user_id)
+    business_id = str(business["id"])
+    idempotency_key = str(payload.get("idempotency_key") or "").strip()
+    if idempotency_key and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{7,127}", idempotency_key):
+        raise APIError("Idempotency-Key must be 8–128 safe characters.", 422, "invalid_idempotency_key")
+
+    fingerprint = _sale_fingerprint(payload)
+    sales = collection("jumuiya_sales")
+
+    if idempotency_key:
+        existing = sales.find_one({
+            "business_id": business_id,
+            "idempotency_key": idempotency_key,
+        })
+        if existing:
+            if existing.get("request_fingerprint") != fingerprint:
+                raise APIError(
+                    "This Idempotency-Key was already used for a different sale payload.",
+                    409,
+                    "idempotency_key_reused",
+                )
+            _apply_sale_payment_state(existing, user_id)
+            return serialise(existing)
+
+    customer_id = payload.get("customer_id")
     if customer_id:
-
-        customer = collection(
-            "jumuiya_customers"
-        ).find_one({
-            "_id": clean_id(
-                customer_id
-            ),
-            "business_id": business["id"],
+        customer = collection("jumuiya_customers").find_one({
+            "_id": clean_id(customer_id),
+            "business_id": business_id,
         })
-
         if not customer:
+            raise APIError("Customer does not belong to this business.", 422, "invalid_customer")
 
-            raise APIError(
-                "Customer does not belong to this business.",
-                422,
-                "invalid_customer",
-            )
-
-    # -----------------------------------------------------
-    # Validate stock
-    # -----------------------------------------------------
-
-    for item in payload.get(
-        "items",
-        [],
-    ):
-
-        product = collection(
-            "jumuiya_products"
-        ).find_one({
-            "_id": clean_id(
-                item["product_id"]
-            ),
-            "business_id": business["id"],
-            "status": "active",
+    orders = collection("jumuiya_orders")
+    order = None
+    if payload.get("order_id"):
+        order = orders.find_one({
+            "_id": clean_id(payload["order_id"]),
+            "business_id": business_id,
         })
+        if not order:
+            raise APIError("Order not found.", 404, "order_not_found")
+        if customer_id and str(order.get("customer_id") or "") != str(customer_id):
+            raise APIError("Sale customer does not match the order customer.", 409, "sale_customer_mismatch")
+        customer_id = order.get("customer_id")
 
-        if not product:
+    if order is not None:
+        order_id = str(order.get("_id") or order.get("id") or "")
+        existing_for_order = sales.find_one({
+            "business_id": business_id,
+            "order_id": order_id,
+            "canonical_order_sale": True,
+        })
+        if existing_for_order:
+            if existing_for_order.get("request_fingerprint") != fingerprint:
+                raise APIError(
+                    "A sale has already been recorded for this order with different details.",
+                    409,
+                    "sale_already_recorded",
+                )
+            _apply_sale_payment_state(existing_for_order, user_id)
+            return serialise(existing_for_order)
+    else:
+        submitted_items = payload.get("items")
+        if not isinstance(submitted_items, list) or not submitted_items:
+            raise APIError("A sale must contain at least one item or an existing order_id.", 422, "invalid_sale_items")
+        order_request = {
+            "customer_id": str(customer_id) if customer_id else None,
+            "items": submitted_items,
+            "notes": "POS sale" + (": " + str(payload.get("reference")) if payload.get("reference") else ""),
+            "source_channel": "pos",
+        }
+        if idempotency_key:
+            # Stable internal key so a retry can recover an order created before
+            # the sale document itself was persisted.
+            order_request["idempotency_key"] = "pos-order-" + hashlib.sha256(
+                (business_id + ":" + idempotency_key).encode("utf-8")
+            ).hexdigest()
+        order = create_order(user_id, order_request)
+        # serialise() changes _id to id; load the canonical Mongo document again.
+        order = orders.find_one({
+            "_id": clean_id(order.get("id")),
+            "business_id": business_id,
+        }) or order
 
+    order_id = str(order.get("_id") or order.get("id") or "")
+    existing_for_order = sales.find_one({
+        "business_id": business_id,
+        "order_id": order_id,
+        "canonical_order_sale": True,
+    })
+    if existing_for_order:
+        if existing_for_order.get("request_fingerprint") != fingerprint:
             raise APIError(
-                "One or more products were not found.",
-                422,
-                "invalid_product",
-            )
-
-        requested = float(
-            item["quantity"]
-        )
-
-        available = float(
-            product.get(
-                "stock_quantity",
-                0,
-            )
-        )
-
-        if requested > available:
-
-            raise APIError(
-                f"Insufficient stock for {product.get('name', 'product')}.",
+                "A sale has already been recorded for this order with different details.",
                 409,
-                "insufficient_stock",
+                "sale_already_recorded",
             )
+        _apply_sale_payment_state(existing_for_order, user_id)
+        return serialise(existing_for_order)
 
-    # -----------------------------------------------------
-    # Create sale
-    # -----------------------------------------------------
+    # A completed order is still subject to the same inventory audit invariant.
+    order = _complete_order_for_manual_sale(order, user_id)
+    order_id = str(order.get("_id") or order.get("id") or "")
+    amount_minor, amount = _order_sale_amount(order)
+    currency = str(order.get("currency") or business.get("currency") or "KES").upper()
+    payment_status, verification_status = _sale_payment_state(payload.get("payment_method", "cash"))
+    now = now_utc()
 
-    document = sale_document(
-        business["id"],
-        payload,
-    )
+    sale_payload_data = {
+        "order_id": order_id,
+        "customer_id": str(customer_id) if customer_id else None,
+        "items": order.get("items") or [],
+        "amount": amount,
+        "currency": currency,
+        "payment_method": payload.get("payment_method", "cash"),
+        "reference": str(payload.get("reference") or "")[:120],
+    }
+    document = sale_document(business_id, sale_payload_data)
+    document.update({
+        "order_id": order_id,
+        "amount_minor": amount_minor,
+        "currency": currency,
+        "source_channel": order.get("source_channel") or "pos",
+        "canonical_order_sale": True,
+        "request_fingerprint": fingerprint,
+        "payment_status": payment_status,
+        "payment_verification_status": verification_status,
+        "payment_recorded_at": now,
+        "payment_source": "manual_sale_record",
+        "provider_verified": False,
+        "recorded_by_user_id": str(user_id),
+    })
+    if idempotency_key:
+        document["idempotency_key"] = idempotency_key
 
-    result = collection(
-        "jumuiya_sales"
-    ).insert_one(
-        document
-    )
+    try:
+        result = sales.insert_one(document)
+        document["_id"] = result.inserted_id
+    except DuplicateKeyError:
+        existing = None
+        if idempotency_key:
+            existing = sales.find_one({
+                "business_id": business_id,
+                "idempotency_key": idempotency_key,
+            })
+        if existing is None:
+            existing = sales.find_one({
+                "business_id": business_id,
+                "order_id": order_id,
+                "canonical_order_sale": True,
+            })
+        if existing:
+            if existing.get("request_fingerprint") != fingerprint:
+                raise APIError("Sale already exists with different details.", 409, "sale_already_recorded")
+            _apply_sale_payment_state(existing, user_id)
+            return serialise(existing)
+        raise
 
-    document["_id"] = (
-        result.inserted_id
-    )
-
-    # -----------------------------------------------------
-    # Deduct inventory
-    # -----------------------------------------------------
-
-    for item in payload.get(
-        "items",
-        [],
-    ):
-
-        product_id = clean_id(
-            item["product_id"]
-        )
-
-        quantity = float(
-            item["quantity"]
-        )
-
-        product = collection(
-            "jumuiya_products"
-        ).find_one({
-            "_id": product_id,
-            "business_id": business["id"],
-        })
-
-        if not product:
-            continue
-
-        previous_quantity = float(
-            product.get(
-                "stock_quantity",
-                0,
-            )
-        )
-
-        new_quantity = (
-            previous_quantity
-            - quantity
-        )
-
-        collection(
-            "jumuiya_products"
-        ).update_one(
-            {
-                "_id": product_id,
-                "business_id": business["id"],
-            },
-            {
-                "$set": {
-                    "stock_quantity": new_quantity,
-                    "updated_at": now_utc(),
-                }
-            },
-        )
-
-        movement = inventory_movement_document(
-            business["id"],
-            product_id,
-            {
-                "movement_type": "remove",
-                "quantity": quantity,
-                "reason": "sale",
-            },
-            previous_quantity,
-            new_quantity,
-        )
-
-        collection(
-            "jumuiya_inventory_movements"
-        ).insert_one(
-            movement
-        )
-
-    log_action(
-        user_id,
-        "sale.created",
-        "sale",
-        result.inserted_id,
-    )
-
-    return serialise(
-        document
-    )
+    _apply_sale_payment_state(document, user_id)
+    log_action(user_id, "sale.created", "sale", document["_id"], {
+        "order_id": order_id,
+        "amount_minor": amount_minor,
+        "payment_status": payment_status,
+        "payment_verification_status": verification_status,
+    })
+    return serialise(document)
 
 
 # =========================================================
