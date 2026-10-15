@@ -10,6 +10,7 @@ from backend.jumuiya.core.audit import log_action
 from backend.jumuiya.core.permissions import current_user_id, require_authenticated
 from backend.jumuiya.core.responses import ok
 from backend.jumuiya.biashara import services
+from backend.jumuiya.biashara.tenancy.service import require_business_permission
 from backend.jumuiya.biashara.sync.outbox import (
     get_outbox_summary,
     list_outbox_events,
@@ -27,6 +28,7 @@ def _business():
 
 @biashara_sync_bp.get("/status")
 @require_authenticated
+@require_business_permission("sync.view")
 def sync_status():
     business = _business()
     summary = get_outbox_summary(business["id"])
@@ -35,6 +37,7 @@ def sync_status():
 
 @biashara_sync_bp.get("/events")
 @require_authenticated
+@require_business_permission("sync.view")
 def sync_events():
     business = _business()
     state = request.args.get("state", "")
@@ -49,6 +52,7 @@ def sync_events():
 
 @biashara_sync_bp.post("/events/<event_id>/retry")
 @require_authenticated
+@require_business_permission("sync.manage")
 def retry_sync_event(event_id):
     user_id = current_user_id()
     business = services._require_business(user_id)
@@ -66,6 +70,7 @@ def retry_sync_event(event_id):
 
 @biashara_sync_bp.post("/repair")
 @require_authenticated
+@require_business_permission("sync.manage")
 def repair_pending_sync_manifests():
     user_id = current_user_id()
     business = services._require_business(user_id)
