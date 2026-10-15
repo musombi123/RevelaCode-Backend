@@ -33,6 +33,8 @@ SOURCE_COLLECTIONS = (
     "jumuiya_sales",
     "jumuiya_inventory_movements",
     "jumuiya_products",
+    "jumuiya_invoices",
+    "jumuiya_payments",
 )
 
 OUTBOX_STATES = {"pending", "processing", "retry", "delivered", "dead_letter"}
@@ -69,6 +71,16 @@ SAFE_PAYLOAD_FIELDS = {
     "reserved_quantity",
     "available_quantity",
     "sku",
+    "invoice_number",
+    "invoice_status",
+    "document_type",
+    "balance_due_minor",
+    "amount_paid_minor",
+    "amount_total_minor",
+    "payment_id",
+    "invoice_id",
+    "due_date",
+    "tax_submission_status",
 }
 
 
