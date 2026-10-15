@@ -643,6 +643,20 @@ def _submit_stk_intent(user_id, business_id, invoice, payment, connection, metad
             {"$addToSet": {"outbox_event_manifest": failed_event}},
         )
         _dispatch_payment(payment_id, business_id)
+        if ambiguous:
+            # A verified callback may have arrived during the timed-out POST.
+            # Retry any unmatched events now that the intent is explicitly
+            # marked outcome_unknown and can be safely correlated by amount+phone.
+            pending_callbacks = list(collection(CALLBACKS_COLLECTION).find({
+                "business_id": str(business_id),
+                "connection_id": str(connection["_id"]),
+                "status": "pending_match",
+            }).sort("received_at", 1).limit(20))
+            for callback in pending_callbacks:
+                _apply_callback_event(callback)
+            recovered = payments.find_one({"_id": payment_id, "business_id": str(business_id)})
+            if recovered and recovered.get("payment_status") == "provider_confirmed" and recovered.get("provider_verified") is True:
+                return _public_payment_intent(recovered)
         raise
 
     now = now_utc()
