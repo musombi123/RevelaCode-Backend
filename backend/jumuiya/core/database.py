@@ -565,6 +565,17 @@ INDEX_DEFINITIONS = {
             ],
             {"name": "ix_expenses_business_spent"},
         ),
+        (
+            [
+                ("business_id", ASCENDING),
+                ("idempotency_key", ASCENDING),
+            ],
+            {
+                "unique": True,
+                "name": "uq_biashara_expense_idempotency",
+                "partialFilterExpression": {"idempotency_key": {"$type": "string"}},
+            },
+        ),
     ],
 
     "jumuiya_inventory_movements": [
