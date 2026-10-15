@@ -197,9 +197,8 @@ def verify_domain_claim(user_id, domain_id):
     })
     if not current:
         raise APIError("Domain claim not found.", 404, "domain_claim_not_found")
-    if current.get("status") == "verified":
-        return _public_claim(current, include_challenge=False, verification_result="already_verified")
-
+    # Recheck even previously verified claims so removal of the TXT proof
+    # can revoke ownership status before a future hosting integration uses it.
     hostname = str(current.get("hostname") or "")
     record_name = "_revelacode-verification." + hostname
     expected = TXT_PREFIX + str(current.get("verification_token") or "")
@@ -232,7 +231,7 @@ def verify_domain_claim(user_id, domain_id):
         {
             "_id": current["_id"],
             "business_id": business_id,
-            "status": "pending_dns",
+            "status": current.get("status"),
         },
         {"$set": {
             "status": next_status,
