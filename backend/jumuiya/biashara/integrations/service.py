@@ -17,6 +17,7 @@ from urllib.parse import urlparse
 from bson import ObjectId
 from bson.errors import InvalidId
 from cryptography.fernet import Fernet, InvalidToken
+from pymongo import ReturnDocument
 from pymongo.errors import DuplicateKeyError
 
 from backend.jumuiya.core.audit import log_action
@@ -348,7 +349,6 @@ def create_connection(user_id, payload):
         "credential_fields": sorted(credentials),
         "credentials_ciphertext": ciphertext,
         "credential_key_id": key_id,
-        "credential_fingerprint": hashlib.sha256(json.dumps(credentials, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest(),
         "enabled": enabled,
         "created_by_user_id": str(user_id),
         "updated_by_user_id": str(user_id),
@@ -403,12 +403,12 @@ def update_connection(user_id, connection_id, payload):
             "credentials_ciphertext": ciphertext,
             "credential_key_id": key_id,
             "credential_fields": sorted(next_credentials),
-            "credential_fingerprint": hashlib.sha256(json.dumps(next_credentials, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest(),
         })
 
     updated = connections.find_one_and_update(
         {"_id": current["_id"], "business_id": business_id, "updated_at": current.get("updated_at")},
         {"$set": updates},
+        return_document=ReturnDocument.AFTER,
     )
     if not updated:
         raise APIError("Integration connection changed while saving. Reload and retry.", 409, "integration_connection_conflict")
@@ -434,6 +434,7 @@ def set_connection_enabled(user_id, connection_id, enabled):
             "updated_at": now_utc(),
             "updated_by_user_id": str(user_id),
         }},
+        return_document=ReturnDocument.AFTER,
     )
     if not updated:
         raise APIError("Integration connection changed while saving. Reload and retry.", 409, "integration_connection_conflict")
