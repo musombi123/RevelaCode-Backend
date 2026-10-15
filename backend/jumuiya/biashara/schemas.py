@@ -747,6 +747,14 @@ def order_payload(data):
             "notes",
             max_len=1000,
         ),
+
+        # Optional for backwards compatibility; new clients should send a
+        # stable Idempotency-Key header for safe retries.
+        "idempotency_key": _text(
+            data,
+            "idempotency_key",
+            max_len=128,
+        ),
     }
 
 
