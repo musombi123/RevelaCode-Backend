@@ -166,6 +166,47 @@ def _post_invoice_journal(invoice, user_id):
     )
 
 
+def _post_provider_payment_journal(payment, user_id):
+    """Post a verified, allocated M-Pesa receipt into clearing, not cash-on-hand."""
+    if (
+        payment.get("payment_status") != "provider_confirmed"
+        or payment.get("verification_status") != "provider_verified"
+        or payment.get("provider_verified") is not True
+        or payment.get("provider_name") != "mpesa_daraja"
+        or payment.get("allocation_status") != "allocated"
+    ):
+        return None
+    amount_minor = int(payment.get("amount_minor", 0) or 0)
+    if amount_minor <= 0:
+        return None
+    payment_id = str(payment.get("_id") or payment.get("id") or "")
+    invoice_id = str(payment.get("invoice_id") or "")
+    return post_journal_entry(
+        business_id=str(payment.get("business_id") or ""),
+        source_key="provider-payment:" + payment_id,
+        source_type="payment.mpesa_allocated",
+        source_id=payment_id,
+        currency=payment.get("currency", "KES"),
+        lines=[
+            {
+                "account_code": "mpesa_clearing",
+                "debit_minor": amount_minor,
+                "credit_minor": 0,
+                "memo": "M-Pesa receipt verified; settlement still requires reconciliation",
+            },
+            {
+                "account_code": "accounts_receivable",
+                "debit_minor": 0,
+                "credit_minor": amount_minor,
+                "memo": "Provider payment allocated to invoice " + invoice_id[:80],
+            },
+        ],
+        actor_user_id=user_id,
+        basis="Daraja STK callback passed the configured callback-IP allow-list, matched checkout/merchant identifiers, receipt uniqueness and exact amount checks. This does not establish bank settlement reconciliation.",
+        effective_at=payment.get("provider_transaction_at") or payment.get("provider_verified_at") or payment.get("updated_at") or now_utc(),
+    )
+
+
 def _post_cash_payment_journal(payment, user_id):
     """Post cash-on-hand against receivables only after an allocated cash attestation."""
     if (
@@ -537,16 +578,24 @@ def void_invoice(user_id, invoice_id, reason=""):
 
 
 def _mark_payment_allocation(payment, invoice):
-    """Cash recorded by an authorized owner may be manually attested and allocated.
-    M-Pesa, bank, and card entries stay pending provider verification.
-    """
+    """Allocate only manual cash attestations or provider-verified payment events."""
     business_id = str(payment["business_id"])
     payment_id = payment["_id"]
     invoice_id = str(invoice["_id"])
     payment_key = str(payment["idempotency_key"])
     alloc_key = "payment:" + payment_key
     amount_minor = int(payment["amount_minor"])
-    if payment.get("payment_status") != "manual_attested":
+    manual_cash = (
+        payment.get("payment_status") == "manual_attested"
+        and payment.get("verification_status") == "manual_attested"
+    )
+    verified_mpesa = (
+        payment.get("payment_status") == "provider_confirmed"
+        and payment.get("verification_status") == "provider_verified"
+        and payment.get("provider_verified") is True
+        and payment.get("provider_name") == "mpesa_daraja"
+    )
+    if not (manual_cash or verified_mpesa):
         collection("jumuiya_payments").update_one(
             {"_id": payment_id, "business_id": business_id},
             {"$set": {"allocation_status": "not_allocated_pending_verification", "updated_at": now_utc()}}
@@ -614,7 +663,10 @@ def _mark_payment_allocation(payment, invoice):
     ) or payment
     _dispatch("jumuiya_invoices", business_id, invoice_id)
     _dispatch("jumuiya_payments", business_id, payment_id)
-    _post_cash_payment_journal(updated_payment, payment.get("recorded_by_user_id") or "")
+    if manual_cash:
+        _post_cash_payment_journal(updated_payment, payment.get("recorded_by_user_id") or "")
+    elif verified_mpesa:
+        _post_provider_payment_journal(updated_payment, payment.get("recorded_by_user_id") or "")
     return updated_payment
 
 
