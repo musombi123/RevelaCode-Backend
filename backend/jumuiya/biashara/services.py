@@ -2,6 +2,7 @@
 
 import re
 from datetime import datetime, timezone
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 
 from bson import ObjectId
 from bson.errors import InvalidId
@@ -734,93 +735,174 @@ def create_order(
     user_id,
     payload,
 ):
+    """Create a pending order using server-authoritative catalogue prices.
 
-    business = _require_business(
-        user_id
-    )
+    Submitted line names/prices/totals are never trusted. The current stock
+    check is advisory because pending orders do not reserve inventory yet;
+    that limitation is recorded on the order until reservation/fulfilment is
+    implemented as a separate, idempotent workflow.
+    """
+    business = _require_business(user_id)
 
-    # -----------------------------------------------------
-    # Validate customer ownership
-    # -----------------------------------------------------
-
-    customer_id = payload.get(
-        "customer_id"
-    )
-
+    customer_id = payload.get("customer_id")
     if customer_id:
-
-        customer = collection(
-            "jumuiya_customers"
-        ).find_one({
-            "_id": clean_id(
-                customer_id
-            ),
+        customer = collection("jumuiya_customers").find_one({
+            "_id": clean_id(customer_id),
             "business_id": business["id"],
         })
-
         if not customer:
-
             raise APIError(
                 "Customer does not belong to this business.",
                 422,
                 "invalid_customer",
             )
 
-    # -----------------------------------------------------
-    # Validate products
-    # -----------------------------------------------------
+    submitted_items = payload.get("items")
+    if not isinstance(submitted_items, list) or not submitted_items:
+        raise APIError("An order must contain at least one item.", 422, "invalid_order_items")
 
-    for item in payload.get(
-        "items",
-        [],
-    ):
+    currency = str(business.get("currency") or "KES").strip().upper()
+    if not re.fullmatch(r"[A-Z]{3}", currency):
+        currency = "KES"
 
-        product = collection(
-            "jumuiya_products"
-        ).find_one({
-            "_id": clean_id(
-                item["product_id"]
-            ),
-            "business_id": business["id"],
-            "status": {
-                "$ne": "deleted"
-            },
-        })
+    product_cache = {}
+    requested_by_product = {}
+    priced_items = []
+    subtotal = Decimal("0.00")
 
-        if not product:
-
+    for index, item in enumerate(submitted_items):
+        if not isinstance(item, dict):
             raise APIError(
-                f"Product {item['product_id']} was not found.",
+                f"Order item {index + 1} must be an object.",
                 422,
-                "invalid_product",
+                "invalid_order_items",
             )
 
-    document = order_document(
-        business["id"],
-        payload,
-    )
+        raw_product_id = item.get("product_id")
+        if not raw_product_id:
+            raise APIError(
+                f"Order item {index + 1} requires a product.",
+                422,
+                "invalid_order_items",
+            )
 
-    result = collection(
-        "jumuiya_orders"
-    ).insert_one(
-        document
-    )
+        product_key = str(raw_product_id)
+        product = product_cache.get(product_key)
+        if product is None:
+            product = collection("jumuiya_products").find_one({
+                "_id": clean_id(raw_product_id),
+                "business_id": business["id"],
+                "status": "active",
+            })
+            if not product:
+                raise APIError(
+                    "One or more products are no longer available.",
+                    422,
+                    "invalid_product",
+                )
+            product_cache[product_key] = product
 
-    document["_id"] = (
-        result.inserted_id
-    )
+        try:
+            quantity = Decimal(str(item.get("quantity")))
+            unit_price = Decimal(str(product.get("price", 0)))
+            available = Decimal(str(product.get("stock_quantity", 0) or 0))
+        except (InvalidOperation, TypeError, ValueError):
+            raise APIError(
+                "Order quantity or catalogue price is invalid.",
+                422,
+                "invalid_order_amount",
+            )
 
-    log_action(
-        user_id,
-        "order.created",
-        "order",
-        result.inserted_id,
-    )
+        if not quantity.is_finite() or quantity <= 0:
+            raise APIError(
+                "Order quantities must be positive finite numbers.",
+                422,
+                "invalid_order_quantity",
+            )
+        if not unit_price.is_finite() or unit_price < 0:
+            raise APIError(
+                f"Catalogue price for {product.get('name', 'product')} is invalid.",
+                409,
+                "invalid_catalogue_price",
+            )
+        if not available.is_finite() or available < 0:
+            available = Decimal("0")
+        if str(product.get("currency") or currency).upper() != currency:
+            raise APIError(
+                "All products in one order must use the business currency.",
+                422,
+                "mixed_order_currency",
+            )
 
-    return serialise(
-        document
-    )
+        rounded_price = unit_price.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        line_total = (rounded_price * quantity).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        subtotal += line_total
+        requested_by_product[product_key] = requested_by_product.get(product_key, Decimal("0")) + quantity
 
+        priced_items.append({
+            "product_id": str(product.get("_id")),
+            "name": str(product.get("name") or "Product")[:160],
+            "sku": str(product.get("sku") or "")[:80],
+            "quantity": float(quantity),
+            "unit_price": float(rounded_price),
+            "unit_price_minor": int(rounded_price * 100),
+            "line_total": float(line_total),
+            "line_total_minor": int(line_total * 100),
+            "currency": currency,
+        })
+
+    # A pending order does not reduce stock yet. This is an advisory check only;
+    # two concurrent pending orders can still request the same units until a
+    # durable reservation workflow is implemented.
+    for product_key, requested in requested_by_product.items():
+        product = product_cache[product_key]
+        available = Decimal(str(product.get("stock_quantity", 0) or 0))
+        if requested > available:
+            raise APIError(
+                f"Insufficient stock for {product.get('name', 'product')}.",
+                409,
+                "insufficient_stock",
+            )
+
+    subtotal = subtotal.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    total = subtotal
+    now = now_utc()
+    trusted_payload = {
+        "customer_id": str(customer_id) if customer_id else None,
+        "items": priced_items,
+        "subtotal": float(subtotal),
+        "subtotal_minor": int(subtotal * 100),
+        "discount": 0,
+        "total_amount": float(total),
+        "total_amount_minor": int(total * 100),
+        "currency": currency,
+        "status": "pending",
+        "payment_status": "unpaid",
+        "payment_method": "",
+        "payment_reference": "",
+        "notes": str(payload.get("notes") or "")[:1000],
+    }
+
+    document = order_document(business["id"], trusted_payload)
+    document.update({
+        "subtotal_minor": int(subtotal * 100),
+        "total_amount_minor": int(total * 100),
+        "currency": currency,
+        "source_channel": "manual",
+        "inventory_status": "not_reserved",
+        "status_history": [{
+            "from": None,
+            "to": "pending",
+            "at": now.isoformat(),
+            "actor_user_id": str(user_id),
+        }],
+    })
+
+    result = collection("jumuiya_orders").insert_one(document)
+    document["_id"] = result.inserted_id
+
+    log_action(user_id, "order.created", "order", result.inserted_id)
+    return serialise(document)
 
 def list_orders(
     user_id,
@@ -879,89 +961,71 @@ def update_order_status(
     order_id,
     status,
 ):
-
-    allowed = {
-        "pending",
-        "confirmed",
-        "processing",
-        "completed",
-        "cancelled",
+    """Apply a legal order transition and append an immutable status event."""
+    transitions = {
+        "pending": {"confirmed", "cancelled"},
+        "confirmed": {"processing", "cancelled"},
+        "processing": {"completed", "cancelled"},
+        "completed": set(),
+        "cancelled": set(),
     }
+    if status not in transitions:
+        raise APIError("Invalid order status.", 422, "invalid_order_status")
 
-    if status not in allowed:
-
-        raise APIError(
-            "Invalid order status.",
-            422,
-            "invalid_order_status",
-        )
-
-    business = _require_business(
-        user_id
-    )
-
-    orders = collection(
-        "jumuiya_orders"
-    )
-
+    business = _require_business(user_id)
+    orders = collection("jumuiya_orders")
     document = orders.find_one({
-        "_id": clean_id(
-            order_id
-        ),
+        "_id": clean_id(order_id),
         "business_id": business["id"],
     })
-
     if not document:
+        raise APIError("Order not found.", 404, "order_not_found")
 
-        raise APIError(
-            "Order not found.",
-            404,
-            "order_not_found",
-        )
-
-    previous_status = document.get(
-        "status",
-        "pending",
-    )
-
-    # Don't allow pointless changes.
+    previous_status = str(document.get("status") or "pending").lower()
     if previous_status == status:
+        return serialise(document)
 
-        return serialise(
-            document
+    if status not in transitions.get(previous_status, set()):
+        raise APIError(
+            f"Order cannot move from {previous_status} to {status}.",
+            409,
+            "invalid_order_transition",
         )
 
-    update = {
-        "status": status,
-        "updated_at": now_utc(),
-    }
-
-    # Completed orders get completed_at.
+    now = now_utc()
+    update = {"status": status, "updated_at": now}
     if status == "completed":
+        update["completed_at"] = now
+    if status == "cancelled":
+        update["cancelled_at"] = now
 
-        update["completed_at"] = now_utc()
-
+    event = {
+        "from": previous_status,
+        "to": status,
+        "at": now.isoformat(),
+        "actor_user_id": str(user_id),
+    }
     updated = orders.find_one_and_update(
         {
             "_id": document["_id"],
             "business_id": business["id"],
+            "status": previous_status,
         },
         {
-            "$set": update
+            "$set": update,
+            "$push": {"status_history": event},
         },
         return_document=ReturnDocument.AFTER,
     )
+    if not updated:
+        raise APIError(
+            "The order changed while this update was being saved. Reload and try again.",
+            409,
+            "order_state_conflict",
+        )
 
-    log_action(
-        user_id,
-        "order.status_updated",
-        "order",
-        document["_id"],
-    )
-
-    return serialise(
-        updated
-    )
+    log_action(user_id, "order.status_updated", "order", document["_id"])
+    return serialise(updated)
 
 
 # =========================================================
