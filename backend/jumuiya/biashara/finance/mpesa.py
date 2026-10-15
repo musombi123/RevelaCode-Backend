@@ -84,6 +84,12 @@ def _public_payment_intent(payment):
         "checkout_request_id": payment.get("checkout_request_id"),
         "merchant_request_id": payment.get("merchant_request_id"),
         "customer_message": payment.get("customer_message"),
+        "provider_last_query_at": _iso(payment.get("provider_last_query_at")),
+        "provider_query_status": payment.get("provider_query_status"),
+        "provider_query_result_code": payment.get("provider_query_result_code"),
+        "provider_query_result_description": payment.get("provider_query_result_description"),
+        "provider_query_error_code": payment.get("provider_query_error_code"),
+        "provider_query_response_code": payment.get("provider_query_response_code"),
         "allocation_status": payment.get("allocation_status"),
         "reference": payment.get("reference"),
         "created_at": _iso(payment.get("created_at")),
@@ -1287,6 +1293,146 @@ def _apply_callback_event(event):
                   "payment_id": str(updated["_id"]), "allocation_status": allocated.get("allocation_status")}},
     )
     return {"status": status, "effects_applied": True, "allocation_status": allocated.get("allocation_status")}
+
+
+def query_stk_status(user_id, payment_id):
+    """Query Daraja for a known CheckoutRequestID without treating the query as payment proof."""
+    context = require_permission(user_id, "finance.manage")
+    business_id = str(context.get("id") or "")
+    if not business_id:
+        raise APIError("Selected business is unavailable.", 409, "business_id_missing")
+
+    payments = collection(PAYMENTS_COLLECTION)
+    payment = payments.find_one({
+        "_id": _clean_id(payment_id),
+        "business_id": business_id,
+        "source": "mpesa_stk_push",
+        "provider_name": "mpesa_daraja",
+    })
+    if not payment:
+        raise APIError("M-Pesa payment intent not found.", 404, "mpesa_payment_not_found")
+    checkout_id = str(payment.get("checkout_request_id") or "").strip()
+    merchant_id = str(payment.get("merchant_request_id") or "").strip()
+    if not checkout_id or not merchant_id:
+        raise APIError(
+            "This request has no saved CheckoutRequestID. Use callback correlation or the provider reconciliation procedure; it cannot be queried by STK Query yet.",
+            409,
+            "mpesa_checkout_id_missing",
+        )
+    if payment.get("payment_status") in {"provider_confirmed", "provider_failed", "provider_request_rejected"}:
+        return _public_payment_intent(payment)
+
+    connection_id = str(payment.get("provider_connection_id") or "")
+    connection, metadata, credentials = _connection(business_id, connection_id, enabled=False)
+    token = _access_token(credentials, metadata["environment"])
+    shortcode = str(metadata["shortcode"])
+    timestamp = now_utc().strftime("%Y%m%d%H%M%S")
+    password = base64.b64encode(
+        (shortcode + credentials["passkey"] + timestamp).encode("utf-8")
+    ).decode("ascii")
+    query_body = {
+        "BusinessShortCode": shortcode,
+        "Password": password,
+        "Timestamp": timestamp,
+        "CheckoutRequestID": checkout_id,
+    }
+    try:
+        response = requests.post(
+            _provider_root(metadata["environment"]) + "/mpesa/stkpushquery/v1/query",
+            headers={
+                "Authorization": "Bearer " + token,
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+            },
+            json=query_body,
+            timeout=REQUEST_TIMEOUT,
+            allow_redirects=False,
+        )
+        result = _response_json(response, "STK Query")
+    except APIError as error:
+        now = now_utc()
+        payments.update_one(
+            {"_id": payment["_id"], "business_id": business_id},
+            {"$set": {
+                "provider_last_query_at": now,
+                "provider_query_status": "unavailable",
+                "provider_query_error_code": error.code,
+                "updated_at": now,
+            }},
+        )
+        log_action(user_id, "biashara.mpesa_status_query_failed", "payment", payment["_id"], {
+            "provider_error_code": error.code,
+            "checkout_id_hash": hashlib.sha256(checkout_id.encode("utf-8")).hexdigest()[:12],
+        })
+        raise
+    except requests.RequestException as error:
+        now = now_utc()
+        payments.update_one(
+            {"_id": payment["_id"], "business_id": business_id},
+            {"$set": {
+                "provider_last_query_at": now,
+                "provider_query_status": "unavailable",
+                "provider_query_error_code": "mpesa_query_transport_error",
+                "updated_at": now,
+            }},
+        )
+        raise APIError(
+            "Daraja STK Query could not be reached. The payment state was not changed.",
+            502,
+            "mpesa_query_transport_error",
+            details={"error_type": type(error).__name__},
+        )
+
+    response_checkout_id = str(result.get("CheckoutRequestID") or "").strip()
+    response_merchant_id = str(result.get("MerchantRequestID") or "").strip()
+    if response_checkout_id and response_checkout_id != checkout_id:
+        raise APIError("Daraja STK Query returned a different CheckoutRequestID.", 502, "mpesa_query_correlation_mismatch")
+    if response_merchant_id and response_merchant_id != merchant_id:
+        raise APIError("Daraja STK Query returned a different MerchantRequestID.", 502, "mpesa_query_correlation_mismatch")
+
+    response_code = str(result.get("ResponseCode") or "").strip()
+    # Most query responses acknowledge that the status request was accepted;
+    # they are not themselves the customer's transaction callback. Do not
+    # allocate, confirm, fail, or release the payment reservation from this.
+    raw_result_code = result.get("ResultCode")
+    parsed_result_code = None
+    if isinstance(raw_result_code, int) and not isinstance(raw_result_code, bool):
+        parsed_result_code = raw_result_code
+    elif isinstance(raw_result_code, str) and re.fullmatch(r"-?[0-9]{1,8}", raw_result_code.strip()):
+        parsed_result_code = int(raw_result_code.strip())
+    result_description = result.get("ResultDesc")
+    if not isinstance(result_description, str):
+        result_description = result.get("ResponseDescription")
+    if not isinstance(result_description, str):
+        result_description = ""
+    result_description = result_description.strip()[:200]
+    now = now_utc()
+    if response_code != "0":
+        query_status = "query_rejected"
+    elif parsed_result_code is None:
+        query_status = "accepted_waiting_for_verified_callback"
+    else:
+        query_status = "provider_result_reported_waiting_for_verified_callback"
+
+    payments.update_one(
+        {"_id": payment["_id"], "business_id": business_id},
+        {"$set": {
+            "provider_last_query_at": now,
+            "provider_query_status": query_status,
+            "provider_query_response_code": response_code or None,
+            "provider_query_result_code": parsed_result_code,
+            "provider_query_result_description": result_description or None,
+            "provider_query_error_code": None if response_code == "0" else "mpesa_query_not_accepted",
+            "updated_at": now,
+        }},
+    )
+    log_action(user_id, "biashara.mpesa_status_queried", "payment", payment["_id"], {
+        "query_status": query_status,
+        "result_code_present": parsed_result_code is not None,
+        "checkout_id_hash": hashlib.sha256(checkout_id.encode("utf-8")).hexdigest()[:12],
+    })
+    current = payments.find_one({"_id": payment["_id"], "business_id": business_id}) or payment
+    return _public_payment_intent(current)
 
 
 def _public_callback_event(document):
