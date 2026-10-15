@@ -431,6 +431,8 @@ def add_member(actor_user_id, business_id, member_user_id, role):
     memberships = collection(MEMBERSHIPS_COLLECTION)
     query = {"business_id": business_id_value, "user_id": target_id}
     existing = memberships.find_one(query)
+    if actor_role == "manager" and existing and str(existing.get("role") or "") == "manager":
+        raise APIError("Only the business owner can modify another manager's membership.", 403, "business_permission_denied")
     now = now_utc()
     if existing:
         update = memberships.find_one_and_update(
@@ -515,6 +517,8 @@ def remove_member(actor_user_id, business_id, member_user_id):
     })
     if not current:
         raise APIError("Active business member not found.", 404, "business_member_not_found")
+    if str(context.get("membership_role") or "") == "manager" and str(current.get("role") or "") == "manager":
+        raise APIError("Only the business owner can revoke another manager's membership.", 403, "business_permission_denied")
     now = now_utc()
     updated = memberships.find_one_and_update(
         {"_id": current["_id"], "business_id": business_id_value, "user_id": target_id, "status": "active"},
