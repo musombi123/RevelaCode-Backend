@@ -508,3 +508,15 @@ def test_mpesa_webhook_is_not_silently_treated_as_verified(integration_db):
     assert raised.value.code == "webhook_provider_unsupported"
     assert len(integration_db.webhook_deliveries.documents) == 0
 
+def test_oversized_webhook_body_is_rejected_before_persistence(integration_db):
+    payload = _woocommerce_payload(name="Oversized webhook")
+    payload["credentials"]["webhook_secret"] = "webhook-secret"
+    connection = integrations.create_connection("owner-1", payload)
+    body = b"x" * (webhooks.MAX_WEBHOOK_BODY_BYTES + 1)
+
+    with pytest.raises(APIError) as raised:
+        webhooks.receive_webhook(connection["id"], body, {})
+
+    assert raised.value.code == "webhook_body_too_large"
+    assert len(integration_db.webhook_deliveries.documents) == 0
+
