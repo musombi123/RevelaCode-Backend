@@ -7,9 +7,12 @@ server-to-server integrations may still use the X-API-KEY header.
 from __future__ import annotations
 
 import hmac
+import logging
 import os
 
 import jwt
+
+logger = logging.getLogger(__name__)
 
 
 ADMIN_KEY = os.getenv("ADMIN_API_KEY")
@@ -30,11 +33,16 @@ def _matches_configured_key(provided: str | None, configured: str | None) -> boo
 
 def _role_from_bearer(authorization: str) -> str | None:
     """Return a privileged role only from a valid signed JWT."""
-    if not JWT_SECRET or not authorization:
+    if not authorization:
+        return None
+
+    if not JWT_SECRET:
+        logger.error("Privileged API JWT rejected: JWT_SECRET is not configured.")
         return None
 
     scheme, separator, token = authorization.partition(" ")
     if not separator or scheme.lower() != "bearer" or not token.strip():
+        logger.warning("Privileged API auth received an unsupported or empty Authorization scheme.")
         return None
 
     try:
@@ -44,7 +52,12 @@ def _role_from_bearer(authorization: str) -> str | None:
             algorithms=["HS256"],
             options={"require": ["sub", "exp"]},
         )
-    except jwt.InvalidTokenError:
+    except jwt.ExpiredSignatureError:
+        logger.warning("Privileged API JWT rejected: token expired.")
+        return None
+    except jwt.InvalidTokenError as error:
+        # Never log the JWT itself or the signing secret.
+        logger.warning("Privileged API JWT rejected: %s.", type(error).__name__)
         return None
 
     # Normalize claim values because older accounts may store roles
@@ -61,6 +74,12 @@ def _role_from_bearer(authorization: str) -> str | None:
         if role in {"admin", "support"}:
             return role
 
+    logger.warning(
+        "Privileged API JWT is valid but has no admin/support role claim "
+        "(role_claim_present=%s, roles_claim_type=%s).",
+        bool(payload.get("role")),
+        type(roles).__name__,
+    )
     return None
 
 
@@ -85,4 +104,11 @@ def get_role(req) -> str | None:
     if _matches_configured_key(key, SUPPORT_KEY):
         return "support"
 
+    logger.warning(
+        "Privileged API authorization denied "
+        "(authorization_header_present=%s, api_key_header_present=%s, jwt_secret_configured=%s).",
+        bool(req.headers.get("Authorization")),
+        bool(key),
+        bool(JWT_SECRET),
+    )
     return None
