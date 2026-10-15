@@ -19,6 +19,7 @@ from backend.jumuiya.marketplace.routes import marketplace_bp
 
 from backend.jumuiya.biashara.routes import biashara_bp
 from backend.jumuiya.biashara.sync.routes import biashara_sync_bp
+from backend.jumuiya.biashara.finance.routes import biashara_finance_bp
 from backend.jumuiya.biashara.analytics.routes import (
     analytics_bp,
 )
@@ -179,6 +180,15 @@ def register_jumuiya(app):
 
     logger.info(
         "✅ Biashara Sync Centre API registered."
+    )
+
+    app.register_blueprint(
+        biashara_finance_bp,
+        url_prefix="/api/jumuiya/biashara/finance",
+    )
+
+    logger.info(
+        "✅ Biashara Finance API registered."
     )
 
     # =====================================================
