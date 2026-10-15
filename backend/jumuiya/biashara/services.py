@@ -838,6 +838,31 @@ def list_customers(user_id, search=None, limit=50):
     return serialise_many(documents)
 
 
+def inventory_history(user_id, product_id=None, limit=50):
+    """Return bounded tenant-scoped stock movement history."""
+    business = _require_business_with_permission(user_id, "inventory.view")
+    business_id = str(business["id"])
+    query = {"business_id": business_id}
+
+    selected_product_id = str(product_id or "").strip()
+    if selected_product_id:
+        product = collection("jumuiya_products").find_one({
+            "_id": clean_id(selected_product_id),
+            "business_id": business_id,
+        })
+        if not product:
+            raise APIError("Product not found.", 404, "product_not_found")
+        query["product_id"] = str(product["_id"])
+
+    rows = (
+        collection("jumuiya_inventory_movements")
+        .find(query)
+        .sort("created_at", -1)
+        .limit(_bounded_list_limit(limit))
+    )
+    return serialise_many(rows)
+
+
 def _inventory_adjustment_fingerprint(product_id, movement_type, quantity, reason):
     canonical = {
         "product_id": str(product_id),
