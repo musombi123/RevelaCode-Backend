@@ -50,6 +50,14 @@ python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().d
 
 Set the resulting value as `BIASHARA_INTEGRATION_ENCRYPTION_KEY` and keep a secure backup. For a staged key rotation, configure both old and new keys in `BIASHARA_INTEGRATION_ENCRYPTION_KEYS`, set `BIASHARA_INTEGRATION_CURRENT_KEY_ID` to the new key ID, and re-encrypt connections by issuing a credentials update with an empty `credentials` object for each connection. Keep the old key in the ring until verification is complete.
 
+### Revenue catalogue and entitlement visibility
+
+- The existing revenue engine records transaction intents only; an intent is not a subscription and never proves payment.
+- `GET /api/revenue/entitlements` (optionally `?hub=biashara`) returns the authenticated user's effective access snapshot.
+- While `PRICING_STATUS` remains `draft` or the entitlement resolver's billing flag is false, the response stays on the free baseline, reports `billing_enabled: false`, and does not even query subscription records.
+- The read-only resolver accepts paid access only from a separate subscription record that is active, payment-verified, has a provider reference and verification timestamp, has started but not expired, has not been revoked, and references a currently available plan.
+- It does not create or activate subscriptions and does not enforce numeric plan limits. Feature/limit policy and verified checkout/webhook flows remain required before paid access can be enabled.
+
 ### Owner-controlled automation
 
 - Rules are versioned and limited to known trigger/action pairs; arbitrary scripts are not supported.
@@ -138,4 +146,5 @@ See the [Biashara validation workflow](https://github.com/musombi123/RevelaCode-
 - Complete the actual KRA-approved eTIMS onboarding/certification path before claiming eTIMS compliance.
 - Add a real worker process and operational monitoring for provider sync; this branch currently provides durable queue primitives and internal automation dispatch, not a complete external-channel sync service.
 - Review the operational chart of accounts, VAT/tax treatment, refunds, settlement entries and closing controls with a Kenyan accountant before using this journal as formal books.
-- Add domain verification/rendering/SEO acceptance tests and subscription entitlement enforcement against the deployment environment.
+- Add a verified subscription lifecycle, provider-confirmed payment updates, machine-readable feature/limit policies and paid-feature enforcement before billing or paid entitlements are enabled.
+- Add domain verification/rendering/SEO acceptance tests and validate the entitlement snapshot against deployment configuration.
