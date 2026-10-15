@@ -6,6 +6,10 @@ from flask import Blueprint, request
 from backend.jumuiya.core.errors import APIError
 from backend.jumuiya.core.permissions import current_user_id, require_authenticated
 from backend.jumuiya.core.responses import created, ok
+from backend.jumuiya.biashara.tenancy.service import (
+    require_any_business_permission,
+    require_business_permission,
+)
 from backend.jumuiya.biashara.automation import services
 
 
@@ -21,6 +25,7 @@ def _body():
 
 @biashara_automation_bp.get("/rules")
 @require_authenticated
+@require_business_permission("automation.view")
 def get_rules():
     enabled = request.args.get("enabled")
     if enabled is None or not enabled.strip():
@@ -37,6 +42,7 @@ def get_rules():
 
 @biashara_automation_bp.post("/rules")
 @require_authenticated
+@require_business_permission("automation.manage")
 def post_rule():
     result = services.create_rule(current_user_id(), _body())
     return created(result, "Biashara automation rule created.")
@@ -44,6 +50,7 @@ def post_rule():
 
 @biashara_automation_bp.patch("/rules/<rule_id>/enabled")
 @require_authenticated
+@require_business_permission("automation.manage")
 def patch_rule_enabled(rule_id):
     payload = _body()
     if "enabled" not in payload or not isinstance(payload["enabled"], bool):
@@ -54,6 +61,7 @@ def patch_rule_enabled(rule_id):
 
 @biashara_automation_bp.get("/runs")
 @require_authenticated
+@require_business_permission("automation.view")
 def get_runs():
     rows = services.list_runs(
         current_user_id(),
@@ -65,6 +73,7 @@ def get_runs():
 
 @biashara_automation_bp.get("/tasks")
 @require_authenticated
+@require_business_permission("automation.view")
 def get_tasks():
     rows = services.list_tasks(
         current_user_id(),
@@ -77,6 +86,7 @@ def get_tasks():
 
 @biashara_automation_bp.post("/tasks/<task_id>/decision")
 @require_authenticated
+@require_any_business_permission("automation.manage", "finance.manage", "orders.manage")
 def decide_task(task_id):
     payload = _body()
     result = services.decide_task(
@@ -97,6 +107,7 @@ def decide_task(task_id):
 
 @biashara_automation_bp.post("/repair")
 @require_authenticated
+@require_business_permission("automation.manage")
 def repair_dispatches():
     result = services.replay_failed_automation_dispatches(current_user_id(), limit=100)
     return ok(result, "Failed automation dispatches checked for recovery.")
