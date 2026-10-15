@@ -525,6 +525,21 @@ INDEX_DEFINITIONS = {
         ),
     ],
 
+    "jumuiya_integration_webhook_deliveries": [
+        (
+            [("business_id", ASCENDING), ("connection_id", ASCENDING), ("delivery_key", ASCENDING)],
+            {"unique": True, "name": "uq_biashara_webhook_delivery_key"},
+        ),
+        (
+            [("business_id", ASCENDING), ("status", ASCENDING), ("received_at", DESCENDING)],
+            {"name": "ix_biashara_webhook_status_received"},
+        ),
+        (
+            [("business_id", ASCENDING), ("provider", ASCENDING), ("received_at", DESCENDING)],
+            {"name": "ix_biashara_webhook_provider_received"},
+        ),
+    ],
+
     "jumuiya_automation_rules": [
         (
             [("business_id", ASCENDING), ("trigger_event", ASCENDING), ("enabled", ASCENDING), ("created_at", DESCENDING)],
