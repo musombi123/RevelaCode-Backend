@@ -19,6 +19,7 @@ gunicorn==23.0.0
 requests==2.32.3
 PyJWT==2.10.1
 cryptography==50.0.2
+dnspython==2.9.0
 
 # =====================================================
 # Database
