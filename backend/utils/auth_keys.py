@@ -42,7 +42,7 @@ def _role_from_bearer(authorization: str) -> str | None:
             token.strip(),
             JWT_SECRET,
             algorithms=["HS256"],
-            options={"require": ["exp"]},
+            options={"require": ["sub", "exp"]},
         )
     except jwt.InvalidTokenError:
         return None
