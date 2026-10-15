@@ -888,6 +888,12 @@ def _callback_metadata(callback):
         receipt = ""
     phone_value = str(values.get("PhoneNumber") or "").strip()
     phone_last3 = phone_value[-3:] if phone_value.isdigit() and len(phone_value) >= 3 else None
+    phone_hash = None
+    if phone_value:
+        try:
+            phone_hash = hashlib.sha256(_phone(phone_value).encode("utf-8")).hexdigest()
+        except APIError:
+            phone_hash = None
     transaction_date = None
     raw_transaction_date = str(values.get("TransactionDate") or "").strip()
     if re.fullmatch(r"[0-9]{14}", raw_transaction_date):
@@ -903,6 +909,7 @@ def _callback_metadata(callback):
         "amount_minor": amount_minor,
         "receipt_number": receipt or None,
         "phone_last3": phone_last3,
+        "phone_hash": phone_hash,
         "transaction_at": transaction_date,
     }
 
@@ -933,6 +940,7 @@ def receive_stk_callback(connection_id, raw_body, remote_addr):
         "amount_minor": parsed["amount_minor"],
         "receipt_number": parsed["receipt_number"],
         "phone_last3": parsed["phone_last3"],
+        "phone_hash": parsed["phone_hash"],
         "transaction_at": _iso(parsed["transaction_at"]),
     }
     fingerprint = _fingerprint(fingerprint_data)
@@ -961,6 +969,7 @@ def receive_stk_callback(connection_id, raw_body, remote_addr):
             "amount_minor": parsed["amount_minor"],
             "receipt_number": parsed["receipt_number"],
             "phone_last3": parsed["phone_last3"],
+            "phone_hash": parsed["phone_hash"],
             "transaction_at": parsed["transaction_at"],
             "source_ip": source_ip,
             "payload_sha256": hashlib.sha256(bytes(raw_body)).hexdigest(),
@@ -986,6 +995,87 @@ def receive_stk_callback(connection_id, raw_body, remote_addr):
     }
 
 
+def _correlate_unknown_success_callback(event):
+    """Recover a timed-out STK response only from a unique amount+phone match.
+
+    The callback must already have passed the configured Safaricom source-IP
+    allow-list. We never correlate using amount alone; zero or multiple matches
+    remain pending for human reconciliation.
+    """
+    if (
+        int(event.get("result_code", -1)) != 0
+        or not RECEIPT_RE.fullmatch(str(event.get("receipt_number") or ""))
+        or not isinstance(event.get("amount_minor"), int)
+        or not event.get("phone_hash")
+    ):
+        return False
+
+    business_id = str(event.get("business_id") or "")
+    connection_id = str(event.get("connection_id") or "")
+    now = now_utc()
+    query = {
+        "business_id": business_id,
+        "provider_name": "mpesa_daraja",
+        "provider_connection_id": connection_id,
+        "payment_status": "provider_request_unknown",
+        "provider_request_status": "outcome_unknown",
+        "provider_reservation_active": True,
+        "provider_phone_hash": str(event["phone_hash"]),
+        "amount_minor": int(event["amount_minor"]),
+        "checkout_request_id": {"$in": [None, ""]},
+        "created_at": {"$gte": now - timedelta(hours=24)},
+    }
+    candidates = list(collection(PAYMENTS_COLLECTION).find(query).sort("created_at", -1).limit(2))
+    if len(candidates) != 1:
+        if len(candidates) > 1:
+            collection(CALLBACKS_COLLECTION).update_one(
+                {"_id": event["_id"], "business_id": business_id, "status": "pending_match"},
+                {"$set": {
+                    "match_review_reason": "multiple_unknown_requests_match_amount_and_phone",
+                    "match_candidate_count": len(candidates),
+                    "updated_at": now_utc(),
+                }},
+            )
+        return False
+
+    candidate = candidates[0]
+    updated = collection(PAYMENTS_COLLECTION).find_one_and_update(
+        {
+            "_id": candidate["_id"],
+            "business_id": business_id,
+            "provider_connection_id": connection_id,
+            "payment_status": "provider_request_unknown",
+            "provider_request_status": "outcome_unknown",
+            "provider_reservation_active": True,
+            "provider_phone_hash": str(event["phone_hash"]),
+            "amount_minor": int(event["amount_minor"]),
+            "checkout_request_id": {"$in": [None, ""]},
+        },
+        {"$set": {
+            "checkout_request_id": str(event.get("checkout_request_id") or ""),
+            "merchant_request_id": str(event.get("merchant_request_id") or ""),
+            "payment_status": "pending_provider_confirmation",
+            "provider_request_status": "callback_correlated_after_timeout",
+            "verification_status": "provider_pending",
+            "callback_correlated_after_timeout": True,
+            "updated_at": now_utc(),
+        }},
+        return_document=ReturnDocument.AFTER,
+    )
+    if not updated:
+        return False
+    collection(CALLBACKS_COLLECTION).update_one(
+        {"_id": event["_id"], "business_id": business_id, "status": "pending_match"},
+        {"$set": {
+            "match_review_reason": None,
+            "match_candidate_count": 1,
+            "payment_id": str(updated["_id"]),
+            "updated_at": now_utc(),
+        }},
+    )
+    return True
+
+
 def _apply_callback_event(event):
     """Apply only a matched, allow-listed callback with exact amount and unique receipt."""
     business_id = str(event.get("business_id") or "")
@@ -999,6 +1089,10 @@ def _apply_callback_event(event):
     })
     callbacks = collection(CALLBACKS_COLLECTION)
     if not payment:
+        if _correlate_unknown_success_callback(event):
+            # Request/merchant IDs are now pinned to the single matching
+            # unknown intent. Re-enter the normal exact receipt/amount logic.
+            return _apply_callback_event(event)
         callbacks.update_one(
             {"_id": event["_id"], "business_id": business_id, "status": "pending_match"},
             {"$set": {"status": "pending_match", "updated_at": now_utc()}},
@@ -1091,13 +1185,17 @@ def _apply_callback_event(event):
     expected_phone_suffix = str(payment.get("provider_phone_masked") or "")[-3:]
     callback_phone_suffix = str(event.get("phone_last3") or "")
     phone_mismatch = bool(callback_phone_suffix and expected_phone_suffix and callback_phone_suffix != expected_phone_suffix)
+    expected_phone_hash = str(payment.get("provider_phone_hash") or "")
+    callback_phone_hash = str(event.get("phone_hash") or "")
+    full_phone_mismatch = bool(callback_phone_hash and expected_phone_hash and callback_phone_hash != expected_phone_hash)
     if (
         not RECEIPT_RE.fullmatch(receipt)
         or not isinstance(amount_minor, int)
         or amount_minor != int(payment.get("amount_minor", 0))
         or phone_mismatch
+        or full_phone_mismatch
     ):
-        reason = "phone_mismatch" if phone_mismatch else "receipt_or_amount_mismatch"
+        reason = "phone_mismatch" if (phone_mismatch or full_phone_mismatch) else "receipt_or_amount_mismatch"
         callbacks.update_one(
             {"_id": event["_id"], "business_id": business_id},
             {"$set": {"status": "conflict", "conflict_reason": reason, "updated_at": now_utc()}},
