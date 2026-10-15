@@ -117,11 +117,9 @@ def _trusted_public_base_url(value=None):
     host = parsed.hostname.lower().rstrip(".")
     if not host or host in {"localhost", "localhost.localdomain"} or host.endswith((".localhost", ".local")):
         return None
-    host_is_ip = False
     try:
         from ipaddress import ip_address
         parsed_ip = ip_address(host)
-        host_is_ip = True
         if not parsed_ip.is_global:
             return None
     except ValueError:
