@@ -1,3 +1,6 @@
+import base64
+import hashlib
+import hmac
 import json
 import os
 import sys
@@ -16,6 +19,7 @@ _test_db_module.get_db = lambda: None
 sys.modules["backend.db"] = _test_db_module
 try:
     from backend.jumuiya.biashara.integrations import service as integrations
+    from backend.jumuiya.biashara.integrations import webhooks
 finally:
     if _original_db_module is _missing_module:
         sys.modules.pop("backend.db", None)
@@ -60,8 +64,9 @@ def datetime_min():
 
 
 class FakeCollection:
-    def __init__(self):
+    def __init__(self, enforce_connection_names=True):
         self.documents = []
+        self.enforce_connection_names = enforce_connection_names
 
     def find(self, query=None):
         query = query or {}
@@ -75,7 +80,7 @@ class FakeCollection:
 
     def insert_one(self, document):
         saved = deepcopy(document)
-        if self.find_one({
+        if self.enforce_connection_names and self.find_one({
             "business_id": saved["business_id"],
             "provider": saved["provider"],
             "name": saved["name"],
@@ -116,7 +121,17 @@ class FakeCollection:
 @pytest.fixture
 def integration_db(monkeypatch):
     store = FakeCollection()
-    monkeypatch.setattr(integrations, "collection", lambda name: store)
+    deliveries = FakeCollection(enforce_connection_names=False)
+    collections = {
+        integrations.CONNECTIONS_COLLECTION: store,
+        webhooks.DELIVERIES_COLLECTION: deliveries,
+    }
+
+    def get_collection(name):
+        return collections[name]
+
+    monkeypatch.setattr(integrations, "collection", get_collection)
+    monkeypatch.setattr(webhooks, "collection", get_collection)
     monkeypatch.setattr(integrations, "log_action", lambda *args, **kwargs: None)
 
     def permissions(user_id, permission, business_id=None):
@@ -126,9 +141,11 @@ def integration_db(monkeypatch):
         }
 
     monkeypatch.setattr(integrations, "require_permission", permissions)
+    monkeypatch.setattr(webhooks, "require_permission", permissions)
     monkeypatch.delenv("BIASHARA_INTEGRATION_ENCRYPTION_KEYS", raising=False)
     monkeypatch.setenv("BIASHARA_INTEGRATION_CURRENT_KEY_ID", "primary")
     monkeypatch.setenv("BIASHARA_INTEGRATION_ENCRYPTION_KEY", Fernet.generate_key().decode("ascii"))
+    store.webhook_deliveries = deliveries
     return store
 
 
@@ -355,4 +372,135 @@ def test_supported_whatsapp_and_mpesa_configurations_remain_unverified(integrati
     assert whatsapp["enabled"] is False and mpesa["enabled"] is False
     assert whatsapp["connectivity_test_status"] == "not_implemented"
     assert mpesa["connectivity_test_status"] == "not_implemented"
+
+def _woo_webhook_headers(raw_body, secret, delivery_id="woo-delivery-001", topic="order.created"):
+    signature = base64.b64encode(
+        hmac.new(secret.encode("utf-8"), raw_body, hashlib.sha256).digest()
+    ).decode("ascii")
+    return {
+        "X-WC-Webhook-Signature": signature,
+        "X-WC-Webhook-Delivery-ID": delivery_id,
+        "X-WC-Webhook-Topic": topic,
+    }
+
+
+def test_woocommerce_webhook_signature_queue_encryption_and_deduplication(integration_db):
+    secret = "woocommerce-webhook-secret"
+    payload = _woocommerce_payload(name="Woo webhook", consumer_key="ck_1", consumer_secret="cs_1")
+    payload["credentials"]["webhook_secret"] = secret
+    connection = integrations.create_connection("owner-1", payload)
+    raw_body = json.dumps({
+        "id": 321,
+        "status": "processing",
+        "billing": {"email": "customer-private@example.test"},
+    }, separators=(",", ":")).encode("utf-8")
+    headers = _woo_webhook_headers(raw_body, secret)
+
+    first = webhooks.receive_webhook(connection["id"], raw_body, headers)
+    replay = webhooks.receive_webhook(connection["id"], raw_body, headers)
+
+    assert first["status"] == "pending_review"
+    assert first["event_type"] == "order.created"
+    assert first["effects_applied"] is False
+    assert first["duplicate"] is False
+    assert replay["duplicate"] is True
+    assert len(integration_db.webhook_deliveries.documents) == 1
+    stored = integration_db.webhook_deliveries.documents[0]
+    assert "customer-private@example.test" not in json.dumps(stored, default=str)
+    assert "status" in stored and stored["status"] == "pending_review"
+    cipher = integrations._keyring()[0][stored["payload_key_id"]]
+    assert cipher.decrypt(stored["payload_ciphertext"].encode("ascii")) == raw_body
+
+
+def test_woocommerce_webhook_rejects_bad_signature_and_disabled_connection(integration_db):
+    payload = _woocommerce_payload(name="Woo bad signature")
+    payload["credentials"]["webhook_secret"] = "right-secret"
+    connection = integrations.create_connection("owner-1", payload)
+    body = b'{"id":1,"status":"created"}'
+    headers = _woo_webhook_headers(body, "wrong-secret")
+
+    with pytest.raises(APIError) as invalid:
+        webhooks.receive_webhook(connection["id"], body, headers)
+    assert invalid.value.code == "webhook_signature_invalid"
+    assert len(integration_db.webhook_deliveries.documents) == 0
+
+    with pytest.raises(APIError) as disabled:
+        webhooks.receive_webhook("64b000000000000000000099", body, headers)
+    assert disabled.value.code == "webhook_connection_unavailable"
+
+
+def test_whatsapp_challenge_and_signature_verification_are_required(integration_db):
+    connection = integrations.create_connection("owner-1", {
+        "name": "WhatsApp webhook",
+        "provider": "whatsapp_cloud",
+        "metadata": {"phone_number_id": "1234567890123"},
+        "credentials": {
+            "access_token": "whatsapp-access-token",
+            "app_secret": "whatsapp-app-secret",
+            "verify_token": "our-meta-verify-token",
+        },
+        "enabled": True,
+    })
+
+    challenge = webhooks.verify_whatsapp_challenge(
+        connection["id"], "subscribe", "our-meta-verify-token", "challenge-123"
+    )
+    assert challenge == "challenge-123"
+
+    with pytest.raises(APIError) as wrong_token:
+        webhooks.verify_whatsapp_challenge(
+            connection["id"], "subscribe", "not-the-token", "challenge-123"
+        )
+    assert wrong_token.value.code == "webhook_verification_failed"
+
+    body = b'{"object":"whatsapp_business_account","entry":[]}'
+    signature = "sha256=" + hmac.new(
+        b"whatsapp-app-secret", body, hashlib.sha256
+    ).hexdigest()
+    received = webhooks.receive_webhook(
+        connection["id"], body, {"X-Hub-Signature-256": signature}
+    )
+    assert received["event_type"] == "whatsapp.whatsapp_business_account"
+    assert received["status"] == "pending_review"
+    assert received["effects_applied"] is False
+
+    with pytest.raises(APIError) as invalid_sig:
+        webhooks.receive_webhook(
+            connection["id"], body, {"X-Hub-Signature-256": "sha256=" + "0" * 64}
+        )
+    assert invalid_sig.value.code == "webhook_signature_invalid"
+    assert len(integration_db.webhook_deliveries.documents) == 1
+
+
+def test_webhook_inbox_read_is_tenant_scoped_and_payload_is_redacted(integration_db):
+    payload = _woocommerce_payload(name="Woo list", consumer_key="ck_list", consumer_secret="cs_list")
+    payload["credentials"]["webhook_secret"] = "secret-for-list"
+    connection = integrations.create_connection("owner-1", payload)
+    body = b'{"id":99,"status":"created"}'
+    webhooks.receive_webhook(
+        connection["id"], body,
+        _woo_webhook_headers(body, "secret-for-list", delivery_id="woo-list-001", topic="product.created"),
+    )
+
+    owner_rows = webhooks.list_webhook_deliveries("owner-1")
+    other_rows = webhooks.list_webhook_deliveries("owner-2")
+    assert len(owner_rows) == 1
+    assert other_rows == []
+    assert "payload_ciphertext" not in owner_rows[0]
+    assert "payload_key_id" not in owner_rows[0]
+    assert "id" in owner_rows[0]
+
+
+def test_mpesа_webhook_is_not_silently_treated_as_verified(integration_db):
+    connection = integrations.create_connection("owner-1", {
+        "name": "M-Pesa sandbox hook",
+        "provider": "mpesa_daraja",
+        "metadata": {"shortcode": "123456", "environment": "sandbox"},
+        "credentials": {"consumer_key": "key", "consumer_secret": "secret", "passkey": "pass"},
+        "enabled": True,
+    })
+    with pytest.raises(APIError) as raised:
+        webhooks.receive_webhook(connection["id"], b'{"ResultCode":0}', {})
+    assert raised.value.code == "webhook_provider_unsupported"
+    assert len(integration_db.webhook_deliveries.documents) == 0
 
