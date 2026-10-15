@@ -783,10 +783,19 @@ def _apply_callback_event(event):
 
     receipt = str(event.get("receipt_number") or "")
     amount_minor = event.get("amount_minor")
-    if not RECEIPT_RE.fullmatch(receipt) or not isinstance(amount_minor, int) or amount_minor != int(payment.get("amount_minor", 0)):
+    expected_phone_suffix = str(payment.get("provider_phone_masked") or "")[-3:]
+    callback_phone_suffix = str(event.get("phone_last3") or "")
+    phone_mismatch = bool(callback_phone_suffix and expected_phone_suffix and callback_phone_suffix != expected_phone_suffix)
+    if (
+        not RECEIPT_RE.fullmatch(receipt)
+        or not isinstance(amount_minor, int)
+        or amount_minor != int(payment.get("amount_minor", 0))
+        or phone_mismatch
+    ):
+        reason = "phone_mismatch" if phone_mismatch else "receipt_or_amount_mismatch"
         callbacks.update_one(
             {"_id": event["_id"], "business_id": business_id},
-            {"$set": {"status": "conflict", "conflict_reason": "receipt_or_amount_mismatch", "updated_at": now_utc()}},
+            {"$set": {"status": "conflict", "conflict_reason": reason, "updated_at": now_utc()}},
         )
         return {**event, "status": "conflict", "effects_applied": False}
 
@@ -860,6 +869,48 @@ def _apply_callback_event(event):
                   "payment_id": str(updated["_id"]), "allocation_status": allocated.get("allocation_status")}},
     )
     return {"status": status, "effects_applied": True, "allocation_status": allocated.get("allocation_status")}
+
+
+def _public_callback_event(document):
+    """Return callback diagnostics without raw payload, full phone number or credentials."""
+    return {
+        "id": str(document.get("_id") or ""),
+        "connection_id": str(document.get("connection_id") or ""),
+        "checkout_request_id": document.get("checkout_request_id"),
+        "merchant_request_id": document.get("merchant_request_id"),
+        "result_code": document.get("result_code"),
+        "amount_minor": document.get("amount_minor"),
+        "receipt_number": document.get("receipt_number"),
+        "phone_last3": document.get("phone_last3"),
+        "status": document.get("status"),
+        "conflict_reason": document.get("conflict_reason"),
+        "payment_id": document.get("payment_id"),
+        "allocation_status": document.get("allocation_status"),
+        "effects_applied": bool(document.get("effects_applied", False)),
+        "source_ip": document.get("source_ip"),
+        "received_at": _iso(document.get("received_at")),
+        "updated_at": _iso(document.get("updated_at")),
+    }
+
+
+def list_callback_events(user_id, limit=50, status=None):
+    """List sanitized callback/reconciliation diagnostics for the selected tenant."""
+    context = require_permission(user_id, "finance.view")
+    business_id = str(context.get("id") or "")
+    try:
+        limit = min(max(int(limit), 1), 100)
+    except (TypeError, ValueError):
+        limit = 50
+    query = {"business_id": business_id}
+    if status:
+        clean_status = str(status).strip().lower()
+        if clean_status not in {
+            "pending_match", "applied", "allocation_conflict", "processed_failure", "conflict"
+        }:
+            raise APIError("Unknown M-Pesa callback status.", 422, "invalid_mpesa_callback_status")
+        query["status"] = clean_status
+    rows = collection(CALLBACKS_COLLECTION).find(query).sort("received_at", -1).limit(limit)
+    return [_public_callback_event(row) for row in rows]
 
 
 def list_mpesa_intents(user_id, limit=50, status=None):
