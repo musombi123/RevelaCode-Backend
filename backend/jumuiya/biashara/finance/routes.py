@@ -152,6 +152,18 @@ def list_mpesa_intents():
     return ok(rows, "Biashara M-Pesa payment intents loaded.", meta={"count": len(rows)})
 
 
+@biashara_finance_bp.get("/mpesa/callbacks")
+@require_authenticated
+@require_business_permission("finance.view")
+def list_mpesa_callbacks():
+    rows = mpesa.list_callback_events(
+        current_user_id(),
+        limit=request.args.get("limit", 50),
+        status=request.args.get("status"),
+    )
+    return ok(rows, "Sanitized M-Pesa callback events loaded.", meta={"count": len(rows)})
+
+
 @biashara_finance_bp.post("/mpesa/callbacks/reprocess")
 @require_authenticated
 @require_business_permission("finance.manage")
