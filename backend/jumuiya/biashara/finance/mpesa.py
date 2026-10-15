@@ -1033,6 +1033,7 @@ def _apply_callback_event(event):
             else:
                 recovered_status = "allocation_conflict"
             _dispatch_payment(recovered_payment["_id"], business_id)
+        _release_payment_reservation(recovered_payment)
         callbacks.update_one(
             {"_id": event["_id"], "business_id": business_id},
             {"$set": {
@@ -1081,6 +1082,7 @@ def _apply_callback_event(event):
             {"_id": event["_id"], "business_id": business_id},
             {"$set": {"status": "processed_failure", "effects_applied": False, "updated_at": now}},
         )
+        _release_payment_reservation(updated)
         _dispatch_payment(updated["_id"], business_id)
         return {"status": "processed_failure", "effects_applied": False}
 
@@ -1142,11 +1144,9 @@ def _apply_callback_event(event):
     if not updated:
         latest = collection(PAYMENTS_COLLECTION).find_one({"_id": payment["_id"], "business_id": business_id})
         if latest and latest.get("payment_status") == "provider_confirmed" and latest.get("provider_event_id") == receipt:
-            callbacks.update_one(
-                {"_id": event["_id"], "business_id": business_id},
-                {"$set": {"status": "applied", "effects_applied": True, "updated_at": now_utc()}},
-            )
-            return {"status": "applied", "effects_applied": True}
+            # Route through the normal confirmed-event recovery branch so
+            # invoice allocation, journal posting and reservation release are retried.
+            return _apply_callback_event(event)
         callbacks.update_one(
             {"_id": event["_id"], "business_id": business_id},
             {"$set": {"status": "conflict", "conflict_reason": "payment_state_changed", "updated_at": now_utc()}},
@@ -1157,6 +1157,9 @@ def _apply_callback_event(event):
     allocated = finance_services._mark_payment_allocation(updated, invoice)
     if allocated.get("allocation_status") == "allocated":
         finance_services._post_provider_payment_journal(allocated, allocated.get("recorded_by_user_id") or "")
+    # The received payment is now allocated or explicitly quarantined as an
+    # allocation conflict, so the open-prompt balance reservation can be removed.
+    _release_payment_reservation(allocated)
     _dispatch_payment(updated["_id"], business_id)
     log_action(
         updated.get("recorded_by_user_id") or "mpesa_callback",
