@@ -33,11 +33,14 @@ This document records code paths present on the branch. It does not assert produ
 
 ### Encrypted integration configuration
 
-- The API is registered at `/api/jumuiya/biashara/integrations` and currently accepts named WooCommerce, WhatsApp Cloud API and M-Pesa Daraja connection configurations.
+- The API is registered at `/api/jumuiya/biashara/integrations` and accepts named WooCommerce, WhatsApp Cloud API and M-Pesa Daraja connection configurations. New connections default to disabled. A DELETE endpoint removes the encrypted connection record.
 - Credential bundles are encrypted with Fernet before the MongoDB insert/update. Only credential field names and redacted configuration status are returned; ciphertext and raw credentials are never included in normal API responses or audit payloads.
 - The server fails closed when no valid encryption key is configured. The key must be kept in the hosting environment/secret manager, backed up securely, and never committed to the repository.
 - A multi-key ring supports rotation using `BIASHARA_INTEGRATION_ENCRYPTION_KEYS` (JSON mapping key IDs to Fernet keys) and `BIASHARA_INTEGRATION_CURRENT_KEY_ID`. Keep old keys available until every connection encrypted with them has been re-encrypted; changing a key without preserving the old key makes those credentials unreadable.
-- Configuration status intentionally reports `configured_unverified`, `connected: false`, and `connectivity_test_status: not_implemented`. No provider API call, synchronization, webhook verification, token refresh, payment request or WhatsApp message is performed by this registry.
+- Configuration status intentionally reports `configured_unverified`, `connected: false`, and `connectivity_test_status: not_implemented`. The registry itself does not call provider APIs or send messages/payments.
+- Inbound webhook delivery is implemented for enabled WooCommerce and WhatsApp Cloud connections. WooCommerce signatures are verified from `X-WC-Webhook-Signature`; WhatsApp uses the `hub.challenge` / verification-token handshake and `X-Hub-Signature-256`. See the [WooCommerce webhook documentation](https://woocommerce.github.io/woocommerce-rest-api-docs/) and [WhatsApp Cloud webhook reference](https://whatsapp.github.io/WhatsApp-Nodejs-SDK/api-reference/webhooks/start/).
+- Verified webhook bodies are encrypted before persistence and deduplicated by provider delivery key (WooCommerce) or body digest (WhatsApp). They are shown as `pending_review` with `effects_applied: false`; this inbox does not mutate orders, products, customers, invoices or payments. M-Pesa webhook verification/reconciliation is not implemented.
+- Routes: `GET/POST /api/jumuiya/biashara/integrations`, `PATCH /<connection_id>`, `PATCH /<connection_id>/enabled`, `DELETE /<connection_id>`, `GET /webhook-deliveries`, and unauthenticated provider callback routes at `/<connection_id>/webhook`. Callback routes require valid provider proof rather than a user JWT.
 
 Generate a fresh Fernet key once in a trusted environment and store it in the platform's environment secret manager:
 
