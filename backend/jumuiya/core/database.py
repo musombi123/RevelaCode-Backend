@@ -400,6 +400,17 @@ INDEX_DEFINITIONS = {
             ],
             {"name": "ix_orders_business_status_created"},
         ),
+        (
+            [
+                ("business_id", ASCENDING),
+                ("idempotency_key", ASCENDING),
+            ],
+            {
+                "unique": True,
+                "name": "uq_orders_business_idempotency",
+                "partialFilterExpression": {"idempotency_key": {"$type": "string"}},
+            },
+        ),
     ],
 
     "jumuiya_sales": [
@@ -430,6 +441,17 @@ INDEX_DEFINITIONS = {
                 ("created_at", DESCENDING),
             ],
             {"name": "ix_inventory_business_product_created"},
+        ),
+        (
+            [
+                ("business_id", ASCENDING),
+                ("idempotency_key", ASCENDING),
+            ],
+            {
+                "unique": True,
+                "name": "uq_inventory_business_idempotency",
+                "partialFilterExpression": {"idempotency_key": {"$type": "string"}},
+            },
         ),
     ],
 
