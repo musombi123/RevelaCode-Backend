@@ -450,6 +450,34 @@ INDEX_DEFINITIONS = {
         ),
     ],
 
+    "jumuiya_outbox_events": [
+        (
+            [
+                ("business_id", ASCENDING),
+                ("event_id", ASCENDING),
+            ],
+            {"unique": True, "name": "uq_biashara_outbox_business_event"},
+        ),
+        (
+            [
+                ("business_id", ASCENDING),
+                ("state", ASCENDING),
+                ("next_attempt_at", ASCENDING),
+                ("created_at", ASCENDING),
+            ],
+            {"name": "ix_biashara_outbox_due_events"},
+        ),
+        (
+            [
+                ("business_id", ASCENDING),
+                ("entity_type", ASCENDING),
+                ("entity_id", ASCENDING),
+                ("created_at", DESCENDING),
+            ],
+            {"name": "ix_biashara_outbox_entity_history"},
+        ),
+    ],
+
     "jumuiya_expenses": [
         (
             [
