@@ -328,9 +328,8 @@ def create_or_update_business(
             document["_id"],
         )
 
-        return serialise(
-            document
-        )
+        from backend.jumuiya.biashara.tenancy.service import get_business_context
+        return get_business_context(user_id, business_id=str(document["_id"]))
 
     # -----------------------------------------------------
     # CREATE
@@ -358,9 +357,8 @@ def create_or_update_business(
         result.inserted_id,
     )
 
-    return serialise(
-        document
-    )
+    from backend.jumuiya.biashara.tenancy.service import get_business_context
+    return get_business_context(user_id, business_id=str(document["_id"]))
 
 
 # =========================================================
