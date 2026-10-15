@@ -234,6 +234,11 @@ def _public_event(document, include_payload=True, include_lease=False):
         "last_error_at": _json_value(document.get("last_error_at")),
         "provider_result_reference": document.get("provider_result_reference"),
         "actor_user_id": document.get("actor_user_id"),
+        "automation_dispatch_status": document.get("automation_dispatch_status", "pending"),
+        "automation_dispatch_attempt_count": int(document.get("automation_dispatch_attempt_count", 0) or 0),
+        "automation_last_dispatch_at": _json_value(document.get("automation_last_dispatch_at")),
+        "automation_last_error_code": document.get("automation_last_error_code"),
+        "automation_last_run_count": int(document.get("automation_last_run_count", 0) or 0),
     }
     if include_payload:
         result["payload"] = dict(document.get("payload") or {})
