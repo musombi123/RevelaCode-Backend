@@ -165,6 +165,7 @@ def commerce_db(monkeypatch):
         "jumuiya_products": products,
         "jumuiya_customers": FakeCollection([]),
         "jumuiya_orders": FakeCollection([]),
+        "jumuiya_sales": FakeCollection([]),
         "jumuiya_inventory_movements": FakeCollection([]),
     }
     monkeypatch.setattr(services, "collection", lambda name: collections[name])
@@ -297,3 +298,117 @@ def test_order_payload_does_not_require_client_calculated_total():
     from jumuiya.biashara.schemas import order_payload
     result = order_payload({"items": [{"product_id": "64b000000000000000000001", "quantity": 1}]})
     assert result["total_amount"] == 0.0
+
+def test_pos_sale_uses_canonical_totals_consumes_stock_once_and_does_not_fake_mpesa_verification(commerce_db):
+    payload = {
+        "items": [{
+            "product_id": str(commerce_db["product_id"]),
+            "quantity": 2,
+            "unit_price": 0.01,
+            "name": "Forged sale name",
+        }],
+        "amount": 0.02,
+        "currency": "USD",
+        "payment_method": "mpesa",
+        "reference": "manual-stk-checkout",
+        "idempotency_key": "pos-sale-attempt-0001",
+    }
+
+    sale = services.record_sale("owner-1", payload)
+
+    assert sale["amount"] == 300.5
+    assert sale["amount_minor"] == 30050
+    assert sale["currency"] == "KES"
+    assert sale["items"][0]["name"] == "Original catalogue item"
+    assert sale["items"][0]["unit_price"] == 150.25
+    assert sale["payment_status"] == "verification_required"
+    assert sale["payment_verification_status"] == "unverified_manual"
+    assert sale["provider_verified"] is False
+
+    order = commerce_db["orders"].find_one({"_id": ObjectId(sale["order_id"])})
+    assert order["status"] == "completed"
+    assert order["inventory_status"] == "consumed"
+    assert order["payment_status"] == "verification_required"
+    assert order["payment_verification_status"] == "unverified_manual"
+    assert commerce_db["products"].documents[0]["stock_quantity"] == 3
+    assert commerce_db["products"].documents[0]["reserved_quantity"] == 0
+    assert len(commerce_db["movements"].documents) == 2
+
+
+def test_pos_sale_retry_is_idempotent_and_does_not_duplicate_sale_stock_or_movements(commerce_db):
+    payload = {
+        "items": [{"product_id": str(commerce_db["product_id"]), "quantity": 1}],
+        "amount": 0.01,
+        "payment_method": "cash",
+        "reference": "counter-receipt",
+        "idempotency_key": "pos-sale-attempt-0002",
+    }
+
+    first = services.record_sale("owner-1", payload)
+    second = services.record_sale("owner-1", payload)
+
+    assert first["id"] == second["id"]
+    assert first["amount"] == 150.25
+    assert first["payment_status"] == "manual_attested"
+    assert first["payment_verification_status"] == "manual_attested"
+    assert first["provider_verified"] is False
+    assert len(commerce_db["sales"].documents) == 1
+    assert len(commerce_db["orders"].documents) == 1
+    assert commerce_db["products"].documents[0]["stock_quantity"] == 4
+    assert commerce_db["products"].documents[0]["reserved_quantity"] == 0
+    assert len(commerce_db["movements"].documents) == 2
+
+
+def test_pos_sale_rejects_idempotency_key_reuse_with_different_items(commerce_db):
+    first_payload = {
+        "items": [{"product_id": str(commerce_db["product_id"]), "quantity": 1}],
+        "payment_method": "cash",
+        "idempotency_key": "pos-sale-attempt-0003",
+    }
+    services.record_sale("owner-1", first_payload)
+    changed_payload = {
+        **first_payload,
+        "items": [{"product_id": str(commerce_db["product_id"]), "quantity": 2}],
+    }
+
+    with pytest.raises(APIError) as raised:
+        services.record_sale("owner-1", changed_payload)
+    assert raised.value.code == "idempotency_key_reused"
+    assert len(commerce_db["sales"].documents) == 1
+    assert commerce_db["products"].documents[0]["stock_quantity"] == 4
+
+
+def test_existing_order_sale_uses_order_snapshots_and_rejects_second_canonical_sale(commerce_db):
+    order = services.create_order("owner-1", _payload(commerce_db, quantity=1))
+    sale_payload = {
+        "order_id": order["id"],
+        "amount": 0.01,
+        "currency": "USD",
+        "payment_method": "cash",
+        "reference": "walk-in-paid",
+    }
+    sale = services.record_sale("owner-1", sale_payload)
+    assert sale["amount"] == 150.25
+    assert sale["order_id"] == order["id"]
+
+    with pytest.raises(APIError) as raised:
+        services.record_sale("owner-1", {
+            **sale_payload,
+            "reference": "different-receipt-reference",
+        })
+    assert raised.value.code == "sale_already_recorded"
+    assert len(commerce_db["sales"].documents) == 1
+    assert commerce_db["products"].documents[0]["stock_quantity"] == 4
+
+
+def test_sale_schema_allows_server_calculated_amount_but_expense_still_requires_amount():
+    from jumuiya.biashara.schemas import expense_payload, sale_payload
+
+    sale = sale_payload({
+        "items": [{"product_id": "64b000000000000000000001", "quantity": 1}],
+    })
+    assert sale["amount"] == 0.0
+
+    with pytest.raises(ValueError):
+        expense_payload({"title": "Rent"})
+
