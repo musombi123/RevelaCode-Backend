@@ -194,6 +194,7 @@ def commerce_db(monkeypatch):
     }])
     collections = {
         "jumuiya_products": products,
+        "jumuiya_businesses": FakeCollection([]),
         "jumuiya_customers": FakeCollection([]),
         "jumuiya_orders": FakeCollection([]),
         "jumuiya_sales": FakeCollection([]),
@@ -672,4 +673,62 @@ def test_zero_delta_stock_set_still_records_idempotency_and_cannot_be_reapplied_
         )
     assert raised.value.code == "idempotency_key_reused"
     assert commerce_db["products"].documents[0]["stock_quantity"] == 4
+
+def test_public_storefront_includes_seo_only_for_active_published_business(commerce_db, monkeypatch):
+    monkeypatch.setenv("BIASHARA_PUBLIC_BASE_URL", "https://businesses.example.test")
+    business_id = ObjectId("64b000000000000000000401")
+    commerce_db["jumuiya_businesses"].documents.append({
+        "_id": business_id,
+        "business_id": str(business_id),
+        "slug": "coastal-electronics",
+        "name": "Coastal Electronics",
+        "description": "Phones and accessories in Mombasa.",
+        "phone": "+254700111222",
+        "email": "sales@example.test",
+        "location": "Kongowea",
+        "county": "Mombasa",
+        "currency": "KES",
+        "logo_url": "https://cdn.example.test/logo.png",
+        "status": "active",
+        "website": {
+            "published": True,
+            "headline": "Coastal Electronics",
+            "seo_title": "Coastal Electronics | Mombasa",
+            "seo_description": "Shop phones and accessories in Mombasa.",
+            "hero_image_url": "https://cdn.example.test/hero.png",
+            "show_products": False,
+            "contact_enabled": False,
+            "primary_color": "#1d4ed8",
+            "accent_color": "#0f766e",
+        },
+    })
+
+    result = services.get_public_biashara_website("coastal-electronics")
+
+    assert result["seo"]["canonical_url"] == "https://businesses.example.test/b/coastal-electronics"
+    assert result["seo"]["open_graph"]["title"] == "Coastal Electronics | Mombasa"
+    assert result["seo"]["structured_data"]["@type"] == "Store"
+    assert result["business"]["phone"] == ""
+    assert result["business"]["email"] == ""
+    assert "telephone" not in result["seo"]["structured_data"]
+    assert result["products"] == []
+
+
+def test_public_storefront_rejects_unpublished_business_before_seo_render(commerce_db):
+    business_id = ObjectId("64b000000000000000000402")
+    commerce_db["jumuiya_businesses"].documents.append({
+        "_id": business_id,
+        "slug": "draft-store",
+        "name": "Draft Store",
+        "status": "active",
+        "website": {
+            "published": False,
+            "headline": "Draft Store",
+            "show_products": False,
+        },
+    })
+
+    with pytest.raises(APIError) as raised:
+        services.get_public_biashara_website("draft-store")
+    assert raised.value.code == "website_not_found"
 
