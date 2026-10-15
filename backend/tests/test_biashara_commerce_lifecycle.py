@@ -176,6 +176,7 @@ def commerce_db(monkeypatch):
         "product": products.documents[0],
         **collections,
         "orders": collections["jumuiya_orders"],
+        "sales": collections["jumuiya_sales"],
         "movements": collections["jumuiya_inventory_movements"],
         "products": products,
     }
