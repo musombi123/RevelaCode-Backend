@@ -256,6 +256,27 @@ def create_or_update_business(
                 "business_selection_required",
             )
         old = owned_businesses[0] if owned_businesses else None
+        if old is None:
+            active_memberships = list(
+                collection("jumuiya_business_memberships").find({
+                    "user_id": owner_id,
+                    "status": "active",
+                }).limit(2)
+            )
+            if len(active_memberships) > 1:
+                raise APIError(
+                    "Select a business by sending X-Biashara-Business-ID before updating a shared business profile.",
+                    409,
+                    "business_selection_required",
+                )
+            if active_memberships:
+                from backend.jumuiya.biashara.tenancy.service import require_permission
+                selected_context = require_permission(
+                    user_id,
+                    "business.manage",
+                    business_id=str(active_memberships[0].get("business_id") or ""),
+                )
+                old = businesses.find_one({"_id": clean_id(selected_context["id"])})
 
     # -----------------------------------------------------
     # UPDATE
@@ -2707,7 +2728,7 @@ def save_biashara_website_settings(user_id, payload):
         settings["published_at"] = None
 
     collection("jumuiya_businesses").update_one(
-        {"_id": clean_id(business["id"]), "owner_user_id": str(user_id)},
+        {"_id": clean_id(business["id"])},
         {"$set": {"website": settings, "updated_at": now}},
     )
     log_action(user_id, "business.website_updated", "business", clean_id(business["id"]))
