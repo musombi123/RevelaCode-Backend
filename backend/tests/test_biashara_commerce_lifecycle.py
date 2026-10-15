@@ -173,6 +173,7 @@ def commerce_db(monkeypatch):
     monkeypatch.setattr(services, "collection", lambda name: collections[name])
     monkeypatch.setattr(outbox, "collection", lambda name: collections[name])
     monkeypatch.setattr(services, "_require_business", lambda user_id: {"id": "business-1", "currency": "KES"})
+    monkeypatch.setattr(services, "require_permission", lambda user_id, permission, business_id=None: {"id": business_id or "business-1"})
     monkeypatch.setattr(services, "log_action", lambda *args, **kwargs: None)
     return {
         "product_id": product_id,
@@ -473,4 +474,54 @@ def test_inventory_adjustment_rejects_removal_that_would_consume_reserved_stock(
     assert raised.value.code == "insufficient_stock"
     assert commerce_db["products"].documents[0]["stock_quantity"] == 5
     assert len(commerce_db["movements"].documents) == 0
+
+def test_customer_create_is_tenant_scoped_idempotent_and_sync_recoverable(commerce_db):
+    payload = {
+        "name": "Amina Hassan",
+        "phone": "+254700111222",
+        "email": "amina@example.test",
+        "notes": "Prefers WhatsApp contact",
+        "idempotency_key": "customer-create-0001",
+    }
+    first = services.create_customer("owner-1", payload)
+    second = services.create_customer("owner-1", payload)
+
+    assert first["id"] == second["id"]
+    assert len(commerce_db["jumuiya_customers"].documents) == 1
+    saved = commerce_db["jumuiya_customers"].documents[0]
+    assert saved["business_id"] == "business-1"
+    assert saved["idempotency_key"] == "customer-create-0001"
+    assert saved["request_fingerprint"]
+    assert saved["outbox_event_manifest"][0]["event_type"] == "customer.created"
+    assert len(commerce_db["jumuiya_outbox_events"].documents) == 1
+
+    # Other tenants' customer rows never appear in this business's search.
+    other_id = ObjectId("64b000000000000000000099")
+    commerce_db["jumuiya_customers"].documents.append({
+        "_id": other_id,
+        "business_id": "business-2",
+        "name": "Amina Hassan",
+        "phone": "+254700111222",
+        "email": "amina@example.test",
+        "created_at": saved["created_at"],
+    })
+    customers = services.list_customers("owner-1", search="Amina")
+    assert len(customers) == 1
+    assert customers[0]["id"] == first["id"]
+
+
+def test_customer_idempotency_key_reuse_with_changed_details_is_rejected(commerce_db):
+    services.create_customer("owner-1", {
+        "name": "James Otieno",
+        "phone": "+254711222333",
+        "idempotency_key": "customer-create-0002",
+    })
+    with pytest.raises(APIError) as raised:
+        services.create_customer("owner-1", {
+            "name": "James Otieno",
+            "phone": "+254711222334",
+            "idempotency_key": "customer-create-0002",
+        })
+    assert raised.value.code == "idempotency_key_reused"
+    assert len(commerce_db["jumuiya_customers"].documents) == 1
 
