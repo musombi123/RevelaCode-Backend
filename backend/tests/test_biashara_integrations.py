@@ -401,6 +401,9 @@ def test_woocommerce_webhook_signature_queue_encryption_and_deduplication(integr
 
     assert first["status"] == "pending_review"
     assert first["event_type"] == "order.created"
+    assert first["event_summary"]["resource_type"] == "order"
+    assert first["event_summary"]["resource_id"] == "321"
+    assert first["event_summary"]["resource_status"] == "processing"
     assert first["effects_applied"] is False
     assert first["duplicate"] is False
     assert replay["duplicate"] is True
@@ -457,7 +460,22 @@ def test_whatsapp_challenge_and_signature_verification_are_required(integration_
         )
     assert wrong_token.value.code == "webhook_verification_failed"
 
-    body = b'{"object":"whatsapp_business_account","entry":[]}'
+    body = json.dumps({
+        "object": "whatsapp_business_account",
+        "entry": [{
+            "id": "waba-private-id",
+            "changes": [{
+                "field": "messages",
+                "value": {
+                    "messages": [{
+                        "id": "wamid-private-id",
+                        "from": "254700111222",
+                        "text": {"body": "private-message-body"},
+                    }],
+                },
+            }],
+        }],
+    }, separators=(",", ":")).encode("utf-8")
     signature = "sha256=" + hmac.new(
         b"whatsapp-app-secret", body, hashlib.sha256
     ).hexdigest()
@@ -465,8 +483,13 @@ def test_whatsapp_challenge_and_signature_verification_are_required(integration_
         connection["id"], body, {"X-Hub-Signature-256": signature}
     )
     assert received["event_type"] == "whatsapp_business_account"
+    assert received["event_summary"]["message_count"] == 1
+    assert received["event_summary"]["change_fields"] == ["messages"]
     assert received["status"] == "pending_review"
     assert received["effects_applied"] is False
+    stored = integration_db.webhook_deliveries.documents[0]
+    assert "254700111222" not in json.dumps(stored, default=str)
+    assert "private-message-body" not in json.dumps(stored, default=str)
 
     with pytest.raises(APIError) as invalid_sig:
         webhooks.receive_webhook(
