@@ -6,7 +6,6 @@ Fernet key ring, never returned by API responses, and never included in logs.
 """
 from __future__ import annotations
 
-import hashlib
 import ipaddress
 import json
 import os
@@ -405,11 +404,14 @@ def update_connection(user_id, connection_id, payload):
             "credential_fields": sorted(next_credentials),
         })
 
-    updated = connections.find_one_and_update(
-        {"_id": current["_id"], "business_id": business_id, "updated_at": current.get("updated_at")},
-        {"$set": updates},
-        return_document=ReturnDocument.AFTER,
-    )
+    try:
+        updated = connections.find_one_and_update(
+            {"_id": current["_id"], "business_id": business_id, "updated_at": current.get("updated_at")},
+            {"$set": updates},
+            return_document=ReturnDocument.AFTER,
+        )
+    except DuplicateKeyError:
+        raise APIError("A connection with this name already exists for this provider.", 409, "integration_connection_exists")
     if not updated:
         raise APIError("Integration connection changed while saving. Reload and retry.", 409, "integration_connection_conflict")
     log_action(user_id, "biashara.integration_connection_updated", "integration_connection", current["_id"], {
