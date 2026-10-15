@@ -65,3 +65,23 @@ def payment_payload(data):
         "payment_method": method,
         "reference": reference,
     }
+
+
+def mpesa_stk_payload(data):
+    _object(data)
+    phone_number = _text(data, "phone_number", required=True, max_len=40)
+    connection_id = _text(data, "connection_id", required=True, max_len=128)
+    try:
+        amount = Decimal(str(data.get("amount")))
+    except (InvalidOperation, TypeError, ValueError):
+        raise ValueError("amount must be a valid monetary amount.")
+    if not amount.is_finite() or amount <= 0:
+        raise ValueError("amount must be greater than zero.")
+    if amount.quantize(Decimal("0.01")) != amount:
+        raise ValueError("amount supports at most two decimal places.")
+    return {
+        "phone_number": phone_number,
+        "connection_id": connection_id,
+        "amount": str(amount),
+    }
+
