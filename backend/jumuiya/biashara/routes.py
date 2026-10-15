@@ -292,6 +292,10 @@ def edit_product(
         body(),
     )
 
+    header_key = request.headers.get("Idempotency-Key", "").strip()
+    if header_key:
+        payload["idempotency_key"] = header_key
+
     return ok(
         services.update_product(
             user_id(),
