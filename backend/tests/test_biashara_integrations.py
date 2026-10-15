@@ -311,3 +311,48 @@ def test_delete_connection_removes_encrypted_credentials_and_respects_tenant(int
     assert result["encrypted_credentials_removed"] is True
     assert integration_db.find_one({"_id": ObjectId(created["id"])}) is None
 
+def test_new_connections_default_to_disabled_until_explicitly_enabled(integration_db):
+    payload = _woocommerce_payload(name="Default disabled")
+    payload.pop("enabled")
+    connection = integrations.create_connection("owner-1", payload)
+
+    assert connection["enabled"] is False
+    assert connection["connection_status"] == "disabled"
+    assert connection["connected"] is False
+
+
+def test_supported_whatsapp_and_mpesa_configurations_remain_unverified(integration_db):
+    whatsapp = integrations.create_connection("owner-1", {
+        "name": "WhatsApp sales",
+        "provider": "whatsapp_cloud",
+        "metadata": {
+            "phone_number_id": "1234567890123",
+            "business_account_id": "1234509876",
+            "graph_api_version": "v23.0",
+        },
+        "credentials": {
+            "access_token": "whatsapp-access-token",
+            "app_secret": "whatsapp-app-secret",
+        },
+    })
+    mpesa = integrations.create_connection("owner-1", {
+        "name": "M-Pesa sandbox",
+        "provider": "mpesa_daraja",
+        "metadata": {
+            "shortcode": "123456",
+            "environment": "sandbox",
+        },
+        "credentials": {
+            "consumer_key": "mpesa-consumer-key",
+            "consumer_secret": "mpesa-consumer-secret",
+            "passkey": "mpesa-passkey",
+        },
+    })
+
+    assert whatsapp["provider"] == "whatsapp_cloud"
+    assert mpesa["provider"] == "mpesa_daraja"
+    assert whatsapp["connected"] is False and mpesa["connected"] is False
+    assert whatsapp["enabled"] is False and mpesa["enabled"] is False
+    assert whatsapp["connectivity_test_status"] == "not_implemented"
+    assert mpesa["connectivity_test_status"] == "not_implemented"
+
