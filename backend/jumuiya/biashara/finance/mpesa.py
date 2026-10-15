@@ -552,9 +552,14 @@ def _callback_metadata(callback):
     merchant_id = str(stk.get("MerchantRequestID") or "").strip()
     if not checkout_id or not merchant_id or len(checkout_id) > 200 or len(merchant_id) > 200:
         raise APIError("M-Pesa callback correlation IDs are missing or invalid.", 400, "mpesa_callback_invalid")
-    try:
-        result_code = int(stk.get("ResultCode"))
-    except (TypeError, ValueError, OverflowError):
+    raw_result_code = stk.get("ResultCode")
+    if isinstance(raw_result_code, bool):
+        raise APIError("M-Pesa callback result code is invalid.", 400, "mpesa_callback_invalid")
+    if isinstance(raw_result_code, int):
+        result_code = raw_result_code
+    elif isinstance(raw_result_code, str) and re.fullmatch(r"[0-9]{1,8}", raw_result_code.strip()):
+        result_code = int(raw_result_code.strip())
+    else:
         raise APIError("M-Pesa callback result code is invalid.", 400, "mpesa_callback_invalid")
     result_desc = str(stk.get("ResultDesc") or "")[:200]
     items = []
@@ -705,11 +710,42 @@ def _apply_callback_event(event):
         return {**event, "status": "conflict", "effects_applied": False}
 
     if payment.get("payment_status") == "provider_confirmed" and payment.get("provider_event_id") == event.get("receipt_number"):
+        # Recover the crash window where provider confirmation was saved but
+        # invoice allocation/journal posting had not yet completed.
+        if payment.get("allocation_status") == "allocated":
+            recovered_status = "applied"
+            recovered_payment = payment
+        elif payment.get("allocation_status") == "allocation_conflict":
+            recovered_status = "allocation_conflict"
+            recovered_payment = payment
+        else:
+            invoice = finance_services._get_invoice(business_id, str(payment["invoice_id"]))
+            recovered_payment = finance_services._mark_payment_allocation(payment, invoice)
+            if recovered_payment.get("allocation_status") == "allocated":
+                finance_services._post_provider_payment_journal(
+                    recovered_payment,
+                    recovered_payment.get("recorded_by_user_id") or "",
+                )
+                recovered_status = "applied"
+            else:
+                recovered_status = "allocation_conflict"
+            _dispatch_payment(recovered_payment["_id"], business_id)
         callbacks.update_one(
             {"_id": event["_id"], "business_id": business_id},
-            {"$set": {"status": "applied", "effects_applied": True, "updated_at": now_utc()}},
+            {"$set": {
+                "status": recovered_status,
+                "effects_applied": recovered_status == "applied",
+                "allocation_status": recovered_payment.get("allocation_status"),
+                "payment_id": str(recovered_payment.get("_id") or ""),
+                "updated_at": now_utc(),
+            }},
         )
-        return {**event, "status": "applied", "effects_applied": True}
+        return {
+            **event,
+            "status": recovered_status,
+            "effects_applied": recovered_status == "applied",
+            "allocation_status": recovered_payment.get("allocation_status"),
+        }
 
     if payment.get("payment_status") not in {"provider_requesting", "pending_provider_confirmation", "provider_request_unknown"}:
         callbacks.update_one(
