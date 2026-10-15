@@ -432,6 +432,22 @@ INDEX_DEFINITIONS = {
                 "partialFilterExpression": {"idempotency_key": {"$type": "string"}},
             },
         ),
+        (
+            [
+                ("business_id", ASCENDING),
+                ("order_id", ASCENDING),
+            ],
+            {
+                "unique": True,
+                "name": "uq_sales_canonical_order",
+                # Historical sales stay untouched; this invariant applies only
+                # to sales written through the canonical order lifecycle.
+                "partialFilterExpression": {
+                    "canonical_order_sale": True,
+                    "order_id": {"$type": "string"},
+                },
+            },
+        ),
     ],
 
     "jumuiya_expenses": [
