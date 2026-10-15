@@ -18,6 +18,7 @@ from datetime import datetime, timezone
 
 from bson import ObjectId
 from bson.errors import InvalidId
+from pymongo import ReturnDocument
 from pymongo.errors import DuplicateKeyError
 
 from backend.jumuiya.core.database import collection
@@ -60,6 +61,10 @@ def _public_delivery(document, duplicate=False):
         "payload_sha256": document.get("payload_sha256"),
         "event_summary": dict(document.get("event_summary") or {}),
         "received_at": _as_iso(document.get("received_at")),
+        "decision": document.get("decision"),
+        "decision_note": document.get("decision_note"),
+        "decision_by_user_id": document.get("decision_by_user_id"),
+        "decision_at": _as_iso(document.get("decision_at")),
         "duplicate": bool(duplicate),
         "effects_applied": False,
     }
@@ -291,7 +296,7 @@ def list_webhook_deliveries(user_id, limit=50, status=None, provider=None):
     query = {"business_id": business_id}
     if status:
         clean_status = str(status).strip().lower()
-        if clean_status not in {"pending_review", "processing", "processed", "failed", "dismissed"}:
+        if clean_status not in {"pending_review", "acknowledged", "processing", "processed", "failed", "dismissed"}:
             raise APIError("Unknown webhook delivery status.", 422, "invalid_webhook_status")
         query["status"] = clean_status
     if provider:
@@ -301,3 +306,61 @@ def list_webhook_deliveries(user_id, limit=50, status=None, provider=None):
         query["provider"] = clean_provider
     rows = collection(DELIVERIES_COLLECTION).find(query).sort("received_at", -1).limit(limit)
     return [_public_delivery(row) for row in rows]
+
+def decide_webhook_delivery(user_id, delivery_id, decision, note=""):
+    """Record human review without applying provider data to business records."""
+    context = require_permission(user_id, "integration.manage")
+    business_id = str(context.get("id") or "")
+    if not business_id:
+        raise APIError("Selected business is unavailable.", 409, "business_id_missing")
+    decision = str(decision or "").strip().lower()
+    if decision not in {"acknowledge", "dismiss"}:
+        raise APIError("Decision must be acknowledge or dismiss.", 422, "invalid_webhook_decision")
+    if not isinstance(note, str):
+        raise APIError("Decision note must be text.", 422, "invalid_webhook_decision")
+    note = note.strip()[:500]
+
+    deliveries = collection(DELIVERIES_COLLECTION)
+    current = deliveries.find_one({
+        "_id": _clean_id(delivery_id),
+        "business_id": business_id,
+    })
+    if not current:
+        raise APIError("Webhook delivery not found.", 404, "webhook_delivery_not_found")
+
+    next_status = "acknowledged" if decision == "acknowledge" else "dismissed"
+    if current.get("status") == next_status:
+        return _public_delivery(current)
+    if current.get("status") != "pending_review":
+        raise APIError("This webhook delivery has already been reviewed.", 409, "webhook_delivery_already_reviewed")
+
+    now = now_utc()
+    updated = deliveries.find_one_and_update(
+        {
+            "_id": current["_id"],
+            "business_id": business_id,
+            "status": "pending_review",
+        },
+        {"$set": {
+            "status": next_status,
+            "decision": decision,
+            "decision_note": note,
+            "decision_by_user_id": str(user_id),
+            "decision_at": now,
+            "updated_at": now,
+            "effects_applied": False,
+        }},
+        return_document=ReturnDocument.AFTER,
+    )
+    if not updated:
+        raise APIError("Webhook delivery changed while saving the review decision.", 409, "webhook_delivery_conflict")
+
+    connection_service.log_action(
+        user_id,
+        "biashara.integration_webhook_reviewed",
+        "integration_webhook_delivery",
+        current["_id"],
+        {"provider": current.get("provider"), "decision": decision, "effects_applied": False},
+    )
+    return _public_delivery(updated)
+
