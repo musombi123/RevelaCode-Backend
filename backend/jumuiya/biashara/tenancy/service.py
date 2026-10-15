@@ -301,6 +301,30 @@ def require_business_permission(permission):
     return decorator
 
 
+def require_any_business_permission(*permissions):
+    """Flask decorator allowing one of several explicitly enumerated role permissions."""
+    required = tuple(str(item).strip() for item in permissions if str(item).strip())
+    if not required:
+        raise ValueError("At least one permission is required.")
+
+    def decorator(view):
+        @wraps(view)
+        def wrapped(*args, **kwargs):
+            from backend.jumuiya.core.permissions import current_user_id
+            last_error = None
+            for permission in required:
+                try:
+                    require_permission(current_user_id(), permission)
+                    return view(*args, **kwargs)
+                except APIError as error:
+                    if error.code != "business_permission_denied":
+                        raise
+                    last_error = error
+            raise last_error or APIError("Your business role does not allow this action.", 403, "business_permission_denied")
+        return wrapped
+    return decorator
+
+
 def _authoritative_user(user_id):
     try:
         from backend.jumuiya.integration.auth_bridge import _load_user
