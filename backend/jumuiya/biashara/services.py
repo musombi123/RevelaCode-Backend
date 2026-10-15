@@ -993,6 +993,14 @@ def _order_quantities(order):
     return quantities
 
 
+def _reservation_for(product, order_id):
+    """Find one product's reservation marker for an order, independent of BSON IDs."""
+    for reservation in product.get("active_reservations", []) or []:
+        if str(reservation.get("order_id")) == str(order_id):
+            return reservation
+    return None
+
+
 def _inventory_movement_key(order_id, product_id, operation):
     return f"biashara:order:{order_id}:{operation}:{product_id}"
 
