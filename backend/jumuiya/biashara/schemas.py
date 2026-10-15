@@ -898,8 +898,10 @@ def inventory_payload(data):
         data,
         "quantity",
         required=True,
-        minimum=0.000001,
+        minimum=0 if movement_type == "set" else 0.000001,
     )
+    if movement_type != "set" and quantity <= 0:
+        raise ValueError("quantity must be positive for add/remove movements.")
 
     return {
         "movement_type": movement_type,
@@ -910,5 +912,11 @@ def inventory_payload(data):
             data,
             "reason",
             max_len=300,
+        ),
+
+        "idempotency_key": _text(
+            data,
+            "idempotency_key",
+            max_len=128,
         ),
     }
