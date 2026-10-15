@@ -334,7 +334,7 @@ def create_connection(user_id, payload):
     name = _connection_name(payload.get("name"))
     metadata = _validate_provider_metadata(provider, payload.get("metadata") or {})
     credentials = _validate_credentials(provider, payload.get("credentials"))
-    enabled = payload.get("enabled", True)
+    enabled = payload.get("enabled", False)
     if not isinstance(enabled, bool):
         raise APIError("enabled must be a boolean.", 422, "invalid_integration_configuration")
     ciphertext, key_id = _encrypt_credentials(credentials)
