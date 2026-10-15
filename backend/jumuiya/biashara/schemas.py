@@ -730,7 +730,9 @@ def order_payload(data):
         "total_amount": _money(
             data,
             "total_amount",
-            required=True,
+            # Retained as an optional compatibility field. The service must
+            # recalculate the total from current server-side product prices.
+            required=False,
             minimum=0,
         ),
 
