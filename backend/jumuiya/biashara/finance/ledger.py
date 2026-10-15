@@ -30,6 +30,7 @@ CHART_OF_ACCOUNTS = {
     "sales_revenue_unclassified": {"name": "Commercial revenue (tax classification pending)", "type": "income"},
     "operating_expense": {"name": "Operating expense", "type": "expense"},
     "expense_settlement_unclassified": {"name": "Expense funding or payable (classification pending)", "type": "liability"},
+    "unallocated_customer_receipts": {"name": "Unallocated customer receipts (reconciliation required)", "type": "liability"},
 }
 
 LEDGER_BASIS_WARNING = (
