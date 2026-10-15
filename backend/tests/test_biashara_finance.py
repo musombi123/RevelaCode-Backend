@@ -237,6 +237,7 @@ def finance_db(monkeypatch):
         "jumuiya_payments": Collection(),
         "jumuiya_finance_counters": Collection(),
         "jumuiya_journal_entries": Collection(),
+        "jumuiya_expenses": Collection(),
         "jumuiya_orders": Collection([order]),
         "jumuiya_customers": Collection(),
     }
@@ -244,6 +245,7 @@ def finance_db(monkeypatch):
     monkeypatch.setattr(ledger, "collection", lambda name: data[name])
     monkeypatch.setattr(ledger, "dispatch_manifest_for_record", lambda *args, **kwargs: {"enqueued": 1, "pending": 0, "errors": 0})
     monkeypatch.setattr(biashara, "collection", lambda name: data[name])
+    monkeypatch.setattr(biashara, "_dispatch_outbox_source", lambda *args, **kwargs: {"enqueued": 1, "pending": 0, "errors": 0})
     monkeypatch.setattr(biashara, "_require_business", lambda user_id: {
         "id": "business-finance-1", "currency": "KES", "name": "Test Business"
     })
@@ -510,4 +512,52 @@ def test_ledger_summary_returns_balanced_minor_unit_totals(finance_db):
     assert accounts["sales_revenue_unclassified"]["normal_balance_minor"] == 12345
     assert summary["tax_status"] == "not_configured"
     assert summary["etims_status"] == "not_configured"
+
+def test_expense_creates_balanced_provisional_journal_and_replays_idempotently(finance_db):
+    payload = {
+        "title": "Shop rent",
+        "category": "rent",
+        "amount": "15.50",
+        "currency": "KES",
+        "notes": "October rent",
+        "idempotency_key": "expense-record-0001",
+    }
+    first = biashara.create_expense("owner-1", payload)
+    second = biashara.create_expense("owner-1", payload)
+
+    assert first["id"] == second["id"]
+    assert first["amount_minor"] == 1550
+    assert first["accounting_status"] == "provisional_unclassified"
+    assert first["tax_status"] == "not_configured"
+    assert len(finance_db["data"]["jumuiya_expenses"].documents) == 1
+
+    entries = finance_db["data"]["jumuiya_journal_entries"].documents
+    assert len(entries) == 1
+    entry = entries[0]
+    assert entry["source_type"] == "expense.recorded"
+    assert entry["total_debit_minor"] == entry["total_credit_minor"] == 1550
+    assert entry["lines"][0]["account_code"] == "operating_expense"
+    assert entry["lines"][1]["account_code"] == "expense_settlement_unclassified"
+    assert "funding source was not supplied" in entry["basis"]
+
+
+def test_expense_idempotency_key_cannot_be_reused_for_different_amount(finance_db):
+    biashara.create_expense("owner-1", {
+        "title": "Packaging",
+        "category": "supplies",
+        "amount": "10.00",
+        "currency": "KES",
+        "idempotency_key": "expense-record-0002",
+    })
+    with pytest.raises(APIError) as raised:
+        biashara.create_expense("owner-1", {
+            "title": "Packaging",
+            "category": "supplies",
+            "amount": "11.00",
+            "currency": "KES",
+            "idempotency_key": "expense-record-0002",
+        })
+    assert raised.value.code == "idempotency_key_reused"
+    assert len(finance_db["data"]["jumuiya_expenses"].documents) == 1
+    assert len(finance_db["data"]["jumuiya_journal_entries"].documents) == 1
 
