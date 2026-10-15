@@ -644,3 +644,93 @@ def test_safe_pre_submit_intent_can_resume_after_process_crash_without_duplicate
     assert invoice["pending_mpesa_amount_minor"] == 2500
     assert len(invoice["pending_mpesa_reservations"]) == 1
 
+def test_success_callback_recovers_payment_when_stk_http_response_times_out(mpesa_db, monkeypatch):
+    calls = {"get": 0, "post": 0}
+
+    def get(url, **kwargs):
+        calls["get"] += 1
+        return FakeResponse(200, {"access_token": "mock-only-access-token"})
+
+    def post(url, **kwargs):
+        calls["post"] += 1
+        # Safaricom delivers the callback, but the synchronous request times
+        # out before the application receives CheckoutRequestID in the POST response.
+        callback_result = mpesa.receive_stk_callback(
+            str(CONNECTION_ID),
+            _stk_callback(),
+            "196.201.214.200",
+        )
+        assert callback_result["event_status"] == "pending_match"
+        raise requests.Timeout("synthetic response lost after provider callback")
+
+    monkeypatch.setattr(mpesa.requests, "get", get)
+    monkeypatch.setattr(mpesa.requests, "post", post)
+
+    result = mpesa.start_stk_push(
+        "owner-1", str(INVOICE_ID), _payment_payload(), "stk-lost-response-recovered-0001"
+    )
+
+    assert calls == {"get": 1, "post": 1}
+    assert result["payment_status"] == "provider_confirmed"
+    assert result["verification_status"] == "provider_verified"
+    assert result["provider_verified"] is True
+    assert result["allocation_status"] == "allocated"
+    assert result["checkout_request_id"] == "ws_CO_001"
+    invoice = mpesa_db["data"][mpesa.INVOICES_COLLECTION].find_one({"_id": INVOICE_ID})
+    assert invoice["amount_paid_minor"] == 2500
+    assert invoice["pending_mpesa_amount_minor"] == 0
+    assert invoice["pending_mpesa_reservations"] == []
+    assert mpesa_db["data"][mpesa.CALLBACKS_COLLECTION].documents[0]["status"] == "applied"
+
+
+def test_unknown_callback_with_multiple_matching_intents_is_not_guessed(mpesa_db):
+    now = datetime.now(timezone.utc)
+    template = {
+        "business_id": BUSINESS_ID,
+        "provider_name": "mpesa_daraja",
+        "provider_connection_id": str(CONNECTION_ID),
+        "payment_status": "provider_request_unknown",
+        "provider_request_status": "outcome_unknown",
+        "provider_reservation_active": True,
+        "provider_phone_hash": __import__("hashlib").sha256(b"254712345678").hexdigest(),
+        "amount_minor": 2500,
+        "checkout_request_id": None,
+        "merchant_request_id": None,
+        "created_at": now,
+    }
+    payments = mpesa_db["data"][mpesa.PAYMENTS_COLLECTION]
+    for index in range(2):
+        payments.documents.append({
+            **template,
+            "_id": ObjectId(f"64b00000000000000000031{index}"),
+            "idempotency_key": f"mpesa-stk:ambiguous-intent-{index}",
+            "invoice_id": str(INVOICE_ID),
+            "provider_event_id": None,
+        })
+    callback = json.loads(_stk_callback().decode("utf-8"))
+    parsed = mpesa._callback_metadata(callback)
+    event = {
+        "_id": ObjectId("64b000000000000000000399"),
+        "business_id": BUSINESS_ID,
+        "connection_id": str(CONNECTION_ID),
+        "checkout_request_id": parsed["checkout_request_id"],
+        "merchant_request_id": parsed["merchant_request_id"],
+        "result_code": parsed["result_code"],
+        "amount_minor": parsed["amount_minor"],
+        "receipt_number": parsed["receipt_number"],
+        "phone_last3": parsed["phone_last3"],
+        "phone_hash": parsed["phone_hash"],
+        "status": "pending_match",
+        "received_at": now,
+    }
+    mpesa_db["data"][mpesa.CALLBACKS_COLLECTION].insert_one(event)
+
+    result = mpesa._apply_callback_event(event)
+
+    assert result["status"] == "pending_match"
+    assert result["effects_applied"] is False
+    stored_event = mpesa_db["data"][mpesa.CALLBACKS_COLLECTION].find_one({"_id": event["_id"]})
+    assert stored_event["match_review_reason"] == "multiple_unknown_requests_match_amount_and_phone"
+    assert stored_event["match_candidate_count"] == 2
+    assert all(row["payment_status"] == "provider_request_unknown" for row in payments.documents)
+
