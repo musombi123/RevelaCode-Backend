@@ -2,8 +2,9 @@ from __future__ import annotations
 
 from flask import Blueprint, request
 
-from backend.jumuiya.core.permissions import current_user_id
+from backend.jumuiya.core.permissions import current_user_id, require_authenticated
 from backend.jumuiya.core.responses import ok
+from backend.jumuiya.biashara.tenancy.service import require_business_permission
 from backend.jumuiya.biashara.analytics import service
 
 
@@ -57,6 +58,8 @@ def query_days():
 # =========================================================
 
 @analytics_bp.get("")
+@require_authenticated
+@require_business_permission("analytics.view")
 def analytics_overview():
     """
     GET /api/jumuiya/biashara/analytics
@@ -80,6 +83,8 @@ def analytics_overview():
 # =========================================================
 
 @analytics_bp.get("/sales")
+@require_authenticated
+@require_business_permission("analytics.view")
 def sales_analytics():
     """
     GET /api/jumuiya/biashara/analytics/sales
@@ -101,6 +106,8 @@ def sales_analytics():
 # =========================================================
 
 @analytics_bp.get("/revenue")
+@require_authenticated
+@require_business_permission("analytics.view")
 def revenue_analytics():
     """
     GET /api/jumuiya/biashara/analytics/revenue
@@ -122,6 +129,8 @@ def revenue_analytics():
 # =========================================================
 
 @analytics_bp.get("/orders")
+@require_authenticated
+@require_business_permission("analytics.view")
 def orders_analytics():
     """
     GET /api/jumuiya/biashara/analytics/orders
@@ -143,6 +152,8 @@ def orders_analytics():
 # =========================================================
 
 @analytics_bp.get("/customers")
+@require_authenticated
+@require_business_permission("analytics.view")
 def customers_analytics():
     """
     GET /api/jumuiya/biashara/analytics/customers
@@ -164,6 +175,8 @@ def customers_analytics():
 # =========================================================
 
 @analytics_bp.get("/products")
+@require_authenticated
+@require_business_permission("analytics.view")
 def products_analytics():
     """
     GET /api/jumuiya/biashara/analytics/products
@@ -185,6 +198,8 @@ def products_analytics():
 # =========================================================
 
 @analytics_bp.get("/expenses")
+@require_authenticated
+@require_business_permission("analytics.view")
 def expenses_analytics():
     """
     GET /api/jumuiya/biashara/analytics/expenses
@@ -206,6 +221,8 @@ def expenses_analytics():
 # =========================================================
 
 @analytics_bp.get("/profit")
+@require_authenticated
+@require_business_permission("analytics.view")
 def profit_analytics():
     """
     GET /api/jumuiya/biashara/analytics/profit
