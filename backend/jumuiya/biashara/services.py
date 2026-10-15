@@ -558,53 +558,85 @@ def update_product(user_id, product_id, payload):
 
     return serialise(updated)
 
-def delete_product(
-    user_id,
-    product_id,
-):
 
-    business = _require_business(
-        user_id
+def delete_product(user_id, product_id):
+    """Archive a product safely while preserving all historical references."""
+    business = _require_business(user_id)
+    business_id = str(business["id"])
+    products = collection("jumuiya_products")
+    query = {"_id": clean_id(product_id), "business_id": business_id}
+    current = products.find_one(query)
+    if not current:
+        raise APIError("Product not found.", 404, "product_not_found")
+
+    try:
+        reserved = Decimal(str(current.get("reserved_quantity", 0) or 0))
+    except (InvalidOperation, TypeError, ValueError):
+        raise APIError("Product reserved stock state is invalid.", 409, "invalid_inventory_state")
+    if not reserved.is_finite() or reserved < 0:
+        raise APIError("Product reserved stock state is invalid.", 409, "invalid_inventory_state")
+    if reserved > 0 or any(
+        str(marker.get("state", "reserved")) == "reserved"
+        for marker in current.get("active_reservations", []) or []
+    ):
+        raise APIError(
+            "This product has open order reservations. Resolve those orders before archiving it.",
+            409,
+            "product_has_open_reservations",
+        )
+
+    now = now_utc()
+    manifest = _build_outbox_manifest(
+        event_key=f"product:{current['_id']}:archived:{ObjectId()}",
+        event_type="product.archived",
+        entity_type="product",
+        entity_id=current["_id"],
+        payload={
+            "status": "deleted",
+            "currency": str(current.get("currency") or business.get("currency") or "KES").upper(),
+            "price_minor": int(
+                Decimal(str(current.get("price", 0))).quantize(
+                    Decimal("0.01"), rounding=ROUND_HALF_UP
+                ) * 100
+            ),
+            "stock_quantity": float(current.get("stock_quantity", 0) or 0),
+            "reserved_quantity": float(reserved),
+            "available_quantity": max(
+                float(current.get("stock_quantity", 0) or 0) - float(reserved),
+                0,
+            ),
+            "sku": str(current.get("sku") or "")[:80],
+        },
+        actor_user_id=user_id,
+        occurred_at=now,
     )
-
-    products = collection(
-        "jumuiya_products"
-    )
-
     document = products.find_one_and_update(
         {
-            "_id": clean_id(
-                product_id
-            ),
-            "business_id": business["id"],
+            **query,
+            "updated_at": current.get("updated_at"),
+        } if "updated_at" in current else {
+            **query,
+            "$or": [{"updated_at": {"$exists": False}}, {"updated_at": None}],
         },
         {
             "$set": {
                 "status": "deleted",
-                "updated_at": now_utc(),
-            }
+                "updated_at": now,
+            },
+            "$addToSet": {"outbox_event_manifest": manifest},
         },
         return_document=ReturnDocument.AFTER,
     )
-
     if not document:
-
         raise APIError(
-            "Product not found.",
-            404,
-            "product_not_found",
+            "The product changed while it was being archived. Reload and retry.",
+            409,
+            "product_concurrent_update",
         )
 
-    log_action(
-        user_id,
-        "product.deleted",
-        "product",
-        document["_id"],
-    )
-
-    return serialise(
-        document
-    )
+    _dispatch_outbox_source("jumuiya_products", business_id, document["_id"])
+    log_action(user_id, "product.deleted", "product", document["_id"])
+    return serialise(document)
 
 
 # =========================================================
