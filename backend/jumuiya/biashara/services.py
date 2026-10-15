@@ -202,35 +202,21 @@ def unique_slug(
 # BUSINESS
 # =========================================================
 
-def get_business_for_user(
-    user_id,
-):
-    return serialise(
-        collection(
-            "jumuiya_businesses"
-        ).find_one({
-            "owner_user_id": str(
-                user_id
-            )
-        })
-    )
+def get_business_for_user(user_id):
+    """Resolve the caller's selected business through tenant membership."""
+    from backend.jumuiya.biashara.tenancy.service import get_business_context
+    try:
+        return get_business_context(user_id)
+    except APIError as error:
+        if error.code == "business_required":
+            return None
+        raise
 
 
-def _require_business(user_id):
-
-    business = get_business_for_user(
-        user_id
-    )
-
-    if not business:
-
-        raise APIError(
-            "Create your business profile first.",
-            409,
-            "business_required",
-        )
-
-    return business
+def _require_business(user_id, business_id=None):
+    """Resolve an active business only after validating owner/member access."""
+    from backend.jumuiya.biashara.tenancy.service import get_business_context
+    return get_business_context(user_id, business_id=business_id)
 
 
 def create_or_update_business(
