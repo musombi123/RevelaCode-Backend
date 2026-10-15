@@ -538,6 +538,25 @@ INDEX_DEFINITIONS = {
         ),
     ],
 
+    "jumuiya_journal_entries": [
+        (
+            [("business_id", ASCENDING), ("source_key", ASCENDING)],
+            {"unique": True, "name": "uq_biashara_journal_source"},
+        ),
+        (
+            [("business_id", ASCENDING), ("effective_at", DESCENDING)],
+            {"name": "ix_biashara_journal_effective"},
+        ),
+        (
+            [("business_id", ASCENDING), ("source_type", ASCENDING), ("effective_at", DESCENDING)],
+            {"name": "ix_biashara_journal_source_type"},
+        ),
+        (
+            [("business_id", ASCENDING), ("currency", ASCENDING), ("status", ASCENDING), ("effective_at", DESCENDING)],
+            {"name": "ix_biashara_journal_currency_status"},
+        ),
+    ],
+
     "jumuiya_expenses": [
         (
             [
