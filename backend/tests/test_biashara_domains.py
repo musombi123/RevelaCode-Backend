@@ -194,3 +194,20 @@ def test_domain_claim_deletion_does_not_claim_to_change_registrar_dns(domains_db
     with pytest.raises(APIError) as missing:
         domains.delete_domain_claim("owner-1", claim["id"])
     assert missing.value.code == "domain_claim_not_found"
+
+def test_removing_txt_proof_demotes_previously_verified_domain(domains_db, monkeypatch):
+    claim = domains.create_domain_claim("owner-1", "shop.example.test")
+    expected = claim["record_value"]
+    monkeypatch.setattr(domains, "_lookup_txt_records", lambda name: [expected])
+    first = domains.verify_domain_claim("owner-1", claim["id"])
+    assert first["status"] == "verified"
+
+    monkeypatch.setattr(domains, "_lookup_txt_records", lambda name: ["unrelated=record"])
+    second = domains.verify_domain_claim("owner-1", claim["id"])
+
+    assert second["status"] == "pending_dns"
+    assert second["verified"] is False
+    assert second["verification_result"] == "verification_txt_record_not_found"
+    saved = domains_db.find_one({"_id": ObjectId(claim["id"])})
+    assert saved["verified_at"] is None
+
