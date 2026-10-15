@@ -206,12 +206,13 @@ def set_rule_enabled(user_id, rule_id, enabled):
     current = rules.find_one({"_id": _clean_id(rule_id), "business_id": business_id})
     if not current:
         raise APIError("Automation rule not found.", 404, "automation_rule_not_found")
-    updated = rules.find_one_and_update(
+    result = rules.update_one(
         {"_id": current["_id"], "business_id": business_id, "version": current.get("version", 1)},
         {"$set": {"enabled": enabled, "updated_at": now_utc()}, "$inc": {"version": 1}},
     )
-    if not updated:
+    if not result.matched_count:
         raise APIError("Automation rule changed while updating. Reload and retry.", 409, "automation_rule_conflict")
+    updated = rules.find_one({"_id": current["_id"], "business_id": business_id}) or current
     log_action(user_id, "biashara.automation_rule_toggled", "automation_rule", current["_id"], {"enabled": enabled})
     return _serialize(updated)
 
@@ -641,3 +642,34 @@ def decide_task(user_id, task_id, decision, note=""):
         "status": next_status,
     })
     return _serialize(updated)
+
+def replay_failed_automation_dispatches(user_id, limit=100):
+    """Retry automation dispatch for durable outbox events explicitly marked retry."""
+    _business_data, business_id = _business(user_id)
+    try:
+        limit = min(max(int(limit), 1), 100)
+    except (TypeError, ValueError):
+        limit = 100
+    events = collection("jumuiya_outbox_events")
+    pending = list(
+        events.find({
+            "business_id": business_id,
+            "automation_dispatch_status": "retry",
+        }).sort("created_at", 1).limit(limit)
+    )
+    report = {"inspected": len(pending), "processed": 0, "deferred": 0}
+    for event in pending:
+        result = process_event_for_automations(event)
+        status = "processed" if result.get("processed") else "retry"
+        events.update_one(
+            {"business_id": business_id, "event_id": event.get("event_id")},
+            {"$set": {
+                "automation_dispatch_status": status,
+                "automation_last_dispatch_at": now_utc(),
+                "automation_last_error_code": result.get("error_code"),
+                "automation_last_run_count": result.get("created_runs", 0),
+            }, "$inc": {"automation_dispatch_attempt_count": 1}},
+        )
+        report["processed" if status == "processed" else "deferred"] += 1
+    return report
+
