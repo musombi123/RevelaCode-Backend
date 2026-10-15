@@ -540,6 +540,21 @@ INDEX_DEFINITIONS = {
         ),
     ],
 
+    "jumuiya_revenue_subscriptions": [
+        (
+            [("user_id", ASCENDING), ("status", ASCENDING), ("expires_at", DESCENDING)],
+            {"name": "ix_revenue_subscriptions_user_status_expiry"},
+        ),
+        (
+            [("provider_reference", ASCENDING)],
+            {
+                "unique": True,
+                "name": "uq_revenue_subscription_provider_reference",
+                "partialFilterExpression": {"provider_reference": {"$type": "string"}},
+            },
+        ),
+    ],
+
     "jumuiya_automation_rules": [
         (
             [("business_id", ASCENDING), ("trigger_event", ASCENDING), ("enabled", ASCENDING), ("created_at", DESCENDING)],
