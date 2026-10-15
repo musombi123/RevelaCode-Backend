@@ -105,6 +105,13 @@ class FakeCollection:
                 return deepcopy(doc)
         return None
 
+    def delete_one(self, query):
+        for index, doc in enumerate(self.documents):
+            if _matches(doc, query):
+                del self.documents[index]
+                return SimpleNamespace(deleted_count=1)
+        return SimpleNamespace(deleted_count=0)
+
 
 @pytest.fixture
 def integration_db(monkeypatch):
@@ -288,4 +295,19 @@ def test_renaming_connection_to_an_existing_provider_name_returns_conflict(integ
     assert raised.value.code == "integration_connection_exists"
     current = integration_db.find_one({"_id": ObjectId(second["id"])})
     assert current["name"] == "Outlet store"
+
+def test_delete_connection_removes_encrypted_credentials_and_respects_tenant(integration_db):
+    created = integrations.create_connection("owner-1", _woocommerce_payload())
+    stored = integration_db.find_one({"_id": ObjectId(created["id"])})
+    assert stored["credentials_ciphertext"]
+
+    with pytest.raises(APIError) as denied:
+        integrations.delete_connection("owner-2", created["id"])
+    assert denied.value.code == "integration_connection_not_found"
+    assert integration_db.find_one({"_id": ObjectId(created["id"])}) is not None
+
+    result = integrations.delete_connection("owner-1", created["id"])
+    assert result["status"] == "deleted"
+    assert result["encrypted_credentials_removed"] is True
+    assert integration_db.find_one({"_id": ObjectId(created["id"])}) is None
 
