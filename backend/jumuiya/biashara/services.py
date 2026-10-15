@@ -2349,41 +2349,142 @@ def record_sale(user_id, payload):
 # EXPENSES
 # =========================================================
 
-def create_expense(
-    user_id,
-    payload,
-):
 
-    business = _require_business(
-        user_id
+def _post_expense_journal(document, user_id):
+    """Post the expense while leaving its funding/settlement classification explicit."""
+    amount_minor = int(document.get("amount_minor", 0) or 0)
+    if amount_minor <= 0:
+        return None
+    # Lazy import prevents the finance blueprint package from creating a
+    # module-import cycle with the existing Biashara service module.
+    from backend.jumuiya.biashara.finance.ledger import post_journal_entry
+
+    expense_id = str(document.get("_id") or document.get("id") or "")
+    return post_journal_entry(
+        business_id=str(document.get("business_id") or ""),
+        source_key="expense-recorded:" + expense_id,
+        source_type="expense.recorded",
+        source_id=expense_id,
+        currency=document.get("currency", "KES"),
+        lines=[
+            {
+                "account_code": "operating_expense",
+                "debit_minor": amount_minor,
+                "credit_minor": 0,
+                "memo": str(document.get("category") or "Operating expense")[:300],
+            },
+            {
+                "account_code": "expense_settlement_unclassified",
+                "debit_minor": 0,
+                "credit_minor": amount_minor,
+                "memo": "Expense funding or payable requires settlement classification",
+            },
+        ],
+        actor_user_id=user_id,
+        basis="Expense recorded as incurred; payment method/funding source was not supplied. Offset remains unclassified pending reconciliation.",
+        effective_at=document.get("spent_at") or document.get("created_at") or now_utc(),
     )
+
+
+def create_expense(user_id, payload):
+    """Record an expense with safe retries, an outbox intent and a provisional journal."""
+    business = _require_business(user_id)
+    business_id = str(business["id"])
+    key = str(payload.get("idempotency_key") or "").strip()
+    if key and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{7,127}", key):
+        raise APIError("Idempotency-Key must be 8–128 safe characters.", 422, "invalid_idempotency_key")
+
+    try:
+        amount = Decimal(str(payload.get("amount")))
+    except (InvalidOperation, TypeError, ValueError):
+        raise APIError("Expense amount is invalid.", 422, "invalid_expense_amount")
+    if not amount.is_finite() or amount < 0:
+        raise APIError("Expense amount must be non-negative and finite.", 422, "invalid_expense_amount")
+    amount = amount.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    amount_minor = int(amount * 100)
+
+    currency = str(payload.get("currency") or business.get("currency") or "KES").strip().upper()
+    if not re.fullmatch(r"[A-Z]{3}", currency):
+        raise APIError("Expense currency must be a 3-letter ISO currency code.", 422, "invalid_expense_currency")
+
+    stable_payload = {
+        "title": str(payload.get("title") or "").strip()[:160],
+        "category": str(payload.get("category") or "").strip()[:120],
+        "amount_minor": amount_minor,
+        "currency": currency,
+        "notes": str(payload.get("notes") or "").strip()[:1000],
+    }
+    fingerprint = hashlib.sha256(
+        json.dumps(stable_payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    ).hexdigest()
+
+    expenses = collection("jumuiya_expenses")
+    if key:
+        existing = expenses.find_one({"business_id": business_id, "idempotency_key": key})
+        if existing:
+            if existing.get("request_fingerprint") != fingerprint:
+                raise APIError("Idempotency-Key was reused for different expense data.", 409, "idempotency_key_reused")
+            _dispatch_outbox_source("jumuiya_expenses", business_id, existing["_id"])
+            _post_expense_journal(existing, user_id)
+            return serialise(existing)
 
     document = expense_document(
-        business["id"],
-        payload,
+        business_id,
+        {
+            **payload,
+            **stable_payload,
+            "amount": float(amount),
+            "currency": currency,
+        },
     )
-
-    result = collection(
-        "jumuiya_expenses"
-    ).insert_one(
-        document
+    document["_id"] = ObjectId()
+    document.update({
+        "amount_minor": amount_minor,
+        "currency": currency,
+        "accounting_status": "provisional_unclassified",
+        "tax_status": "not_configured",
+        "idempotency_key": key or None,
+        "request_fingerprint": fingerprint,
+        "outbox_enqueued_event_keys": [],
+    })
+    event = _build_outbox_manifest(
+        event_key=f"expense:{document['_id']}:recorded",
+        event_type="expense.recorded",
+        entity_type="expense",
+        entity_id=document["_id"],
+        payload={
+            "status": "recorded",
+            "expense_id": str(document["_id"]),
+            "expense_category": stable_payload["category"][:200],
+            "amount_minor": amount_minor,
+            "currency": currency,
+        },
+        actor_user_id=user_id,
+        occurred_at=document.get("spent_at") or document.get("created_at") or now_utc(),
     )
+    document["outbox_event_manifest"] = [event]
 
-    document["_id"] = (
-        result.inserted_id
-    )
+    try:
+        expenses.insert_one(document)
+    except DuplicateKeyError:
+        if key:
+            existing = expenses.find_one({"business_id": business_id, "idempotency_key": key})
+            if existing and existing.get("request_fingerprint") == fingerprint:
+                _dispatch_outbox_source("jumuiya_expenses", business_id, existing["_id"])
+                _post_expense_journal(existing, user_id)
+                return serialise(existing)
+            if existing:
+                raise APIError("Idempotency-Key was reused for different expense data.", 409, "idempotency_key_reused")
+        raise
 
-    log_action(
-        user_id,
-        "expense.created",
-        "expense",
-        result.inserted_id,
-    )
-
-    return serialise(
-        document
-    )
-
+    _dispatch_outbox_source("jumuiya_expenses", business_id, document["_id"])
+    _post_expense_journal(document, user_id)
+    log_action(user_id, "expense.created", "expense", document["_id"], {
+        "amount_minor": amount_minor,
+        "currency": currency,
+        "accounting_status": document["accounting_status"],
+    })
+    return serialise(document)
 
 def list_expenses(
     user_id,
