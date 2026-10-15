@@ -340,6 +340,9 @@ def enqueue_outbox_event(
                 409,
                 "outbox_event_key_conflict",
             )
+        if existing.get("automation_dispatch_status") != "processed":
+            _dispatch_automation_event(existing)
+            existing = events.find_one(query) or existing
         return _public_event(existing)
 
     now = now_utc()
@@ -366,16 +369,26 @@ def enqueue_outbox_event(
         "last_error_at": None,
         "delivered_at": None,
         "provider_result_reference": None,
+        "automation_dispatch_status": "pending",
+        "automation_dispatch_attempt_count": 0,
+        "automation_last_dispatch_at": None,
+        "automation_last_error_code": None,
+        "automation_last_run_count": 0,
         "created_at": now,
         "updated_at": now,
     }
     try:
         result = events.insert_one(document)
         document["_id"] = result.inserted_id
+        _dispatch_automation_event(document)
+        document = events.find_one(query) or document
         return _public_event(document)
     except DuplicateKeyError:
         existing = events.find_one(query)
         if existing and existing.get("event_fingerprint") == fingerprint:
+            if existing.get("automation_dispatch_status") != "processed":
+                _dispatch_automation_event(existing)
+                existing = events.find_one(query) or existing
             return _public_event(existing)
         if existing:
             raise APIError(
