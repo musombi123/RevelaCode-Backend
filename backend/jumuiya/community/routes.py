@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 import os
+import re
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
+
+from bson import ObjectId
+from bson.errors import InvalidId
 
 import cloudinary
 from cloudinary import uploader
@@ -1263,3 +1267,210 @@ def search():
     return ok(
         ranked
     )
+
+# =========================================================
+# MEMBER CONTACT PREFERENCES
+# =========================================================
+
+COMMUNITY_CONTACT_PREFERENCES = "jumuiya_community_contact_preferences"
+
+
+def _normalize_whatsapp_number(value):
+    if value is None:
+        value = ""
+
+    if not isinstance(value, str):
+        raise APIError(
+            "phone_number must be text.",
+            422,
+            "validation_error",
+        )
+
+    value = value.strip()
+
+    if len(value) > 24 or (value and not re.fullmatch(r"\+?[0-9\s().-]+", value)):
+        raise APIError(
+            "Enter a valid WhatsApp number using digits and an optional leading +.",
+            422,
+            "invalid_phone_number",
+        )
+
+    digits = re.sub(r"[^0-9]", "", value)
+
+    if digits and not 8 <= len(digits) <= 15:
+        raise APIError(
+            "A WhatsApp number must contain between 8 and 15 digits.",
+            422,
+            "invalid_phone_number",
+        )
+
+    return f"+{digits}" if digits else ""
+
+
+@community_bp.get("/contact-preferences")
+@require_authenticated
+def get_contact_preferences():
+    user_id = str(current_user_id())
+
+    document = collection(
+        COMMUNITY_CONTACT_PREFERENCES
+    ).find_one(
+        {"user_id": user_id},
+        {"_id": 0, "enabled": 1, "phone_number": 1},
+    ) or {}
+
+    phone_number = document.get("phone_number", "")
+    if not isinstance(phone_number, str):
+        phone_number = ""
+
+    return ok({
+        "enabled": bool(document.get("enabled", False)),
+        "phone_number": phone_number,
+    })
+
+
+@community_bp.put("/contact-preferences")
+@require_authenticated
+def save_contact_preferences():
+    data = body()
+    enabled = data.get("enabled", False)
+
+    if not isinstance(enabled, bool):
+        raise APIError(
+            "enabled must be true or false.",
+            422,
+            "validation_error",
+        )
+
+    phone_number = _normalize_whatsapp_number(
+        data.get("phone_number", "")
+    )
+
+    if enabled and not phone_number:
+        raise APIError(
+            "Add a valid WhatsApp number before enabling private contact.",
+            422,
+            "invalid_phone_number",
+        )
+
+    user_id = str(current_user_id())
+    now = datetime.now(timezone.utc)
+
+    collection(
+        COMMUNITY_CONTACT_PREFERENCES
+    ).update_one(
+        {"user_id": user_id},
+        {
+            "$set": {
+                "enabled": enabled,
+                "phone_number": phone_number,
+                "updated_at": now,
+            },
+            "$setOnInsert": {
+                "user_id": user_id,
+                "created_at": now,
+            },
+        },
+        upsert=True,
+    )
+
+    try:
+        log_action(
+            user_id,
+            "community.contact_preferences.updated",
+            "community_contact_preferences",
+            user_id,
+            {"enabled": enabled},
+        )
+    except Exception:
+        # Auditing must not turn a successfully stored preference into a
+        # failed request; never put the actual phone number in the audit log.
+        pass
+
+    return ok(
+        {
+            "enabled": enabled,
+            "phone_number": phone_number,
+        },
+        "Community contact preferences saved.",
+    )
+
+
+@community_bp.get("/members/<member_id>/whatsapp-contact")
+@require_authenticated
+def get_member_whatsapp_contact(member_id):
+    """
+    Return a WhatsApp deep link only when the member explicitly opted in.
+
+    A supplied post_id must belong to the requested member. The phone number
+    itself is never returned by this endpoint.
+    """
+    requester_id = str(current_user_id())
+    normalized_member_id = str(member_id or "").strip()
+
+    if not normalized_member_id:
+        raise APIError(
+            "Member ID is required.",
+            400,
+            "invalid_member_id",
+        )
+
+    if requester_id == normalized_member_id:
+        return ok({
+            "available": False,
+            "contact_url": None,
+        })
+
+    post_id = request.args.get("post_id", "").strip()
+    if post_id:
+        try:
+            post_object_id = ObjectId(post_id)
+        except (InvalidId, TypeError, ValueError):
+            raise APIError(
+                "Invalid Community post ID.",
+                400,
+                "invalid_post_id",
+            )
+
+        post = collection("jumuiya_community_posts").find_one({
+            "_id": post_object_id,
+            "author_user_id": normalized_member_id,
+            "status": {"$nin": ["deleted", "hidden"]},
+        })
+
+        if not post:
+            raise APIError(
+                "The Community post was not found for this member.",
+                404,
+                "community_post_not_found",
+            )
+
+    preferences = collection(
+        COMMUNITY_CONTACT_PREFERENCES
+    ).find_one(
+        {
+            "user_id": normalized_member_id,
+            "enabled": True,
+        },
+        {"_id": 0, "phone_number": 1},
+    )
+
+    if not preferences:
+        return ok({
+            "available": False,
+            "contact_url": None,
+        })
+
+    phone_number = preferences.get("phone_number", "")
+    digits = re.sub(r"[^0-9]", "", phone_number) if isinstance(phone_number, str) else ""
+
+    if not 8 <= len(digits) <= 15:
+        return ok({
+            "available": False,
+            "contact_url": None,
+        })
+
+    return ok({
+        "available": True,
+        "contact_url": f"https://wa.me/{digits}",
+    })
