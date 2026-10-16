@@ -280,6 +280,37 @@ def ranked_surface(
         return results
 
     # -----------------------------------------------------
+    # THREADS
+    # -----------------------------------------------------
+
+    if surface == "threads":
+        thread_types = {
+            "discussion",
+            "question",
+            "knowledge",
+            "help",
+            "request",
+            "service_needed",
+        }
+        thread_candidates = [
+            candidate
+            for candidate in candidates
+            if str(
+                candidate.get("post_type")
+                or candidate.get("type")
+                or candidate.get("category")
+                or "discussion"
+            ).strip().lower() in thread_types
+        ]
+        return discovery.rank_candidates(
+            thread_candidates,
+            user_context=user_context,
+            mode="recent",
+            limit=limit,
+            diversify=False,
+        )
+
+    # -----------------------------------------------------
     # DISCOVERY
     # -----------------------------------------------------
 
