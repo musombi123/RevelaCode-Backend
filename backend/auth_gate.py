@@ -941,3 +941,84 @@ def login():
             JWT_EXPIRES_HOURS * 60 * 60
         ),
     ), 200
+
+# =========================================================
+# REVELAAI SERVICE-TO-SERVICE USER VERIFICATION
+# =========================================================
+
+@auth_bp.route(
+    "/api/auth/verify/<user_id>",
+    methods=["GET"],
+)
+def verify_user_for_revelaai(user_id):
+    """
+    Verify that a user ID belongs to an existing RevelaCode
+    MongoDB users document. This endpoint returns no profile data.
+
+    Configure the same high-entropy REVELAAI_VERIFY_KEY in both
+    services. RevelaAI must still validate the user's signed JWT
+    and match its subject to the requested user ID.
+    """
+    import hmac
+    from bson import ObjectId
+    from bson.errors import InvalidId
+
+    expected_key = os.getenv("REVELAAI_VERIFY_KEY", "")
+    supplied_key = request.headers.get("X-RevelaAI-Verify-Key", "")
+
+    if not expected_key:
+        return jsonify(
+            success=False,
+            code="verification_not_configured",
+            message="Service verification is not configured.",
+        ), 503
+
+    if not supplied_key or not hmac.compare_digest(
+        supplied_key,
+        expected_key,
+    ):
+        return jsonify(
+            success=False,
+            code="forbidden",
+            message="Service authentication required.",
+        ), 403
+
+    if not MONGO_AVAILABLE or users_col is None:
+        return jsonify(
+            success=False,
+            code="users_database_unavailable",
+            message="The authoritative users database is unavailable.",
+        ), 503
+
+    try:
+        user_oid = ObjectId(str(user_id).strip())
+    except (InvalidId, TypeError, ValueError):
+        return jsonify(
+            success=False,
+            code="invalid_user_id",
+            exists=False,
+        ), 400
+
+    try:
+        exists = users_col.find_one(
+            {"_id": user_oid},
+            {"_id": 1},
+        ) is not None
+    except Exception:
+        return jsonify(
+            success=False,
+            code="verification_failed",
+            message="User verification could not be completed.",
+        ), 503
+
+    if not exists:
+        return jsonify(
+            success=True,
+            exists=False,
+        ), 404
+
+    return jsonify(
+        success=True,
+        exists=True,
+        userId=str(user_oid),
+    ), 200
