@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from datetime import datetime, timezone
 from typing import Any, Iterable
+from urllib.parse import urlparse
 
 from bson import ObjectId
 from bson.errors import InvalidId
@@ -850,6 +851,19 @@ def _validate_action(
             422,
             "validation_error",
         )
+
+    if action_type == "external_link":
+        parsed_target = urlparse(action_target)
+
+        if (
+            parsed_target.scheme not in {"http", "https"}
+            or not parsed_target.netloc
+        ):
+            raise APIError(
+                "External link actions must use a valid http:// or https:// URL.",
+                422,
+                "invalid_action_target",
+            )
 
     return {
         "type": action_type,
