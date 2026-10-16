@@ -37,3 +37,12 @@ The existing RevelaCode platform remains intact while **Jumuiya** extends the ba
                                                                │
                                                                ▼
                                                       JUMUIYA ECOSYSTEM
+
+ 
+## RevelaAI user verification
+
+RevelaCode-Backend remains the only source of user identity. Login responses expose the existing MongoDB user ID as `id`, `user_id`, and `userId`; no new user records are created for RevelaAI.
+
+Set `REVELAAI_VERIFY_KEY` in the backend deployment to a long, random service secret. Set the same value as `REVELACODE_VERIFY_KEY` in the RevelaAI service. The protected endpoint `GET /api/auth/verify/:userId` returns only whether that ObjectId exists in the authoritative `users` collection; it never returns the user's profile.
+
+Keep `MONGO_URI` pointed at the existing Cluster0 and keep `MONGO_DB_NAME=revelacode`. RevelaAI uses the same cluster URI with its own database named `revelai`; do not change the backend's database name or grant RevelaAI direct access to `revelacode.users`.
