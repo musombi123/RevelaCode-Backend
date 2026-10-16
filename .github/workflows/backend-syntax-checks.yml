@@ -1,0 +1,28 @@
+name: RevelaCode backend syntax checks
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main, "feat/revelaai-memory-user-verification"]
+
+jobs:
+  python-checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Compile backend Python modules
+        run: python -m compileall -q main.py backend
+      - name: Check auth endpoint source markers
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          source = Path("backend/auth_gate.py").read_text(encoding="utf-8")
+          assert '"/api/auth/verify/<user_id>"' in source
+          assert 'X-RevelaAI-Verify-Key' in source
+          assert 'userId=str(user.get("_id")' in source
+          print("RevelaAI verification route checks passed.")
+          PY
