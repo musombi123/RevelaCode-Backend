@@ -1328,9 +1328,18 @@ def _normalize_whatsapp_number(value):
 
     digits = re.sub(r"[^0-9]", "", value)
 
+    # Accept common Kenyan local mobile formats as well as international
+    # numbers so the generated wa.me link always receives a country code.
+    if digits.startswith("00"):
+        digits = digits[2:]
+    elif len(digits) == 10 and digits.startswith("0"):
+        digits = "254" + digits[1:]
+    elif len(digits) == 9 and digits[0] in {"1", "7"}:
+        digits = "254" + digits
+
     if digits and not 8 <= len(digits) <= 15:
         raise APIError(
-            "A WhatsApp number must contain between 8 and 15 digits.",
+            "Use an international WhatsApp number or a valid Kenyan mobile number.",
             422,
             "invalid_phone_number",
         )
