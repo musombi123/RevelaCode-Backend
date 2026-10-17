@@ -405,13 +405,6 @@ def business_payload(data):
         ),
 
         "opening_hours": opening_hours,
-
-        "status": _choice(
-            data,
-            "status",
-            BUSINESS_STATUSES,
-            default="active",
-        ),
     }
 
 
