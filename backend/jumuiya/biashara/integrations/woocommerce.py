@@ -644,6 +644,10 @@ def _mark_import_failed(config, external_id, token, error_code):
 
 def import_products(user_id, connection_id, external_product_ids):
     config = _load_connection(user_id, connection_id, "integration.manage", require_enabled=True)
+    # Import needs both integration administration and catalogue management.
+    # Fail before making remote calls or claiming import leases if either role
+    # permission is absent.
+    require_permission(user_id, "products.manage", business_id=config["business_id"])
     currency = _currency_check(config)
     if not currency["configured"]:
         raise APIError(
