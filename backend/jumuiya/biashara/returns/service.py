@@ -576,7 +576,7 @@ def resolve_return(user_id, return_id, decision, note=""):
     stock_result = _apply_restock(return_doc, user_id)
     now = now_utc()
     event = _return_event(return_doc, "completed", "return.completed", "completed", user_id)
-    updated = returns.find_one_and_update(
+    update_result = returns.find_one_and_update(
         {"_id": _clean_id(return_id), "business_id": business_id, "status": "approved"},
         {"$set": {
             "status": "completed",
@@ -586,7 +586,9 @@ def resolve_return(user_id, return_id, decision, note=""):
             "updated_at": now,
         }, "$addToSet": {"outbox_event_manifest": event}},
     )
-    updated = updated or returns.find_one({"_id": _clean_id(return_id), "business_id": business_id}) or return_doc
+    updated = returns.find_one({"_id": _clean_id(return_id), "business_id": business_id}) or return_doc
+    if not update_result and updated.get("status") != "completed":
+        raise APIError("Return changed while finalizing stock disposition. Retry the same decision.", 409, "return_state_conflict")
     _dispatch(RETURNS_COLLECTION, business_id, updated["_id"])
     log_action(user_id, "biashara.return_approved", "return", updated["_id"], {
         "restock_status": updated.get("restock_status"),
