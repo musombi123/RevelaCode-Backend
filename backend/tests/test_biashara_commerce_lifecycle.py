@@ -1024,11 +1024,6 @@ def test_stock_count_idempotency_key_rejects_changed_product_selection(commerce_
         {},
         "stock-count-selection-0001",
     )
-    replay = stock_counts.create_count_session(
-        "owner-1",
-        {"product_ids": [str(commerce_db["product_id"])]},
-        "stock-count-selection-0001",
-    ) if False else None
     # Both selections are valid, but the same key cannot be reused to select
     # a different scope (all active products versus an explicit product list).
     with pytest.raises(APIError) as raised:
