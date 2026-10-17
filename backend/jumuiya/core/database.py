@@ -525,6 +525,35 @@ INDEX_DEFINITIONS = {
         ),
     ],
 
+    "jumuiya_external_object_mappings": [
+        (
+            [
+                ("business_id", ASCENDING),
+                ("connection_id", ASCENDING),
+                ("resource_type", ASCENDING),
+                ("external_id", ASCENDING),
+            ],
+            {"unique": True, "name": "uq_biashara_external_mapping"},
+        ),
+        (
+            [
+                ("business_id", ASCENDING),
+                ("provider", ASCENDING),
+                ("resource_type", ASCENDING),
+                ("local_resource_id", ASCENDING),
+            ],
+            {"name": "ix_biashara_external_mapping_local"},
+        ),
+        (
+            [
+                ("business_id", ASCENDING),
+                ("import_status", ASCENDING),
+                ("lease_expires_at", ASCENDING),
+            ],
+            {"name": "ix_biashara_external_mapping_recovery"},
+        ),
+    ],
+
     "jumuiya_integration_webhook_deliveries": [
         (
             [("business_id", ASCENDING), ("connection_id", ASCENDING), ("delivery_key", ASCENDING)],
