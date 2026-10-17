@@ -671,6 +671,148 @@ def decide_task(user_id, task_id, decision, note=""):
     })
     return _serialize(updated)
 
+def create_purchase_order_from_reorder_task(user_id, task_id, payload, idempotency_key):
+    """Create one draft purchase order from an approved low-stock task.
+
+    The owner/authorized purchasing role must provide the supplier and confirm
+    unit cost. A task produces at most one automatic draft PO. It is never sent
+    to the supplier and does not change stock.
+    """
+    _business_data, business_id = _business(user_id)
+    require_permission(user_id, "purchasing.manage", business_id=business_id)
+    if not isinstance(payload, dict):
+        raise APIError("JSON request body is required.", 400, "invalid_json")
+    request_key = str(idempotency_key or "").strip()
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{7,127}", request_key):
+        raise APIError("Idempotency-Key must be 8–128 safe characters.", 422, "invalid_idempotency_key")
+
+    task = collection(TASKS_COLLECTION).find_one({
+        "_id": _clean_id(task_id),
+        "business_id": business_id,
+    })
+    if not task:
+        raise APIError("Automation task not found.", 404, "automation_task_not_found")
+    if task.get("task_type") != "reorder_suggestion":
+        raise APIError("Only a reorder suggestion can create a draft purchase order.", 409, "invalid_automation_task_type")
+    if task.get("status") != "approved_for_manual_action" or task.get("decision") != "approve":
+        raise APIError("A reorder suggestion must be approved before a purchase order can be drafted.", 409, "reorder_approval_required")
+
+    details = task.get("details") if isinstance(task.get("details"), dict) else {}
+    product_id = str(details.get("product_id") or "").strip()
+    if not product_id:
+        raise APIError("Reorder task is missing its product reference.", 409, "reorder_product_missing")
+    product = collection("jumuiya_products").find_one({
+        "_id": _clean_id(product_id),
+        "business_id": business_id,
+        "status": "active",
+    })
+    if not product:
+        raise APIError("The suggested product is no longer active in this business.", 409, "reorder_product_unavailable")
+
+    try:
+        current_stock = Decimal(str(product.get("stock_quantity", 0) or 0))
+        current_reserved = Decimal(str(product.get("reserved_quantity", 0) or 0))
+        suggested_stock = Decimal(str(details.get("stock_quantity")))
+        suggested_reserved = Decimal(str(details.get("reserved_quantity")))
+        suggested_quantity = Decimal(str(details.get("suggested_reorder_quantity")))
+    except (InvalidOperation, TypeError, ValueError):
+        raise APIError("Reorder task has invalid inventory snapshots.", 409, "reorder_snapshot_invalid")
+    quantities = (current_stock, current_reserved, suggested_stock, suggested_reserved, suggested_quantity)
+    if any(not value.is_finite() or value < 0 for value in quantities) or suggested_quantity <= 0:
+        raise APIError("Reorder task has invalid inventory quantities.", 409, "reorder_snapshot_invalid")
+    if (
+        abs(current_stock - suggested_stock) > Decimal("0.0000001")
+        or abs(current_reserved - suggested_reserved) > Decimal("0.0000001")
+    ):
+        raise APIError(
+            "Inventory changed after this suggestion. Refresh the stock/reorder task before creating a purchase order.",
+            409,
+            "reorder_snapshot_stale",
+        )
+
+    supplier_id = str(payload.get("supplier_id") or "").strip()
+    if not supplier_id:
+        raise APIError("Choose an active supplier before creating the draft purchase order.", 422, "supplier_required")
+    if payload.get("unit_cost") is None or str(payload.get("unit_cost")).strip() == "":
+        raise APIError("Confirm the supplier's unit cost before creating the draft purchase order.", 422, "unit_cost_required")
+    raw_quantity = payload.get("quantity", str(suggested_quantity))
+    try:
+        quantity = Decimal(str(raw_quantity))
+    except (InvalidOperation, TypeError, ValueError):
+        raise APIError("Purchase quantity must be a valid number.", 422, "invalid_reorder_quantity")
+    if not quantity.is_finite() or quantity <= 0:
+        raise APIError("Purchase quantity must be positive and finite.", 422, "invalid_reorder_quantity")
+
+    # Fixed per-task key is intentional: a replay with identical inputs returns
+    # the original draft. A different supplier, quantity or price conflicts
+    # instead of silently generating a second purchase order for the same task.
+    task_id_string = str(task.get("_id") or task_id)
+    po_idempotency_key = "automation-reorder-" + hashlib.sha256(
+        (business_id + ":" + task_id_string).encode("utf-8")
+    ).hexdigest()[:32]
+    currency = str(_business_data.get("currency") or "KES").upper()
+    notes = f"Draft created from approved Biashara reorder suggestion task {task_id_string}. Not sent to supplier."
+    from backend.jumuiya.biashara.purchasing import service as purchasing_service
+
+    purchase_order = purchasing_service.create_purchase_order(user_id, {
+        "supplier_id": supplier_id,
+        "currency": currency,
+        "notes": notes,
+        "idempotency_key": po_idempotency_key,
+        "lines": [{
+            "product_id": product_id,
+            "quantity": format(quantity.normalize(), "f"),
+            "unit_cost": str(payload.get("unit_cost")).strip(),
+        }],
+    })
+
+    now = now_utc()
+    update_result = collection(TASKS_COLLECTION).update_one(
+        {
+            "_id": task["_id"],
+            "business_id": business_id,
+            "status": "approved_for_manual_action",
+        },
+        {
+            "$set": {
+                "details.purchase_order_created": True,
+                "details.purchase_order_id": str(purchase_order.get("id") or ""),
+                "details.purchase_order_number": str(purchase_order.get("po_number") or ""),
+                "details.purchase_order_status": str(purchase_order.get("status") or "draft"),
+                "details.purchase_order_idempotency_key": po_idempotency_key,
+                "details.purchase_order_created_by_user_id": str(user_id),
+                "details.purchase_order_created_at": now,
+                "updated_at": now,
+            }
+        },
+    )
+    latest = collection(TASKS_COLLECTION).find_one({
+        "_id": task["_id"],
+        "business_id": business_id,
+    }) or task
+    if not update_result.matched_count and str((latest.get("details") or {}).get("purchase_order_id") or "") != str(purchase_order.get("id") or ""):
+        raise APIError(
+            "The purchase order draft exists, but the automation task changed before its reference could be saved. Retry the same request to reconcile it.",
+            409,
+            "reorder_task_update_conflict",
+        )
+
+    log_action(user_id, "biashara.reorder_purchase_order_drafted", "automation_task", task["_id"], {
+        "purchase_order_id": str(purchase_order.get("id") or ""),
+        "purchase_order_number": purchase_order.get("po_number"),
+        "status": purchase_order.get("status"),
+        "sent_to_supplier": False,
+        "quantity": format(quantity.normalize(), "f"),
+        "currency": currency,
+    })
+    return {
+        "task": _serialize(latest),
+        "purchase_order": purchase_order,
+        "sent_to_supplier": False,
+        "stock_changed": False,
+    }
+
+
 def replay_failed_automation_dispatches(user_id, limit=100):
     """Operator-controlled retry for failed/dead-letter internal automation dispatches."""
     require_permission(user_id, "automation.manage")
