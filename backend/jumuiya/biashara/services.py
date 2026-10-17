@@ -271,7 +271,7 @@ def create_or_update_business(user_id, payload):
                 "verification_history": {
                     "event": "resubmitted",
                     "actor_user_id": owner_id,
-                    "at": now,
+                    "at": now.isoformat(),
                 }
             }
 
@@ -314,7 +314,7 @@ def create_or_update_business(user_id, payload):
         "verification_history": [{
             "event": "submitted",
             "actor_user_id": owner_id,
-            "at": now,
+            "at": now.isoformat(),
         }],
     })
 
