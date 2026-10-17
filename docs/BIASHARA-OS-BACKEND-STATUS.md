@@ -126,10 +126,11 @@ Use a dedicated worker process with the same environment variables as the backen
 
 - Rules are versioned and limited to known trigger/action pairs; arbitrary scripts are not supported.
 - Order events can create internal fulfilment tasks; invoice/payment events can create review tasks; low-stock events can create reorder suggestions.
-- Reorder suggestions require approval. Approval only marks the suggestion ready for a human action; it does not create/send a purchase order.
+- Reorder suggestions require approval. The approved task can now be converted into one real persisted draft purchase order through the existing purchasing service, but it is never sent to the supplier. The authorized purchasing user must select an active tenant-owned supplier and confirm unit cost; stock snapshots are rechecked before drafting.
+- A stable idempotency key derived from the approved task prevents the same task from creating two draft purchase orders. Replaying identical inputs returns the existing draft; changing supplier/quantity/cost conflicts instead of silently creating a second PO.
 - Payment review tasks do not mark a payment verified or change its provider-verification state.
 - Runs and tasks use stable keys for safe event redelivery. Failed dispatches are visible as retry work.
-- APIs are registered under `/api/jumuiya/biashara/automation`.
+- APIs are registered under `/api/jumuiya/biashara/automation`, including `POST /tasks/<task_id>/purchase-order` for approved reorder tasks.
 
 ### Multiple businesses, staff roles and authorization
 
@@ -237,3 +238,9 @@ See the [Biashara validation workflow](https://github.com/musombi123/RevelaCode-
 - Worker/inline dispatch consolidation and audited dead-letter replay passed the branch CI suite: [Run 39050645977](https://github.com/musombi123/RevelaCode-Backend/actions/runs/39050645977) — success.
 - Regression coverage includes duplicate event delivery, lease expiry and reclaim, stale-worker acknowledgement rejection, bounded retries/dead-letter, tenant filters and owner-triggered dead-letter replay.
 - The worker is implemented in `backend/jumuiya/biashara/automation/worker.py`; the command entry point is `backend/scripts/run_biashara_automation_worker.py`.
+
+## Latest verified reorder-to-purchase-order slice
+
+- Branch CI passed: [Run 39050863377](https://github.com/musombi123/RevelaCode-Backend/actions/runs/39050863377) — success.
+- Coverage verifies approval gates, active supplier requirement, explicitly confirmed unit cost, a stock-snapshot freshness guard, tenant-scoped purchasing service use, fixed task-based idempotency and that the draft neither sends to the supplier nor changes stock.
+- The manual/automatic purchasing flow remains a draft workflow only. Supplier messaging, approval/sign-off policies beyond the rule approval, and purchase-payment settlement remain separate work.
