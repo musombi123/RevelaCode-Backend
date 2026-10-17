@@ -463,7 +463,7 @@ def _import_one(woo_db, monkeypatch, product=None):
 
 def test_outbound_sync_pushes_only_selected_changed_fields_and_confirms_remote_state(woo_db, monkeypatch):
     remote, local_id = _import_one(woo_db, monkeypatch)
-    local = woo_db["products"].find_one({"_id": ObjectId(local_id), "business_id": "business-1"})
+    local = next(row for row in woo_db["products"].documents if str(row.get("_id")) == local_id and row.get("business_id") == "business-1")
     local["name"] = "Premium Face Cream"
     local["price"] = 275.0
     calls = _mock_put(monkeypatch, remote)
@@ -495,7 +495,7 @@ def test_outbound_sync_detects_remote_edit_and_does_not_overwrite_it(woo_db, mon
     remote, local_id = _import_one(woo_db, monkeypatch)
     remote["201"]["name"] = "Changed in WooCommerce"
     remote["201"]["date_modified_gmt"] = "2026-10-17T11:00:00"
-    woo_db["products"].find_one({"_id": ObjectId(local_id), "business_id": "business-1"})["name"] = "Changed in Biashara"
+    next(row for row in woo_db["products"].documents if str(row.get("_id")) == local_id and row.get("business_id") == "business-1")["name"] = "Changed in Biashara"
     calls = _mock_put(monkeypatch, remote)
 
     result = woocommerce.sync_products("owner-1", woo_db["connection_id"], [local_id])
@@ -512,7 +512,7 @@ def test_outbound_sync_detects_remote_edit_and_does_not_overwrite_it(woo_db, mon
 
 def test_ambiguous_timeout_that_applied_remote_change_recovers_without_second_put(woo_db, monkeypatch):
     remote, local_id = _import_one(woo_db, monkeypatch)
-    woo_db["products"].find_one({"_id": ObjectId(local_id), "business_id": "business-1"})["name"] = "Updated Face Cream"
+    next(row for row in woo_db["products"].documents if str(row.get("_id")) == local_id and row.get("business_id") == "business-1")["name"] = "Updated Face Cream"
     calls = _mock_put(monkeypatch, remote, fail_after_apply=True)
 
     first = woocommerce.sync_products("owner-1", woo_db["connection_id"], [local_id])
@@ -534,7 +534,7 @@ def test_ambiguous_timeout_that_applied_remote_change_recovers_without_second_pu
 
 def test_ambiguous_timeout_that_did_not_apply_is_never_blindly_retried(woo_db, monkeypatch):
     remote, local_id = _import_one(woo_db, monkeypatch)
-    woo_db["products"].find_one({"_id": ObjectId(local_id), "business_id": "business-1"})["name"] = "Pending Update"
+    next(row for row in woo_db["products"].documents if str(row.get("_id")) == local_id and row.get("business_id") == "business-1")["name"] = "Pending Update"
     calls = _mock_put(monkeypatch, remote, fail_before_apply=True)
 
     first = woocommerce.sync_products("owner-1", woo_db["connection_id"], [local_id])
