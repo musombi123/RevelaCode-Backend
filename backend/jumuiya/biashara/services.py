@@ -1510,6 +1510,11 @@ def save_biashara_website_settings(user_id, payload):
     now = now_utc()
     current = business.get("website") if isinstance(business.get("website"), dict) else {}
     settings = normalize_biashara_website_settings(payload, current)
+    old_domain = str(current.get("custom_domain", "") or "").strip().lower()
+    new_domain = str(settings.get("custom_domain", "") or "").strip().lower()
+    if new_domain != old_domain:
+        settings["domain_status"] = "pending_platform_setup" if new_domain else "not_configured"
+        settings["domain_setup_requested_at"] = now.isoformat() if new_domain else None
     settings["updated_at"] = now.isoformat()
     if settings.get("published"):
         settings["published_at"] = settings.get("published_at") or now.isoformat()
@@ -1552,19 +1557,30 @@ def get_public_biashara_website(slug):
         "location": business.get("location", ""),
         "county": business.get("county", ""),
         "currency": business.get("currency", "KES") or "KES",
-        "logo_url": business.get("logo_url", ""),
+        "logo_url": (business.get("website") or {}).get("logo_url") or business.get("logo_url", ""),
     }
     public_website = {
         "headline": website.get("headline") or business.get("name", ""),
         "tagline": website.get("tagline", ""),
         "about": website.get("about") or business.get("description", ""),
+        "logo_url": website.get("logo_url") or business.get("logo_url", ""),
         "hero_image_url": website.get("hero_image_url", ""),
+        "hero_video_url": website.get("hero_video_url", ""),
+        "hero_slides": website.get("hero_slides", []) if isinstance(website.get("hero_slides", []), list) else [],
+        "gallery_items": website.get("gallery_items", []) if isinstance(website.get("gallery_items", []), list) else [],
+        "social_links": website.get("social_links", {}) if isinstance(website.get("social_links", {}), dict) else {},
+        "announcement": website.get("announcement", ""),
+        "footer_message": website.get("footer_message", ""),
+        "custom_domain": website.get("custom_domain", ""),
+        "domain_status": website.get("domain_status", "not_configured"),
         "primary_color": website.get("primary_color", "#1d4ed8"),
         "accent_color": website.get("accent_color", "#0f766e"),
         "seo_title": website.get("seo_title") or business.get("name", ""),
         "seo_description": website.get("seo_description") or business.get("description", ""),
         "whatsapp_number": website.get("whatsapp_number", "") if website.get("contact_enabled", True) is True else "",
         "show_products": website.get("show_products", True) is True,
+        "show_gallery": website.get("show_gallery", True) is True,
+        "show_social_links": website.get("show_social_links", True) is True,
         "contact_enabled": website.get("contact_enabled", True) is True,
     }
 
