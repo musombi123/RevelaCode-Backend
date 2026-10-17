@@ -543,7 +543,7 @@ def test_ambiguous_timeout_that_did_not_apply_is_never_blindly_retried(woo_db, m
     assert first["outcome_unknown"] == 1
     assert second["outcome_unknown"] == 1
     assert len(calls) == 1
-    assert remote["201"]["name"] == "Face Cream"
+    assert remote["201"]["name"] == "<b>Face Cream</b>"
     mapping = woo_db["mappings"].find_one({"business_id": "business-1", "external_id": "201"})
     assert mapping["sync_status"] == "outcome_unknown"
     assert mapping["pending_outbound_payload"]["name"] == "Pending Update"
