@@ -471,3 +471,32 @@ def test_worker_can_filter_recovery_to_one_business(automation_db):
     assert target_saved["automation_dispatch_status"] == "processed"
     assert other_saved["automation_dispatch_status"] == "retry"
 
+def test_operator_can_replay_dead_lettered_automation_with_a_fresh_retry_window(automation_db):
+    automation.create_rule("owner-1", {
+        "name": "Recover manually replayed order follow-up",
+        "trigger_event": "order.created",
+        "action_type": "create_fulfillment_task",
+        "conditions": {},
+        "enabled": True,
+    })
+    event = _automation_outbox_event(
+        event_id="manual-replay-worker-event",
+        status="dead_letter",
+        attempts=automation_worker.MAX_DISPATCH_ATTEMPTS,
+    )
+    automation_db["data"]["jumuiya_outbox_events"].documents.append(deepcopy(event))
+
+    result = automation.replay_failed_automation_dispatches("owner-1", limit=10)
+
+    saved = automation_db["data"]["jumuiya_outbox_events"].find_one({
+        "event_id": "manual-replay-worker-event",
+    })
+    assert result["inspected"] == 1
+    assert result["dead_letters_reset"] == 1
+    assert result["processed"] == 1
+    assert result["provider_delivery_attempted"] is False
+    assert saved["automation_dispatch_status"] == "processed"
+    assert saved["automation_manual_replay_count"] == 1
+    assert saved["automation_last_manual_replay_by_user_id"] == "owner-1"
+    assert len(automation.list_tasks("owner-1")) == 1
+
