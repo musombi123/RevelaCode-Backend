@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import hmac
 import json
 import os
 import random
 import threading
 
 import jwt
+from bson import ObjectId
+from bson.errors import InvalidId
 
 from datetime import datetime, timedelta, timezone
 
@@ -198,6 +201,113 @@ auth_bp = Blueprint(
     "auth_bp",
     __name__,
 )
+
+# Shared with RevelaAI's existing internal AI Gateway. Keep this
+# credential server-side in both services; never expose it to clients.
+REVELAAI_SERVICE_KEY = os.getenv(
+    "REVELAAI_SERVICE_KEY",
+    "",
+).strip()
+
+
+@auth_bp.route(
+    "/api/auth/verify/<user_id>",
+    methods=["GET"],
+)
+def verify_user_for_revelaai(user_id: str):
+    """Verify that a RevelaCode user exists without exposing user data.
+
+    This service-to-service endpoint intentionally returns only the
+    requested ID and existence status. It never returns contact details,
+    profile fields, or authentication data.
+    """
+    configured_key = REVELAAI_SERVICE_KEY
+    presented_key = request.headers.get(
+        "X-REVELAAI-SERVICE-KEY",
+        "",
+    ).strip()
+
+    if not configured_key:
+        return jsonify(
+            success=False,
+            code="service_verification_not_configured",
+        ), 503
+
+    if not presented_key or not hmac.compare_digest(
+        presented_key,
+        configured_key,
+    ):
+        return jsonify(
+            success=False,
+            code="service_verification_forbidden",
+        ), 403
+
+    normalized_id = str(user_id or "").strip()
+    if not normalized_id or len(normalized_id) > 128:
+        return jsonify(
+            exists=False,
+            userId=normalized_id,
+        ), 404
+
+    user = None
+    if MONGO_AVAILABLE and users_col is not None:
+        try:
+            if ObjectId.is_valid(normalized_id):
+                user = users_col.find_one(
+                    {"_id": ObjectId(normalized_id)},
+                    {"_id": 1, "id": 1, "user_id": 1},
+                )
+            else:
+                user = users_col.find_one(
+                    {"$or": [
+                        {"id": normalized_id},
+                        {"user_id": normalized_id},
+                    ]},
+                    {"_id": 1, "id": 1, "user_id": 1},
+                )
+        except Exception:
+            # Do not fall back to a potentially stale local mirror when
+            # Mongo is configured but temporarily unavailable.
+            return jsonify(
+                success=False,
+                code="user_verification_unavailable",
+            ), 503
+    else:
+        try:
+            for record in load_users_file().values():
+                if not isinstance(record, dict):
+                    continue
+                record_id = str(
+                    record.get("_id")
+                    or record.get("id")
+                    or record.get("user_id")
+                    or ""
+                )
+                if record_id == normalized_id:
+                    user = record
+                    break
+        except Exception:
+            return jsonify(
+                success=False,
+                code="user_verification_unavailable",
+            ), 503
+
+    if not user:
+        return jsonify(
+            exists=False,
+            userId=normalized_id,
+        ), 404
+
+    actual_id = str(
+        user.get("_id")
+        or user.get("id")
+        or user.get("user_id")
+        or normalized_id
+    )
+    return jsonify(
+        exists=(actual_id == normalized_id),
+        userId=actual_id,
+    ), 200
 
 
 # =========================================================
