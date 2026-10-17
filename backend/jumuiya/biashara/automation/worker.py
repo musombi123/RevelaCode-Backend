@@ -45,7 +45,7 @@ def _bounded(value, default, maximum, minimum=1):
         return default
 
 
-def _claim_query(business_id=None):
+def _claim_query(business_id=None, event_ids=None):
     now = now_utc()
     lease_expired_or_free = {
         "$or": [
@@ -72,15 +72,17 @@ def _claim_query(business_id=None):
     }
     if business_id is not None:
         query["business_id"] = str(business_id)
+    if event_ids is not None:
+        query["event_id"] = {"$in": list(event_ids)}
     return query
 
 
-def _claim_event(worker_id, business_id=None, lease_seconds=DEFAULT_LEASE_SECONDS):
+def _claim_event(worker_id, business_id=None, lease_seconds=DEFAULT_LEASE_SECONDS, event_ids=None):
     """Atomically claim one automation dispatch record, reclaiming expired leases."""
     events = collection(OUTBOX_COLLECTION)
     now = now_utc()
     token = secrets.token_urlsafe(32)
-    query = _claim_query(business_id=business_id)
+    query = _claim_query(business_id=business_id, event_ids=event_ids)
     document = events.find_one_and_update(
         query,
         {
@@ -131,7 +133,7 @@ def _finish_claim(document, worker_id, lease_token, state, error_code=None, run_
     return bool(getattr(result, "matched_count", 0))
 
 
-def run_dispatch_batch(worker_id, limit=DEFAULT_BATCH_LIMIT, lease_seconds=DEFAULT_LEASE_SECONDS, business_id=None):
+def run_dispatch_batch(worker_id, limit=DEFAULT_BATCH_LIMIT, lease_seconds=DEFAULT_LEASE_SECONDS, business_id=None, event_ids=None):
     """Dispatch a bounded batch of persisted events to internal automation rules.
 
     Delivery is at-least-once. The automation service's stable run/task keys
@@ -143,6 +145,17 @@ def run_dispatch_batch(worker_id, limit=DEFAULT_BATCH_LIMIT, lease_seconds=DEFAU
     lease_seconds = _bounded(lease_seconds, DEFAULT_LEASE_SECONDS, MAX_LEASE_SECONDS)
     if business_id is not None and not str(business_id).strip():
         raise APIError("business_id must not be blank.", 422, "invalid_automation_worker")
+    if event_ids is not None:
+        if not isinstance(event_ids, (list, tuple)) or not event_ids or len(event_ids) > MAX_BATCH_LIMIT:
+            raise APIError(f"event_ids must contain 1–{MAX_BATCH_LIMIT} event IDs.", 422, "invalid_automation_worker")
+        normalized_ids = []
+        for raw_id in event_ids:
+            event_id = str(raw_id or "").strip()
+            if not event_id or len(event_id) > 256:
+                raise APIError("Every event ID must be a valid identifier.", 422, "invalid_automation_worker")
+            if event_id not in normalized_ids:
+                normalized_ids.append(event_id)
+        event_ids = normalized_ids
 
     report = {
         "worker_id": worker_id,
@@ -156,7 +169,7 @@ def run_dispatch_batch(worker_id, limit=DEFAULT_BATCH_LIMIT, lease_seconds=DEFAU
     }
 
     for _ in range(limit):
-        event = _claim_event(worker_id, business_id=business_id, lease_seconds=lease_seconds)
+        event = _claim_event(worker_id, business_id=business_id, lease_seconds=lease_seconds, event_ids=event_ids)
         if event is None:
             report["no_work"] = report["claimed"] == 0
             break
