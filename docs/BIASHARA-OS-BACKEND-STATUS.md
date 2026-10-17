@@ -79,6 +79,16 @@ Set the resulting value as `BIASHARA_INTEGRATION_ENCRYPTION_KEY` and keep a secu
 - The read-only resolver accepts paid access only from a separate subscription record that is active, payment-verified, has a provider reference and verification timestamp, has started but not expired, has not been revoked, and references a currently available plan.
 - It does not create or activate subscriptions and does not enforce numeric plan limits. Feature/limit policy and verified checkout/webhook flows remain required before paid access can be enabled.
 
+### Controlled stock counts
+
+- A count session captures system stock and reserved quantities for a bounded set of active products. Starting a count and recording a physical quantity do not mutate inventory.
+- Finalization requires a physical count for every line and rechecks that current stock/reserved values still match the snapshot. If a sale, reservation, delivery or other inventory change occurred during the count, finalization flags the line and requires an explicit recount instead of overwriting newer state.
+- Variances are applied through the canonical inventory adjustment service with a stable session/product/attempt idempotency key. The immutable inventory movement and its recoverable outbox manifest remain the source of truth.
+- A zero variance is recorded in the count session without creating a fake stock movement. A physical count below stock already reserved for open orders is rejected and leaves the quantity unchanged.
+- Partial finalization is recoverable: lines already applied are not repeated, while conflicted lines can be recounted from a fresh system snapshot.
+- APIs are registered under `/api/jumuiya/biashara/inventory/counts`: list/create sessions, read a session, record a product count, reopen a conflicted line for recount, and finalize the session.
+- **Current scope:** stock is still a business-level product balance. Location-specific balances/transfers require a separate migration and a location-aware order/stock model; this count workflow does not claim multi-location inventory.
+
 ### Returns, stock restocking and refund review
 
 - Returns can be requested only against a completed order and use the original order item/price snapshots.
@@ -176,6 +186,7 @@ See the [Biashara validation workflow](https://github.com/musombi123/RevelaCode-
 ## Still required before a paid pilot
 
 - Run the membership migration in staging and verify multi-business switching end to end from the frontend.
+- Define a primary location and migrate from the current business-level product balance to location-specific balances before exposing multi-location transfers, branch stock availability or location-based POS fulfillment.
 - Exercise access controls on every API route with each role using a real authenticated test account; keep the negative cross-tenant suite growing as resources are added.
 - Extend WooCommerce beyond outbound catalogue updates into order import/reconciliation. Local stock ownership must be explicit before remote order writes affect inventory.
 - Add provider-specific WhatsApp connectivity and message-send workflows with consent, opt-out, template and approval rules; current webhook handling only verifies and queues for human review.
@@ -191,3 +202,9 @@ See the [Biashara validation workflow](https://github.com/musombi123/RevelaCode-
 - CI run for the return workflow and regression cases: [Run 39049518255](https://github.com/musombi123/RevelaCode-Backend/actions/runs/39049518255) — success.
 - Test coverage includes idempotent return creation, per-order quantity reservation, quantity-overrun rejection, rejection release, exactly-once stock restoration under repeated approval, refund-review idempotency and tenant isolation.
 - The status above is based on code and automated CI only. No live provider refund, formal credit note or eTIMS action is implied.
+
+## Latest verified stock-count slice
+
+- Initial full-suite run after the implementation fix: [Run 39050127880](https://github.com/musombi123/RevelaCode-Backend/actions/runs/39050127880) — success.
+- Regression cases cover idempotent session creation, zero-variance count recording, ledger movement creation for deltas, snapshot staleness/recount recovery, reservation floors and changed-selection idempotency conflicts.
+- The inventory test suite validates the current single-stock-balance model only; multi-location stock is explicitly not yet represented.
