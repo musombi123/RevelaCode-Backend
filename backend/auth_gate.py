@@ -310,6 +310,77 @@ def verify_user_for_revelaai(user_id: str):
     ), 200
 
 
+@auth_bp.route(
+    "/api/auth/me",
+    methods=["GET"],
+)
+def authenticated_user_me():
+    """Return the current user's canonical ID from the existing RevelaCode JWT."""
+    authorization = request.headers.get("Authorization", "").strip()
+    if not authorization.startswith("Bearer "):
+        return jsonify(success=False, code="authentication_required"), 401
+
+    token = authorization[7:].strip()
+    if not token:
+        return jsonify(success=False, code="authentication_required"), 401
+
+    try:
+        claims = jwt.decode(
+            token,
+            JWT_SECRET,
+            algorithms=[JWT_ALGORITHM],
+            options={"require": ["sub", "iat", "exp"]},
+        )
+    except jwt.ExpiredSignatureError:
+        return jsonify(success=False, code="token_expired"), 401
+    except jwt.InvalidTokenError:
+        return jsonify(success=False, code="invalid_token"), 401
+
+    user_id = str(claims.get("sub") or claims.get("user_id") or "").strip()
+    if not user_id or len(user_id) > 128:
+        return jsonify(success=False, code="invalid_user_identity"), 401
+
+    user = None
+    try:
+        if MONGO_AVAILABLE and users_col is not None:
+            if ObjectId.is_valid(user_id):
+                user = users_col.find_one(
+                    {"_id": ObjectId(user_id)},
+                    {"_id": 1, "id": 1, "user_id": 1},
+                )
+            if user is None:
+                user = users_col.find_one(
+                    {"$or": [{"id": user_id}, {"user_id": user_id}]},
+                    {"_id": 1, "id": 1, "user_id": 1},
+                )
+        else:
+            for record in load_users_file().values():
+                if not isinstance(record, dict):
+                    continue
+                candidate = str(
+                    record.get("_id") or record.get("id") or record.get("user_id") or ""
+                )
+                if candidate == user_id:
+                    user = record
+                    break
+    except Exception:
+        return jsonify(success=False, code="user_lookup_unavailable"), 503
+
+    if not user:
+        return jsonify(success=False, code="user_not_found"), 404
+
+    actual_id = str(user.get("_id") or user.get("id") or user.get("user_id") or "")
+    if not actual_id or actual_id != user_id:
+        return jsonify(success=False, code="user_identity_mismatch"), 403
+
+    return jsonify(
+        success=True,
+        authenticated=True,
+        userId=actual_id,
+        id=actual_id,
+    ), 200
+
+
 # =========================================================
 # TIME / VERIFICATION
 # =========================================================

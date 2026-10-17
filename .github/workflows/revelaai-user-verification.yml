@@ -4,7 +4,7 @@ on:
   pull_request:
     branches: [main]
   push:
-    branches: [main, "feat/smart-memory-gemini-wiring"]
+    branches: [main, "feat/smart-memory-gemini-wiring", "feat/auth-me-for-revelaai"]
 
 jobs:
   verify-user-endpoint:
@@ -21,6 +21,38 @@ jobs:
         run: python -m pip install Flask PyJWT pymongo python-dotenv requests werkzeug
       - name: Compile backend entry points
         run: python -m py_compile main.py backend/auth_gate.py backend/db.py
+      - name: Test authenticated current-user endpoint
+        run: |
+          python - <<'PY'
+          import time
+          import jwt
+          from flask import Flask
+          from backend import auth_gate
+
+          app = Flask(__name__)
+          app.register_blueprint(auth_gate.auth_bp)
+          auth_gate.MONGO_AVAILABLE = False
+          auth_gate.load_users_file = lambda: {
+              "test-contact": {"_id": "test-user-id", "contact": "private"}
+          }
+          client = app.test_client()
+
+          missing = client.get("/api/auth/me")
+          assert missing.status_code == 401, missing.get_json()
+
+          now = int(time.time())
+          token = jwt.encode(
+              {"sub": "test-user-id", "user_id": "test-user-id", "iat": now, "exp": now + 300},
+              auth_gate.JWT_SECRET,
+              algorithm="HS256",
+          )
+          valid = client.get("/api/auth/me", headers={"Authorization": f"Bearer {token}"})
+          assert valid.status_code == 200, valid.get_json()
+          assert valid.get_json()["userId"] == "test-user-id"
+          assert valid.get_json()["authenticated"] is True
+          assert "contact" not in valid.get_json()
+          print("Authenticated current-user identity checks passed.")
+          PY
       - name: Test protected user-existence verification
         run: |
           python - <<'PY'
