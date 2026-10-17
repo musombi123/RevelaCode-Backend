@@ -9,6 +9,7 @@ from backend.jumuiya.core.responses import created, ok
 from backend.jumuiya.biashara.tenancy.service import require_business_permission
 from backend.jumuiya.biashara.integrations import service
 from backend.jumuiya.biashara.integrations import webhooks
+from backend.jumuiya.biashara.integrations import woocommerce
 
 
 biashara_integrations_bp = Blueprint("jumuiya_biashara_integrations", __name__)
@@ -108,5 +109,44 @@ def decide_webhook_delivery(delivery_id):
     return ok(
         result,
         "Webhook delivery review decision saved. No commerce or payment data was applied.",
+    )
+
+@biashara_integrations_bp.post("/<connection_id>/woocommerce/test")
+@require_authenticated
+@require_business_permission("integration.manage")
+def test_woocommerce_connection(connection_id):
+    result = woocommerce.test_connection(current_user_id(), connection_id)
+    return ok(
+        result,
+        "WooCommerce read-only API test succeeded. No product, stock or order was changed.",
+    )
+
+
+@biashara_integrations_bp.get("/<connection_id>/woocommerce/products/preview")
+@require_authenticated
+@require_business_permission("integration.view")
+def preview_woocommerce_products(connection_id):
+    result = woocommerce.preview_products(
+        current_user_id(),
+        connection_id,
+        page=request.args.get("page", 1),
+        per_page=request.args.get("per_page", 20),
+    )
+    return ok(result, "WooCommerce product import preview loaded. Biashara records were not changed.")
+
+
+@biashara_integrations_bp.post("/<connection_id>/woocommerce/products/import")
+@require_authenticated
+@require_business_permission("integration.manage")
+def import_woocommerce_products(connection_id):
+    payload = _body()
+    result = woocommerce.import_products(
+        current_user_id(),
+        connection_id,
+        payload.get("external_product_ids"),
+    )
+    return ok(
+        result,
+        "WooCommerce catalogue import completed with per-product results. Stock and cost price were not imported.",
     )
 
