@@ -220,6 +220,71 @@ def _api_get(config, endpoint, params=None):
             close()
 
 
+def _api_put(config, endpoint, payload):
+    """Perform one bounded WooCommerce write with no automatic redirect/retry."""
+    _assert_public_store_host(config["store_url"])
+    relative = str(endpoint or "").strip("/")
+    if not relative or ".." in relative.split("/"):
+        raise APIError("WooCommerce API path is invalid.", 422, "woocommerce_api_path_invalid")
+    url = (
+        config["store_url"].rstrip("/")
+        + "/wp-json/"
+        + config["api_version"]
+        + "/"
+        + relative
+    )
+    try:
+        response = requests.put(
+            url,
+            auth=(
+                config["credentials"]["consumer_key"],
+                config["credentials"]["consumer_secret"],
+            ),
+            headers={"Accept": "application/json"},
+            json=payload,
+            timeout=REQUEST_TIMEOUT,
+            allow_redirects=False,
+            stream=True,
+        )
+    except requests.RequestException as error:
+        # The remote store may have applied the update before a timeout or
+        # connection reset. Never automatically issue another PUT.
+        raise APIError(
+            "WooCommerce write outcome is unknown. The product was not retried; run sync again to reconcile remote state.",
+            502,
+            "woocommerce_write_outcome_unknown",
+            details={"error_type": type(error).__name__, "outcome_may_be_unknown": True},
+        )
+    try:
+        status = int(getattr(response, "status_code", 0) or 0)
+        if 300 <= status < 400:
+            raise APIError(
+                "WooCommerce returned a redirect; redirects are blocked for security.",
+                502,
+                "woocommerce_redirect_blocked",
+            )
+        if status >= 500:
+            raise APIError(
+                "WooCommerce returned a server error during a write. The result may have been applied; reconcile remote state before retrying.",
+                502,
+                "woocommerce_write_outcome_unknown",
+                details={"provider_http_status": status, "outcome_may_be_unknown": True},
+            )
+        body, headers = _decode_response(response)
+        if not isinstance(body, dict):
+            raise APIError(
+                "WooCommerce accepted a write but returned no verifiable product representation. Reconcile remote state before retrying.",
+                502,
+                "woocommerce_write_outcome_unknown",
+                details={"outcome_may_be_unknown": True},
+            )
+        return body, headers
+    finally:
+        close = getattr(response, "close", None)
+        if callable(close):
+            close()
+
+
 def _store_currency(config):
     value = str((config.get("metadata") or {}).get("store_currency") or "").strip().upper()
     return value if re.fullmatch(r"[A-Z]{3}", value) else None
