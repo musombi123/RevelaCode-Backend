@@ -211,6 +211,7 @@ def commerce_db(monkeypatch):
     monkeypatch.setattr(returns_service, "require_permission", lambda user_id, permission, business_id=None: {"id": business_id or "business-1"})
     monkeypatch.setattr(stock_counts, "collection", lambda name: collections[name])
     monkeypatch.setattr(stock_counts, "require_permission", lambda user_id, permission, business_id=None: {"id": business_id or "business-1"})
+    monkeypatch.setattr(stock_counts, "log_action", lambda *args, **kwargs: None)
     monkeypatch.setattr(stock_counts, "dispatch_manifest_for_record", lambda *args, **kwargs: {"enqueued": 1, "pending": 0, "errors": 0})
     monkeypatch.setattr(services, "_require_business", lambda user_id: {"id": "business-1", "currency": "KES"})
     monkeypatch.setattr(services, "require_permission", lambda user_id, permission, business_id=None: {"id": business_id or "business-1"})
