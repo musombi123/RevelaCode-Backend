@@ -150,3 +150,20 @@ def import_woocommerce_products(connection_id):
         "WooCommerce catalogue import completed with per-product results. Stock and cost price were not imported.",
     )
 
+
+
+@biashara_integrations_bp.post("/<connection_id>/woocommerce/products/sync")
+@require_authenticated
+@require_business_permission("integration.manage")
+def sync_woocommerce_products(connection_id):
+    payload = _body()
+    result = woocommerce.sync_products(
+        current_user_id(),
+        connection_id,
+        payload.get("local_product_ids"),
+    )
+    return ok(
+        result,
+        "Selected WooCommerce product edits were synchronized only where the remote version was unchanged. Conflicts and ambiguous writes require reconciliation; stock and cost price were not written.",
+    )
+
