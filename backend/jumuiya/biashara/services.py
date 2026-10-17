@@ -169,45 +169,52 @@ def get_business_for_user(
 
 
 def _require_business(user_id):
-
-    business = get_business_for_user(
-        user_id
-    )
+    """Return a business only after platform-admin verification."""
+    business = get_business_for_user(user_id)
 
     if not business:
-
         raise APIError(
             "Create your business profile first.",
             409,
             "business_required",
         )
 
-    return business
+    verification_status = str(business.get("verification_status") or "").strip().lower()
+    status = str(business.get("status") or "").strip().lower()
 
+    if verification_status == "verified" and status == "active":
+        return business
 
-def create_or_update_business(
-    user_id,
-    payload,
-):
+    if verification_status == "rejected" or status == "rejected":
+        raise APIError(
+            "Your business application was rejected. Review the admin notes and resubmit it for verification.",
+            403,
+            "business_verification_rejected",
+        )
 
-    businesses = collection(
-        "jumuiya_businesses"
+    if status == "suspended":
+        raise APIError(
+            "This business account is suspended. Contact platform support.",
+            403,
+            "business_suspended",
+        )
+
+    raise APIError(
+        "Your business application must be verified by a platform administrator before you can access the business workspace.",
+        403,
+        "business_verification_required",
     )
 
+
+def create_or_update_business(user_id, payload):
+    businesses = collection("jumuiya_businesses")
     owner_id = str(user_id)
-
-    old = businesses.find_one({
-        "owner_user_id": owner_id
-    })
-
-    # -----------------------------------------------------
-    # UPDATE
-    # -----------------------------------------------------
+    old = businesses.find_one({"owner_user_id": owner_id})
 
     if old:
-
         fields = [
             "name",
+            "business_type",
             "description",
             "phone",
             "email",
@@ -216,71 +223,112 @@ def create_or_update_business(
             "category",
             "logo_url",
         ]
-
         update = {
-            key: payload.get(
-                key,
-                "",
-            )
+            key: payload.get(key, old.get(key, ""))
             for key in fields
         }
+        update["slug"] = unique_slug(payload["name"], old["_id"])
+        now = now_utc()
+        update["updated_at"] = now
 
-        update["slug"] = unique_slug(
-            payload["name"],
-            old["_id"],
+        is_verified = (
+            old.get("verification_status") == "verified"
+            and old.get("status") == "active"
         )
+        sensitive_fields = (
+            "name",
+            "business_type",
+            "phone",
+            "email",
+            "location",
+            "county",
+            "category",
+        )
+        identity_changed = any(
+            str(old.get(key) or "").strip()
+            != str(update.get(key) or "").strip()
+            for key in sensitive_fields
+        )
+        needs_review = not is_verified or identity_changed
 
-        update["updated_at"] = now_utc()
+        update_query = {"$set": update}
+        if needs_review:
+            update.update({
+                "status": "pending_verification",
+                "verification_status": "pending",
+                "submitted_at": now,
+                "review_notes": "",
+            })
+            update_query["$unset"] = {
+                "reviewed_at": "",
+                "reviewed_by_user_id": "",
+                "verified_at": "",
+                "verified_by_user_id": "",
+                "rejected_at": "",
+                "rejected_by_user_id": "",
+            }
+            update_query["$push"] = {
+                "verification_history": {
+                    "event": "resubmitted",
+                    "actor_user_id": owner_id,
+                    "at": now,
+                }
+            }
 
         document = businesses.find_one_and_update(
             {
-                "_id": old["_id"]
+                "_id": old["_id"],
+                "owner_user_id": owner_id,
             },
-            {
-                "$set": update
-            },
+            update_query,
             return_document=ReturnDocument.AFTER,
         )
+        if not document:
+            raise APIError(
+                "The business profile changed while you were saving it. Refresh and try again.",
+                409,
+                "business_profile_conflict",
+            )
 
         log_action(
             user_id,
-            "business.updated",
+            "business.application.resubmitted" if needs_review else "business.updated",
             "business",
             document["_id"],
         )
+        return serialise(document)
 
-        return serialise(
-            document
-        )
-
-    # -----------------------------------------------------
-    # CREATE
-    # -----------------------------------------------------
-
+    now = now_utc()
     document = business_document(
         owner_id,
         payload,
-        unique_slug(
-            payload["name"]
-        ),
+        unique_slug(payload["name"]),
     )
+    # Business data is an application until a platform administrator
+    # explicitly verifies it. Client-supplied status is never trusted.
+    document.update({
+        "status": "pending_verification",
+        "verification_status": "pending",
+        "submitted_at": now,
+        "review_notes": "",
+        "verification_history": [{
+            "event": "submitted",
+            "actor_user_id": owner_id,
+            "at": now,
+        }],
+    })
 
-    result = businesses.insert_one(
-        document
-    )
-
+    result = businesses.insert_one(document)
     document["_id"] = result.inserted_id
 
     log_action(
         user_id,
-        "business.created",
+        "business.application.submitted",
         "business",
         result.inserted_id,
+        {"verification_status": "pending"},
     )
-
-    return serialise(
-        document
-    )
+    return serialise(document)
 
 
 # =========================================================
@@ -1488,6 +1536,7 @@ def get_public_biashara_website(slug):
     business = collection("jumuiya_businesses").find_one({
         "slug": normalized_slug,
         "status": "active",
+        "verification_status": "verified",
         "website.published": True,
     })
     if not business:
