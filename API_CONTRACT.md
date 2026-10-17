@@ -107,7 +107,7 @@ The authenticated GET /api/jumuiya/biashara/website and PUT /api/jumuiya/biashar
 - hero_video_url: optional HTTPS YouTube, Vimeo, or direct video URL.
 - hero_slides: up to 8 objects containing image_url, video_url, title, subtitle, and alt. Each slide must contain an image or video URL.
 - gallery_items: up to 12 objects containing type (image or video), url, caption, and alt.
-- social_links: HTTPS profile URLs for the supported profile names (facebook, instagram, tiktok, youtube, x, linkedin, telegram, pinterest, snapchat, threads, whatsapp_channel, website, and other).
+- social_links: HTTPS profile URLs for the supported profile names (facebook, instagram, messenger, tiktok, youtube, x, linkedin, telegram, pinterest, snapchat, threads, whatsapp_channel, reddit, discord, twitch, bluesky, mastodon, github, medium, wechat, vk, rumble, line, signal, website, and other).
 - announcement, footer_message, show_gallery, and show_social_links.
 - custom_domain: bare domain name only, e.g. shop.example.com.
 
