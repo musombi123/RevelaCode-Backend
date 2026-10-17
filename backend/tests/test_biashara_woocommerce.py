@@ -428,3 +428,157 @@ def test_private_dns_destinations_are_rejected_before_http(woo_db, monkeypatch):
         woocommerce.test_connection("owner-1", woo_db["connection_id"])
     assert blocked.value.code == "woocommerce_store_host_blocked"
     assert called == []
+
+def _mock_put(monkeypatch, remote_state, fail_after_apply=False, fail_before_apply=False):
+    calls = []
+
+    def fake_put(url, **kwargs):
+        external_id = url.rstrip("/").rsplit("/products/", 1)[1]
+        calls.append({"external_id": external_id, "payload": deepcopy(kwargs.get("json") or {})})
+        if fail_before_apply:
+            raise woocommerce.requests.Timeout("simulated response timeout before remote write")
+        remote = remote_state[external_id]
+        payload = deepcopy(kwargs.get("json") or {})
+        remote.update(payload)
+        if "regular_price" in payload or "sale_price" in payload:
+            sale = str(remote.get("sale_price") or "").strip()
+            regular = str(remote.get("regular_price") or "").strip()
+            remote["price"] = sale if sale else regular
+        remote["date_modified_gmt"] = "2026-10-17T12:00:00"
+        response = FakeResponse(deepcopy(remote))
+        if fail_after_apply:
+            raise woocommerce.requests.Timeout("simulated timeout after remote write")
+        return response
+
+    monkeypatch.setattr(woocommerce.requests, "put", fake_put)
+    return calls
+
+
+def _import_one(woo_db, monkeypatch, product=None):
+    remote = _mock_api(monkeypatch, [product or _woo_product()])
+    imported = woocommerce.import_products("owner-1", woo_db["connection_id"], ["201"])
+    assert imported["imported"] == 1
+    return remote, imported["results"][0]["local_product_id"]
+
+
+def test_outbound_sync_pushes_only_selected_changed_fields_and_confirms_remote_state(woo_db, monkeypatch):
+    remote, local_id = _import_one(woo_db, monkeypatch)
+    local = woo_db["products"].find_one({"_id": ObjectId(local_id), "business_id": "business-1"})
+    local["name"] = "Premium Face Cream"
+    local["price"] = 275.0
+    calls = _mock_put(monkeypatch, remote)
+
+    result = woocommerce.sync_products("owner-1", woo_db["connection_id"], [local_id])
+
+    assert result["synced"] == 1
+    assert result["results"][0]["fields"] == ["name", "price"]
+    assert len(calls) == 1
+    assert calls[0]["payload"]["name"] == "Premium Face Cream"
+    assert calls[0]["payload"]["regular_price"] == "275.00"
+    assert calls[0]["payload"]["sale_price"] == ""
+    assert "stock_quantity" not in calls[0]["payload"]
+    assert "cost_price" not in calls[0]["payload"]
+    assert remote["201"]["name"] == "Premium Face Cream"
+    assert remote["201"]["price"] == "275.00"
+    mapping = woo_db["mappings"].find_one({
+        "business_id": "business-1",
+        "connection_id": woo_db["connection_id"],
+        "external_id": "201",
+    })
+    assert mapping["sync_status"] == "synced"
+    assert mapping["pending_outbound_payload"] is None
+    assert mapping["last_synced_local_snapshot"]["name"] == "Premium Face Cream"
+    assert mapping["last_synced_local_fingerprint"]
+
+
+def test_outbound_sync_detects_remote_edit_and_does_not_overwrite_it(woo_db, monkeypatch):
+    remote, local_id = _import_one(woo_db, monkeypatch)
+    remote["201"]["name"] = "Changed in WooCommerce"
+    remote["201"]["date_modified_gmt"] = "2026-10-17T11:00:00"
+    woo_db["products"].find_one({"_id": ObjectId(local_id), "business_id": "business-1"})["name"] = "Changed in Biashara"
+    calls = _mock_put(monkeypatch, remote)
+
+    result = woocommerce.sync_products("owner-1", woo_db["connection_id"], [local_id])
+
+    assert result["conflict"] == 1
+    assert result["results"][0]["reason"] == "external_version_changed_since_last_sync"
+    assert calls == []
+    assert remote["201"]["name"] == "Changed in WooCommerce"
+    mapping = woo_db["mappings"].find_one({"business_id": "business-1", "external_id": "201"})
+    assert mapping["sync_status"] == "conflict"
+    assert mapping["sync_conflict"]["previous_external_version"] == "2026-10-15T08:00:00"
+    assert mapping["sync_conflict"]["current_external_version"] == "2026-10-17T11:00:00"
+
+
+def test_ambiguous_timeout_that_applied_remote_change_recovers_without_second_put(woo_db, monkeypatch):
+    remote, local_id = _import_one(woo_db, monkeypatch)
+    woo_db["products"].find_one({"_id": ObjectId(local_id), "business_id": "business-1"})["name"] = "Updated Face Cream"
+    calls = _mock_put(monkeypatch, remote, fail_after_apply=True)
+
+    first = woocommerce.sync_products("owner-1", woo_db["connection_id"], [local_id])
+    assert first["outcome_unknown"] == 1
+    assert len(calls) == 1
+    mapping = woo_db["mappings"].find_one({"business_id": "business-1", "external_id": "201"})
+    assert mapping["sync_status"] == "outcome_unknown"
+    assert mapping["pending_outbound_payload"]["name"] == "Updated Face Cream"
+
+    second = woocommerce.sync_products("owner-1", woo_db["connection_id"], [local_id])
+
+    assert second["synced"] == 1
+    assert second["results"][0]["recovered_after_ambiguous_write"] is True
+    assert len(calls) == 1
+    mapping = woo_db["mappings"].find_one({"business_id": "business-1", "external_id": "201"})
+    assert mapping["sync_status"] == "synced"
+    assert mapping["pending_outbound_payload"] is None
+
+
+def test_ambiguous_timeout_that_did_not_apply_is_never_blindly_retried(woo_db, monkeypatch):
+    remote, local_id = _import_one(woo_db, monkeypatch)
+    woo_db["products"].find_one({"_id": ObjectId(local_id), "business_id": "business-1"})["name"] = "Pending Update"
+    calls = _mock_put(monkeypatch, remote, fail_before_apply=True)
+
+    first = woocommerce.sync_products("owner-1", woo_db["connection_id"], [local_id])
+    second = woocommerce.sync_products("owner-1", woo_db["connection_id"], [local_id])
+
+    assert first["outcome_unknown"] == 1
+    assert second["outcome_unknown"] == 1
+    assert len(calls) == 1
+    assert remote["201"]["name"] == "Face Cream"
+    mapping = woo_db["mappings"].find_one({"business_id": "business-1", "external_id": "201"})
+    assert mapping["sync_status"] == "outcome_unknown"
+    assert mapping["pending_outbound_payload"]["name"] == "Pending Update"
+
+
+def test_outbound_sync_is_idempotent_when_local_product_has_no_changes(woo_db, monkeypatch):
+    remote, local_id = _import_one(woo_db, monkeypatch)
+    calls = _mock_put(monkeypatch, remote)
+
+    first = woocommerce.sync_products("owner-1", woo_db["connection_id"], [local_id])
+    second = woocommerce.sync_products("owner-1", woo_db["connection_id"], [local_id])
+
+    assert first["no_changes"] == 1
+    assert second["no_changes"] == 1
+    assert calls == []
+
+
+def test_outbound_sync_cannot_resolve_another_business_product_mapping(woo_db, monkeypatch):
+    foreign_id = ObjectId("64b000000000000000000399")
+    woo_db["products"].documents.append({
+        "_id": foreign_id,
+        "business_id": "business-2",
+        "name": "Other tenant product",
+        "sku": "OTHER-1",
+        "price": 5,
+        "stock_quantity": 9,
+        "status": "active",
+        "integration_sources": {
+            woo_db["connection_id"]: {"provider": "woocommerce", "external_id": "201"},
+        },
+    })
+    calls = _mock_put(monkeypatch, {})
+    result = woocommerce.sync_products("owner-1", woo_db["connection_id"], [str(foreign_id)])
+
+    assert result["skipped"] == 1
+    assert result["results"][0]["reason"] == "no_imported_product_mapping"
+    assert calls == []
+
