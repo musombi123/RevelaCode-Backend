@@ -8,6 +8,7 @@ stock needs a separate source-of-truth/reconciliation decision.
 """
 from __future__ import annotations
 
+import hashlib
 import ipaddress
 import json
 import logging
@@ -385,6 +386,9 @@ def _source_product(product, config):
         "external_id": source_id,
         "name": _plain_text(product.get("name"), 160),
         "description": _plain_text(product.get("short_description") or product.get("description"), 1000),
+        "description_source_field": "short_description" if _plain_text(product.get("short_description"), 1000) else "description",
+        "source_regular_price": _money_text(product.get("regular_price")),
+        "source_sale_price": _money_text(product.get("sale_price")),
         "sku": str(product.get("sku") or "").strip()[:80],
         "product_type": product_type,
         "source_status": source_status,
@@ -403,6 +407,32 @@ def _source_product(product, config):
     if not clean["name"]:
         reasons.append("product_name_missing")
     return clean, reasons
+
+
+def _local_product_snapshot(product):
+    return {
+        "name": _plain_text(product.get("name"), 160),
+        "sku": str(product.get("sku") or "").strip()[:80],
+        "price": _money_text(product.get("price")),
+        "description": _plain_text(product.get("description"), 1000),
+    }
+
+
+def _source_product_snapshot(clean):
+    return {
+        "name": clean.get("name", ""),
+        "sku": clean.get("sku", ""),
+        "price": clean.get("price"),
+        "regular_price": clean.get("source_regular_price"),
+        "sale_price": clean.get("source_sale_price"),
+        "description": clean.get("description", ""),
+        "description_source_field": clean.get("description_source_field", "description"),
+    }
+
+
+def _snapshot_fingerprint(snapshot):
+    encoded = json.dumps(snapshot, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def _public_mapping_status(mapping):
@@ -533,8 +563,10 @@ def _mapping_query(config, external_id):
     }
 
 
-def _finish_mapping(mapping, config, product, source_version):
+def _finish_mapping(mapping, config, product, source_version, source_snapshot=None):
     now = now_utc()
+    local_snapshot = _local_product_snapshot(product)
+    provider_snapshot = _source_product_snapshot(source_snapshot or {})
     values = {
         "business_id": config["business_id"],
         "connection_id": str(config["connection"]["_id"]),
@@ -544,9 +576,16 @@ def _finish_mapping(mapping, config, product, source_version):
         "local_resource_id": str(product.get("_id") or product.get("id") or ""),
         "import_status": "imported",
         "external_version": str(source_version or "")[:100],
+        "source_field_snapshot": provider_snapshot,
+        "last_synced_local_snapshot": local_snapshot,
+        "last_synced_local_fingerprint": _snapshot_fingerprint(local_snapshot),
         "last_synced_at": now,
         "last_seen_at": now,
         "updated_at": now,
+        "sync_status": "synced",
+        "sync_conflict": None,
+        "pending_outbound_payload": None,
+        "pending_outbound_local_fingerprint": None,
         "lease_token": None,
         "lease_expires_at": None,
         "last_error_code": None,
@@ -720,7 +759,7 @@ def import_products(user_id, connection_id, external_product_ids):
         mapping = mappings.find_one(query)
         existing_marker_product = products.find_one(_source_marker_query(config, external_id))
         if existing_marker_product:
-            _finish_mapping(mapping, config, existing_marker_product, clean["source_modified_at"])
+            _finish_mapping(mapping, config, existing_marker_product, clean["source_modified_at"], source_snapshot=clean)
             report["already_imported"] += 1
             report["results"].append({
                 "external_id": external_id,
@@ -783,7 +822,7 @@ def import_products(user_id, connection_id, external_product_ids):
             # in case a previous process died between product insert and mapping ack.
             recovered = products.find_one(_source_marker_query(config, external_id))
             if recovered:
-                _finish_mapping(claim["mapping"], config, recovered, clean["source_modified_at"])
+                _finish_mapping(claim["mapping"], config, recovered, clean["source_modified_at"], source_snapshot=clean)
                 report["already_imported"] += 1
                 report["results"].append({
                     "external_id": external_id,
@@ -810,7 +849,7 @@ def import_products(user_id, connection_id, external_product_ids):
             )
             product_id = str(product.get("id") or "")
             saved_mapping = mappings.find_one(query) or claim["mapping"]
-            _finish_mapping(saved_mapping, config, {"_id": _clean_id(product_id)}, clean["source_modified_at"])
+            _finish_mapping(saved_mapping, config, product, clean["source_modified_at"], source_snapshot=clean)
             report["imported"] += 1
             report["results"].append({
                 "external_id": external_id,
