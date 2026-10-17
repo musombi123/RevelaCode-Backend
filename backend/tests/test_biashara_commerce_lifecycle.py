@@ -906,3 +906,136 @@ def test_returns_are_scoped_to_selected_business(commerce_db, monkeypatch):
         returns_service.get_return("owner-1", "64b000000000000000000099")
     assert raised.value.code == "return_not_found"
 
+def test_stock_count_is_idempotent_and_zero_variance_records_no_fake_movement(commerce_db):
+    first = stock_counts.create_count_session("owner-1", {}, "stock-count-start-0001")
+    replay = stock_counts.create_count_session("owner-1", {}, "stock-count-start-0001")
+    assert first["id"] == replay["id"]
+    assert first["status"] == "in_progress"
+    assert first["items"][0]["system_stock_quantity"] == 5
+    assert first["items"][0]["system_reserved_quantity"] == 0
+    assert len(commerce_db["jumuiya_stock_counts"].documents) == 1
+
+    counted = stock_counts.record_count(
+        "owner-1", first["id"], str(commerce_db["product_id"]), 5
+    )
+    assert counted["items"][0]["count_status"] == "counted"
+    assert commerce_db["product"]["stock_quantity"] == 5
+
+    done = stock_counts.finalize_count_session("owner-1", first["id"])
+    replay_done = stock_counts.finalize_count_session("owner-1", first["id"])
+    assert done["status"] == "completed"
+    assert done["items"][0]["count_status"] == "no_adjustment"
+    assert done["items"][0]["variance_quantity"] == 0
+    assert replay_done["status"] == "completed"
+    assert commerce_db["product"]["stock_quantity"] == 5
+    assert not [
+        row for row in commerce_db["movements"].documents
+        if row.get("reason") == "cycle_count_reconciliation"
+    ]
+
+
+def test_stock_count_applies_variance_once_through_inventory_movement_ledger(commerce_db):
+    session = stock_counts.create_count_session("owner-1", {}, "stock-count-variance-0001")
+    product_id = str(commerce_db["product_id"])
+    stock_counts.record_count("owner-1", session["id"], product_id, 3)
+
+    finalized = stock_counts.finalize_count_session("owner-1", session["id"])
+    replay = stock_counts.finalize_count_session("owner-1", session["id"])
+
+    assert finalized["status"] == "completed"
+    line = finalized["items"][0]
+    assert line["count_status"] == "applied"
+    assert line["variance_quantity"] == -2
+    assert line["movement_id"]
+    assert replay["items"][0]["movement_id"] == line["movement_id"]
+    assert commerce_db["product"]["stock_quantity"] == 3
+    movements = [
+        row for row in commerce_db["movements"].documents
+        if row.get("reason") == "cycle_count_reconciliation"
+    ]
+    assert len(movements) == 1
+    assert movements[0]["movement_type"] == "set"
+    assert movements[0]["previous_stock_quantity"] == 5
+    assert movements[0]["new_stock_quantity"] == 3
+    assert movements[0]["idempotency_key"] == line["adjustment_idempotency_key"]
+
+
+def test_stock_count_detects_concurrent_stock_change_and_requires_recount(commerce_db):
+    session = stock_counts.create_count_session("owner-1", {}, "stock-count-stale-0001")
+    product_id = str(commerce_db["product_id"])
+    stock_counts.record_count("owner-1", session["id"], product_id, 4)
+
+    # A sale/delivery changes the authoritative balance after the physical count
+    # started. Finalization must not overwrite it using the stale observed value.
+    services.inventory_adjustment("owner-1", product_id, {
+        "movement_type": "add",
+        "quantity": 1,
+        "reason": "supplier_delivery",
+        "idempotency_key": "stock-count-stale-external-0001",
+    })
+    assert commerce_db["product"]["stock_quantity"] == 6
+
+    with pytest.raises(APIError) as stale:
+        stock_counts.finalize_count_session("owner-1", session["id"])
+    assert stale.value.code == "stock_count_snapshot_stale"
+    conflict = stock_counts.get_count_session("owner-1", session["id"])
+    assert conflict["status"] == "conflict"
+    assert conflict["items"][0]["count_status"] == "conflict"
+    assert commerce_db["product"]["stock_quantity"] == 6
+
+    refreshed = stock_counts.recount_item("owner-1", session["id"], product_id)
+    assert refreshed["status"] == "in_progress"
+    assert refreshed["items"][0]["system_stock_quantity"] == 6
+    assert refreshed["items"][0]["count_attempt"] == 2
+    stock_counts.record_count("owner-1", session["id"], product_id, 6)
+    completed = stock_counts.finalize_count_session("owner-1", session["id"])
+    assert completed["status"] == "completed"
+    assert commerce_db["product"]["stock_quantity"] == 6
+    assert len([
+        row for row in commerce_db["movements"].documents
+        if row.get("reason") == "cycle_count_reconciliation"
+    ]) == 0
+
+
+def test_stock_count_cannot_set_physical_stock_below_open_order_reservations(commerce_db):
+    order = services.create_order("owner-1", _payload(commerce_db, quantity=2))
+    session = stock_counts.create_count_session(
+        "owner-1",
+        {"product_ids": [str(commerce_db["product_id"])]},
+        "stock-count-reserved-0001",
+    )
+    assert session["items"][0]["system_reserved_quantity"] == 2
+    stock_counts.record_count("owner-1", session["id"], str(commerce_db["product_id"]), 1)
+
+    with pytest.raises(APIError) as raised:
+        stock_counts.finalize_count_session("owner-1", session["id"])
+    assert raised.value.code == "stock_below_reserved"
+    refreshed = stock_counts.get_count_session("owner-1", session["id"])
+    assert refreshed["status"] == "conflict"
+    assert refreshed["items"][0]["conflict_code"] == "stock_below_reserved"
+    assert commerce_db["product"]["stock_quantity"] == 5
+    assert commerce_db["product"]["reserved_quantity"] == 2
+    assert order["status"] == "pending"
+
+
+def test_stock_count_idempotency_key_rejects_changed_product_selection(commerce_db):
+    first = stock_counts.create_count_session(
+        "owner-1",
+        {"product_ids": [str(commerce_db["product_id"])]},
+        "stock-count-selection-0001",
+    )
+    replay = stock_counts.create_count_session(
+        "owner-1",
+        {"product_ids": [str(commerce_db["product_id"])]},
+        "stock-count-selection-0001",
+    )
+    assert first["id"] == replay["id"]
+
+    with pytest.raises(APIError) as raised:
+        stock_counts.create_count_session(
+            "owner-1",
+            {"product_ids": []},
+            "stock-count-selection-0001",
+        )
+    assert raised.value.code == "invalid_stock_count_products"
+
