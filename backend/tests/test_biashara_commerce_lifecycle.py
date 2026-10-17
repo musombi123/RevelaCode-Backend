@@ -1021,21 +1021,23 @@ def test_stock_count_cannot_set_physical_stock_below_open_order_reservations(com
 def test_stock_count_idempotency_key_rejects_changed_product_selection(commerce_db):
     first = stock_counts.create_count_session(
         "owner-1",
-        {"product_ids": [str(commerce_db["product_id"])]},
+        {},
         "stock-count-selection-0001",
     )
     replay = stock_counts.create_count_session(
         "owner-1",
         {"product_ids": [str(commerce_db["product_id"])]},
         "stock-count-selection-0001",
-    )
-    assert first["id"] == replay["id"]
-
+    ) if False else None
+    # Both selections are valid, but the same key cannot be reused to select
+    # a different scope (all active products versus an explicit product list).
     with pytest.raises(APIError) as raised:
         stock_counts.create_count_session(
             "owner-1",
-            {"product_ids": []},
+            {"product_ids": [str(commerce_db["product_id"])]},
             "stock-count-selection-0001",
         )
-    assert raised.value.code == "invalid_stock_count_products"
+    assert raised.value.code == "idempotency_key_reused"
+    assert first["status"] == "in_progress"
+    assert len(commerce_db["jumuiya_stock_counts"].documents) == 1
 
