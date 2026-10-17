@@ -309,6 +309,9 @@ def _public_connection(document):
         "configured_credential_fields": sorted(document.get("credential_fields") or []),
         "credentials_configured": bool(document.get("credentials_ciphertext")),
         "enabled": bool(document.get("enabled", False)),
+        "auto_sync_enabled": bool(document.get("auto_sync_enabled", False)),
+        "auto_sync_enabled_at": _serialise_datetime(document.get("auto_sync_enabled_at")),
+        "auto_sync_disabled_at": _serialise_datetime(document.get("auto_sync_disabled_at")),
         "connection_status": (
             "disabled" if not document.get("enabled")
             else "test_succeeded" if document.get("last_test_status") == "success"
@@ -367,6 +370,9 @@ def create_connection(user_id, payload):
         "credentials_ciphertext": ciphertext,
         "credential_key_id": key_id,
         "enabled": enabled,
+        "auto_sync_enabled": False,
+        "auto_sync_enabled_at": None,
+        "auto_sync_disabled_at": None,
         "created_by_user_id": str(user_id),
         "updated_by_user_id": str(user_id),
         "created_at": now,
@@ -405,6 +411,7 @@ def update_connection(user_id, connection_id, payload):
         raise APIError("Unsupported update field(s): " + ", ".join(sorted(unknown)), 422, "invalid_integration_configuration")
 
     updates = {"updated_at": now_utc(), "updated_by_user_id": str(user_id)}
+    connection_security_settings_changed = "metadata" in payload or "credentials" in payload
     if "name" in payload:
         updates["name"] = _connection_name(payload["name"])
     if "metadata" in payload:
@@ -420,6 +427,18 @@ def update_connection(user_id, connection_id, payload):
             "credentials_ciphertext": ciphertext,
             "credential_key_id": key_id,
             "credential_fields": sorted(next_credentials),
+        })
+
+    if connection_security_settings_changed:
+        # Endpoint metadata or credential changes invalidate previous proof of
+        # connectivity and require explicit auto-sync opt-in again.
+        updates.update({
+            "last_tested_at": None,
+            "last_test_status": "not_tested",
+            "last_test_error_code": None,
+            "auto_sync_enabled": False,
+            "auto_sync_enabled_at": None,
+            "auto_sync_disabled_at": now_utc(),
         })
 
     try:
@@ -451,6 +470,12 @@ def set_connection_enabled(user_id, connection_id, enabled):
         {"_id": current["_id"], "business_id": business_id, "enabled": bool(current.get("enabled", False))},
         {"$set": {
             "enabled": enabled,
+            "auto_sync_enabled": False,
+            "auto_sync_enabled_at": None,
+            "auto_sync_disabled_at": now_utc(),
+            "last_tested_at": None,
+            "last_test_status": "not_tested",
+            "last_test_error_code": None,
             "updated_at": now_utc(),
             "updated_by_user_id": str(user_id),
         }},
@@ -463,6 +488,61 @@ def set_connection_enabled(user_id, connection_id, enabled):
         "enabled": enabled,
     })
     return _public_connection(updated)
+
+def set_auto_sync_enabled(user_id, connection_id, enabled):
+    """Explicitly opt a tested WooCommerce connection into mapped-product auto-sync."""
+    context, business_id = _business(user_id, "integration.manage")
+    if not isinstance(enabled, bool):
+        raise APIError("auto_sync_enabled must be a boolean.", 422, "invalid_integration_configuration")
+    connections = collection(CONNECTIONS_COLLECTION)
+    current = connections.find_one({
+        "_id": _clean_id(connection_id),
+        "business_id": business_id,
+    })
+    if not current:
+        raise APIError("Integration connection not found.", 404, "integration_connection_not_found")
+
+    now = now_utc()
+    if enabled:
+        if current.get("provider") != "woocommerce":
+            raise APIError("Automatic product sync is currently supported only for WooCommerce.", 409, "auto_sync_provider_unsupported")
+        if not bool(current.get("enabled", False)):
+            raise APIError("Enable the connection before enabling auto-sync.", 409, "integration_connection_disabled")
+        if current.get("last_test_status") != "success" or not current.get("last_tested_at"):
+            raise APIError("Run the read-only WooCommerce connection test successfully before enabling auto-sync.", 409, "integration_connection_not_tested")
+        metadata = current.get("metadata") if isinstance(current.get("metadata"), dict) else {}
+        store_currency = str(metadata.get("store_currency") or "").strip().upper()
+        business_currency = str(context.get("currency") or "KES").strip().upper()
+        if not store_currency:
+            raise APIError("Confirm store_currency in the WooCommerce connection before enabling auto-sync.", 409, "woocommerce_store_currency_not_confirmed")
+        if store_currency != business_currency:
+            raise APIError("WooCommerce store currency must match the business currency before auto-sync can be enabled.", 409, "woocommerce_currency_mismatch")
+
+    updates = {
+        "auto_sync_enabled": enabled,
+        "auto_sync_enabled_at": now if enabled else None,
+        "auto_sync_disabled_at": None if enabled else now,
+        "updated_at": now,
+        "updated_by_user_id": str(user_id),
+    }
+    updated = connections.find_one_and_update(
+        {
+            "_id": current["_id"],
+            "business_id": business_id,
+            "enabled": bool(current.get("enabled", False)),
+            "updated_at": current.get("updated_at"),
+        },
+        {"$set": updates},
+        return_document=ReturnDocument.AFTER,
+    )
+    if not updated:
+        raise APIError("Integration connection changed while saving. Reload and retry.", 409, "integration_connection_conflict")
+    log_action(user_id, "biashara.integration_auto_sync_toggled", "integration_connection", current["_id"], {
+        "provider": current.get("provider"),
+        "auto_sync_enabled": enabled,
+    })
+    return _public_connection(updated)
+
 
 def delete_connection(user_id, connection_id):
     """Remove the encrypted configuration for a tenant-owned connection."""
