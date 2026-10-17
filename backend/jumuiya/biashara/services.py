@@ -935,6 +935,8 @@ def _persist_inventory_adjustment_movement(business_id, user_id, product, marker
             "previous_stock_quantity": marker["previous_stock_quantity"],
             "new_stock_quantity": marker["new_stock_quantity"],
         })
+        if marker.get("source") == "purchase_order_receipt":
+            movement["purchase_order_id"] = str(marker.get("source_reference") or "")
         movement["_id"] = ObjectId()
         occurred_at = marker.get("applied_at") or now_utc()
         manifest = _build_outbox_manifest(
@@ -952,6 +954,7 @@ def _persist_inventory_adjustment_movement(business_id, user_id, product, marker
                 "stock_quantity": marker["new_stock_quantity"],
                 "reserved_quantity": marker["new_reserved_quantity"],
                 "available_quantity": marker["new_available_quantity"],
+                "purchase_order_id": marker.get("source_reference"),
             },
             actor_user_id=marker.get("actor_user_id") or user_id,
             occurred_at=occurred_at,
@@ -1082,13 +1085,15 @@ def inventory_adjustment(user_id, product_id, payload):
     # Otherwise a delayed retry could reapply this command after stock later changed.
 
     now = now_utc()
+    is_purchase_receipt = reason.startswith("purchase_order_receipt:")
     marker = {
         "idempotency_key": mutation_key,
         "request_fingerprint": fingerprint,
         "movement_type": movement_type,
         "quantity": float(quantity),
         "reason": reason,
-        "source": "manual_adjustment",
+        "source": "purchase_order_receipt" if is_purchase_receipt else "manual_adjustment",
+        "source_reference": reason.split(":", 1)[1][:128] if is_purchase_receipt else None,
         "actor_user_id": str(user_id),
         "previous_stock_quantity": float(previous_stock),
         "new_stock_quantity": float(new_stock),
