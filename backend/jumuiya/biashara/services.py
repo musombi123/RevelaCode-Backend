@@ -1557,7 +1557,7 @@ def get_public_biashara_website(slug):
         "location": business.get("location", ""),
         "county": business.get("county", ""),
         "currency": business.get("currency", "KES") or "KES",
-        "logo_url": (business.get("website") or {}).get("logo_url") or business.get("logo_url", ""),
+        "logo_url": (business.get("website") if isinstance(business.get("website"), dict) else {}).get("logo_url") or business.get("logo_url", ""),
     }
     public_website = {
         "headline": website.get("headline") or business.get("name", ""),
