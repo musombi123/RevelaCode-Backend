@@ -41,6 +41,7 @@ SOURCE_COLLECTIONS = (
     "jumuiya_suppliers",
     "jumuiya_purchase_orders",
     "jumuiya_returns",
+    "jumuiya_stock_counts",
 )
 
 OUTBOX_STATES = {"pending", "processing", "retry", "delivered", "dead_letter"}
@@ -95,6 +96,7 @@ SAFE_PAYLOAD_FIELDS = {
     "receipt_id",
     "return_id",
     "refund_status",
+    "stock_count_id",
     "received_item_count",
     "line_count",
     "expected_delivery_date",
