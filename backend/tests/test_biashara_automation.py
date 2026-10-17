@@ -408,8 +408,10 @@ def test_worker_recovers_retry_events_idempotently_without_marking_provider_deli
     assert replay["claimed"] == 0
     saved = automation_db["data"]["jumuiya_outbox_events"].find_one({"event_id": event["event_id"]})
     assert saved["automation_dispatch_status"] == "processed"
-    assert saved["state"] if "state" in saved else True
-    assert saved["lease_token"] is None or saved.get("lease_token") is None
+    # Provider outbox status is a separate field and is never set to delivered.
+    assert saved.get("state") is None
+    assert saved["automation_dispatch_lease_token"] is None
+    assert saved["automation_dispatch_lease_expires_at"] is None
     assert len(automation.list_tasks("owner-1")) == 1
     assert len(automation.list_runs("owner-1")) == 1
 
