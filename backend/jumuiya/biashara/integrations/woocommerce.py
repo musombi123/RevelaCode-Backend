@@ -649,8 +649,11 @@ def _finish_mapping(mapping, config, product, source_version, source_snapshot=No
         "updated_at": now,
         "sync_status": "synced",
         "sync_conflict": None,
+        "sync_previous_status": None,
         "pending_outbound_payload": None,
         "pending_outbound_local_fingerprint": None,
+        "sync_lease_token": None,
+        "sync_lease_expires_at": None,
         "lease_token": None,
         "lease_expires_at": None,
         "last_error_code": None,
@@ -658,7 +661,10 @@ def _finish_mapping(mapping, config, product, source_version, source_snapshot=No
     mappings = collection(MAPPINGS_COLLECTION)
     query = _mapping_query(config, values["external_id"])
     if mapping:
-        mappings.update_one({"_id": mapping["_id"], **query}, {"$set": values})
+        update_query = {"_id": mapping["_id"], **query}
+        if mapping.get("sync_lease_token"):
+            update_query["sync_lease_token"] = mapping["sync_lease_token"]
+        mappings.update_one(update_query, {"$set": values})
         return mappings.find_one(query) or {**mapping, **values}
     document = {"_id": ObjectId(), "created_at": now, **values}
     try:
@@ -947,3 +953,430 @@ def import_products(user_id, connection_id, external_product_ids):
         "failed": report["failed"],
     })
     return report
+
+def _get_remote_product(config, external_id):
+    body, _headers = _api_get(
+        config,
+        "products/" + str(external_id),
+        {"_fields": PRODUCT_FIELDS},
+    )
+    if not isinstance(body, dict) or str(body.get("id") or "") != str(external_id):
+        raise APIError("WooCommerce did not return the requested product.", 502, "woocommerce_response_invalid")
+    return body
+
+
+def _source_snapshot_changes(previous, current):
+    previous = previous if isinstance(previous, dict) else {}
+    current = current if isinstance(current, dict) else {}
+    tracked = (
+        "name", "sku", "price", "regular_price", "sale_price",
+        "description", "description_source_field",
+    )
+    return [field for field in tracked if previous.get(field) != current.get(field)]
+
+
+def _local_changes(previous, current):
+    previous = previous if isinstance(previous, dict) else {}
+    current = current if isinstance(current, dict) else {}
+    return [field for field in ("name", "sku", "price", "description") if previous.get(field) != current.get(field)]
+
+
+def _outbound_payload(local_snapshot, baseline_local, source_snapshot):
+    changed = _local_changes(baseline_local, local_snapshot)
+    if not changed:
+        return {}, []
+
+    source_snapshot = source_snapshot if isinstance(source_snapshot, dict) else {}
+    payload = {}
+    for field in changed:
+        if field == "name":
+            payload["name"] = local_snapshot["name"]
+        elif field == "sku":
+            payload["sku"] = local_snapshot["sku"]
+        elif field == "description":
+            description_field = str(source_snapshot.get("description_source_field") or "short_description")
+            if description_field not in {"short_description", "description"}:
+                description_field = "short_description"
+            payload[description_field] = local_snapshot["description"]
+        elif field == "price":
+            try:
+                desired = Decimal(str(local_snapshot.get("price")))
+                regular = Decimal(str(source_snapshot.get("regular_price") or source_snapshot.get("price") or "0"))
+            except (InvalidOperation, TypeError, ValueError):
+                raise APIError("Local or WooCommerce price is invalid; no update was sent.", 409, "woocommerce_price_state_invalid")
+            if not desired.is_finite() or desired < 0 or not regular.is_finite() or regular < 0:
+                raise APIError("Local or WooCommerce price is invalid; no update was sent.", 409, "woocommerce_price_state_invalid")
+            sale = _money_text(source_snapshot.get("sale_price"))
+            if sale and desired < regular:
+                payload["sale_price"] = _money_text(desired)
+            else:
+                payload["regular_price"] = _money_text(desired)
+                payload["sale_price"] = ""
+    return payload, changed
+
+
+def _payload_matches_remote(remote, payload):
+    for field, expected in payload.items():
+        if field == "name":
+            actual_value = _plain_text(remote.get(field), 160)
+            expected_value = _plain_text(expected, 160)
+        elif field == "sku":
+            actual_value = str(remote.get(field) or "").strip()[:80]
+            expected_value = str(expected or "").strip()[:80]
+        elif field in {"description", "short_description"}:
+            actual_value = _plain_text(remote.get(field), 1000)
+            expected_value = _plain_text(expected, 1000)
+        elif field in {"regular_price", "sale_price"}:
+            actual_value = _money_text(remote.get(field)) or ""
+            expected_value = _money_text(expected) or ""
+        else:
+            return False
+        if actual_value != expected_value:
+            return False
+    return True
+
+
+def _claim_sync_lease(config, mapping):
+    mappings = collection(MAPPINGS_COLLECTION)
+    now = now_utc()
+    existing_token = mapping.get("sync_lease_token")
+    expiry = mapping.get("sync_lease_expires_at")
+    if (
+        mapping.get("sync_status") == "syncing"
+        and isinstance(expiry, datetime)
+        and expiry > now
+    ):
+        return {"state": "in_progress", "mapping": mapping, "token": None}
+    if mapping.get("sync_status") == "conflict":
+        return {"state": "conflict", "mapping": mapping, "token": None}
+
+    token = secrets.token_urlsafe(18)
+    updated = mappings.find_one_and_update(
+        {
+            "_id": mapping["_id"],
+            "business_id": config["business_id"],
+            "connection_id": str(config["connection"]["_id"]),
+            "sync_status": mapping.get("sync_status"),
+            "sync_lease_token": existing_token,
+        },
+        {"$set": {
+            "sync_previous_status": mapping.get("sync_status", "synced"),
+            "sync_status": "syncing",
+            "sync_lease_token": token,
+            "sync_lease_expires_at": now + timedelta(seconds=IMPORT_LEASE_SECONDS),
+            "updated_at": now,
+        }},
+        return_document=ReturnDocument.AFTER,
+    )
+    if not updated:
+        latest = mappings.find_one(_mapping_query(config, mapping.get("external_id"))) or mapping
+        state = "in_progress" if latest.get("sync_status") == "syncing" else "conflict" if latest.get("sync_status") == "conflict" else "in_progress"
+        return {"state": state, "mapping": latest, "token": None}
+    return {"state": "claimed", "mapping": updated, "token": token}
+
+
+def _sync_state_update(config, mapping, token, values):
+    mappings = collection(MAPPINGS_COLLECTION)
+    update_values = {"updated_at": now_utc(), **values}
+    result = mappings.update_one(
+        {
+            "_id": mapping["_id"],
+            "business_id": config["business_id"],
+            "connection_id": str(config["connection"]["_id"]),
+            "sync_lease_token": token,
+        },
+        {"$set": update_values},
+    )
+    if not result.matched_count:
+        raise APIError("WooCommerce sync lease expired or changed. Reload sync status before retrying.", 409, "woocommerce_sync_lease_conflict")
+    return mappings.find_one(_mapping_query(config, mapping.get("external_id"))) or {**mapping, **update_values}
+
+
+def _release_sync_lease_values():
+    return {"sync_lease_token": None, "sync_lease_expires_at": None}
+
+
+def _report_sync_result(report, external_id, status, **details):
+    report[status] = report.get(status, 0) + 1
+    report["results"].append({
+        "external_id": str(external_id),
+        "status": status,
+        **details,
+    })
+
+
+def sync_products(user_id, connection_id, local_product_ids):
+    """Push selected local product edits only when remote state still matches our baseline.
+
+    No stock/cost writes occur here. Ambiguous provider write results become
+    outcome_unknown and are reconciled by GET; the implementation never issues
+    another PUT merely because a prior request timed out.
+    """
+    config = _load_connection(user_id, connection_id, "integration.manage", require_enabled=True)
+    require_permission(user_id, "products.manage", business_id=config["business_id"])
+    currency = _currency_check(config)
+    if not currency["configured"]:
+        raise APIError("Confirm store_currency in the WooCommerce connection before synchronizing prices.", 409, "woocommerce_store_currency_not_confirmed")
+    if not currency["matches_business_currency"]:
+        raise APIError("WooCommerce store currency does not match the selected business currency.", 409, "woocommerce_currency_mismatch")
+    if not isinstance(local_product_ids, list) or not local_product_ids or len(local_product_ids) > MAX_IMPORT_BATCH:
+        raise APIError("local_product_ids must contain 1–50 product IDs.", 422, "invalid_sync_batch")
+
+    ids = []
+    for raw in local_product_ids:
+        value = str(raw or "").strip()
+        if not value or len(value) > 128:
+            raise APIError("Every local product ID must be a valid identifier.", 422, "invalid_local_product_id")
+        if value not in ids:
+            ids.append(value)
+
+    mappings = collection(MAPPINGS_COLLECTION)
+    products = collection(PRODUCTS_COLLECTION)
+    report = {
+        "connection_id": str(config["connection"]["_id"]),
+        "provider": "woocommerce",
+        "requested": len(ids),
+        "synced": 0,
+        "no_changes": 0,
+        "conflict": 0,
+        "outcome_unknown": 0,
+        "in_progress": 0,
+        "skipped": 0,
+        "failed": 0,
+        "results": [],
+        "fields_synced": ["name", "sku", "price", "description"],
+        "stock_policy": "Stock quantity is never written by this product sync operation.",
+        "cost_price_policy": "Cost price is never written by this product sync operation.",
+    }
+
+    for local_id in ids:
+        mapping = mappings.find_one({
+            "business_id": config["business_id"],
+            "connection_id": str(config["connection"]["_id"]),
+            "resource_type": "product",
+            "local_resource_id": local_id,
+            "import_status": "imported",
+        })
+        if not mapping:
+            _report_sync_result(report, local_id, "skipped", reason="no_imported_product_mapping")
+            continue
+
+        external_id = str(mapping.get("external_id") or "")
+        local_product = products.find_one({
+            "_id": _clean_id(mapping.get("local_resource_id")),
+            "business_id": config["business_id"],
+        })
+        if not local_product:
+            _report_sync_result(report, external_id, "conflict", reason="mapped_local_product_missing", local_product_id=local_id)
+            continue
+        if str(local_product.get("status") or "active").lower() != "active":
+            _report_sync_result(report, external_id, "skipped", reason="local_product_not_active", local_product_id=local_id)
+            continue
+        marker = (local_product.get("integration_sources") or {}).get(str(config["connection"]["_id"]), {})
+        if (
+            str(marker.get("provider") or "") != "woocommerce"
+            or str(marker.get("external_id") or "") != external_id
+        ):
+            _report_sync_result(report, external_id, "conflict", reason="product_source_marker_mismatch", local_product_id=local_id)
+            continue
+
+        claim = _claim_sync_lease(config, mapping)
+        if claim["state"] != "claimed":
+            _report_sync_result(report, external_id, claim["state"], reason="sync_lease_or_conflict_state", local_product_id=local_id)
+            continue
+        mapping = claim["mapping"]
+        token = claim["token"]
+        previous_status = mapping.get("sync_previous_status") or "synced"
+
+        try:
+            remote = _get_remote_product(config, external_id)
+            clean, reasons = _source_product(remote, config)
+            if clean is None or reasons:
+                values = {
+                    "sync_status": "conflict",
+                    "sync_conflict": {
+                        "code": "remote_product_not_syncable",
+                        "detected_at": now_utc(),
+                        "reasons": reasons or ["remote_product_invalid"],
+                    },
+                    **_release_sync_lease_values(),
+                }
+                _sync_state_update(config, mapping, token, values)
+                _report_sync_result(report, external_id, "conflict", reason="remote_product_not_syncable", reasons=reasons)
+                continue
+
+            # If the prior write was ambiguous, reconcile only. Do not issue a
+            # second PUT regardless of the newly observed remote version.
+            if previous_status == "outcome_unknown":
+                pending = mapping.get("pending_outbound_payload") if isinstance(mapping.get("pending_outbound_payload"), dict) else {}
+                if pending and _payload_matches_remote(remote, pending):
+                    _finish_mapping(mapping, config, local_product, clean["source_modified_at"], source_snapshot=clean)
+                    _report_sync_result(report, external_id, "synced", recovered_after_ambiguous_write=True, local_product_id=local_id)
+                else:
+                    values = {
+                        "sync_status": "outcome_unknown",
+                        "sync_conflict": {
+                            "code": "write_outcome_requires_manual_reconciliation",
+                            "detected_at": now_utc(),
+                            "remote_version": clean["source_modified_at"],
+                            "pending_fields": sorted(pending.keys()),
+                        },
+                        **_release_sync_lease_values(),
+                    }
+                    _sync_state_update(config, mapping, token, values)
+                    _report_sync_result(report, external_id, "outcome_unknown", reason="remote_does_not_confirm_pending_write", local_product_id=local_id)
+                continue
+
+            old_version = str(mapping.get("external_version") or "")
+            current_version = str(clean.get("source_modified_at") or "")
+            old_source_snapshot = mapping.get("source_field_snapshot") if isinstance(mapping.get("source_field_snapshot"), dict) else {}
+            current_source_snapshot = _source_product_snapshot(clean)
+            source_changed_fields = _source_snapshot_changes(old_source_snapshot, current_source_snapshot)
+            version_changed = bool(old_version and current_version and old_version != current_version)
+            if (old_version and current_version and version_changed) or source_changed_fields:
+                conflict_code = "external_version_changed_since_last_sync" if version_changed else "remote_fields_changed_since_last_sync"
+                values = {
+                    "sync_status": "conflict",
+                    "sync_conflict": {
+                        "code": conflict_code,
+                        "detected_at": now_utc(),
+                        "previous_external_version": old_version,
+                        "current_external_version": current_version,
+                        "changed_source_fields": source_changed_fields,
+                    },
+                    **_release_sync_lease_values(),
+                }
+                _sync_state_update(config, mapping, token, values)
+                _report_sync_result(report, external_id, "conflict", reason=conflict_code, changed_source_fields=source_changed_fields, local_product_id=local_id)
+                continue
+
+            current_local_snapshot = _local_product_snapshot(local_product)
+            baseline_local = mapping.get("last_synced_local_snapshot") if isinstance(mapping.get("last_synced_local_snapshot"), dict) else None
+            if baseline_local is None:
+                values = {
+                    "sync_status": "conflict",
+                    "sync_conflict": {
+                        "code": "local_baseline_missing",
+                        "detected_at": now_utc(),
+                    },
+                    **_release_sync_lease_values(),
+                }
+                _sync_state_update(config, mapping, token, values)
+                _report_sync_result(report, external_id, "conflict", reason="local_baseline_missing", local_product_id=local_id)
+                continue
+
+            payload, changed_fields = _outbound_payload(current_local_snapshot, baseline_local, old_source_snapshot)
+            if not changed_fields or not payload:
+                _finish_mapping(mapping, config, local_product, clean["source_modified_at"], source_snapshot=clean)
+                _report_sync_result(report, external_id, "no_changes", local_product_id=local_id)
+                continue
+
+            # Persist a durable ambiguous state before crossing the network
+            # boundary. A process crash at this point is treated conservatively:
+            # the next run reconciles via GET and never assumes no PUT occurred.
+            local_fingerprint = _snapshot_fingerprint(current_local_snapshot)
+            _sync_state_update(config, mapping, token, {
+                "sync_status": "outcome_unknown",
+                "sync_conflict": None,
+                "pending_outbound_payload": payload,
+                "pending_outbound_local_fingerprint": local_fingerprint,
+                "pending_outbound_requested_at": now_utc(),
+                "pending_outbound_previous_version": old_version,
+                "sync_last_error_code": None,
+            })
+
+            try:
+                _api_put(config, "products/" + external_id, payload)
+            except APIError as error:
+                if error.code == "woocommerce_write_outcome_unknown":
+                    _sync_state_update(config, mapping, token, {
+                        "sync_status": "outcome_unknown",
+                        "sync_last_error_code": error.code,
+                        **_release_sync_lease_values(),
+                    })
+                    _report_sync_result(report, external_id, "outcome_unknown", reason=error.code, local_product_id=local_id)
+                else:
+                    _sync_state_update(config, mapping, token, {
+                        "sync_status": "sync_failed",
+                        "last_error_code": error.code,
+                        "pending_outbound_payload": None,
+                        "pending_outbound_local_fingerprint": None,
+                        "sync_conflict": None,
+                        **_release_sync_lease_values(),
+                    })
+                    _report_sync_result(report, external_id, "failed", reason=error.code, local_product_id=local_id)
+                continue
+
+            # The provider accepted the request. Read it back before updating
+            # the sync baseline so a partial/unexpected response cannot be
+            # treated as successful synchronization.
+            try:
+                verified_remote = _get_remote_product(config, external_id)
+            except APIError as error:
+                _sync_state_update(config, mapping, token, {
+                    "sync_status": "outcome_unknown",
+                    "sync_last_error_code": "remote_verification_failed",
+                    **_release_sync_lease_values(),
+                })
+                _report_sync_result(report, external_id, "outcome_unknown", reason="remote_verification_failed", provider_error_code=error.code, local_product_id=local_id)
+                continue
+
+            if not _payload_matches_remote(verified_remote, payload):
+                clean_after, _reasons_after = _source_product(verified_remote, config)
+                values = {
+                    "sync_status": "conflict",
+                    "sync_conflict": {
+                        "code": "provider_state_did_not_match_requested_fields",
+                        "detected_at": now_utc(),
+                        "changed_source_fields": sorted(payload.keys()),
+                    },
+                    **_release_sync_lease_values(),
+                }
+                _sync_state_update(config, mapping, token, values)
+                _report_sync_result(report, external_id, "conflict", reason="provider_state_did_not_match_requested_fields", local_product_id=local_id)
+                continue
+
+            clean_after, reasons_after = _source_product(verified_remote, config)
+            if clean_after is None or reasons_after:
+                _sync_state_update(config, mapping, token, {
+                    "sync_status": "outcome_unknown",
+                    "sync_last_error_code": "remote_response_not_syncable",
+                    **_release_sync_lease_values(),
+                })
+                _report_sync_result(report, external_id, "outcome_unknown", reason="remote_response_not_syncable", local_product_id=local_id)
+                continue
+            _finish_mapping(mapping, config, local_product, clean_after["source_modified_at"], source_snapshot=clean_after)
+            _report_sync_result(report, external_id, "synced", fields=changed_fields, local_product_id=local_id)
+        except APIError as error:
+            current_mapping = collection(MAPPINGS_COLLECTION).find_one(_mapping_query(config, external_id)) or mapping
+            if current_mapping.get("sync_lease_token") == token:
+                _sync_state_update(config, current_mapping, token, {
+                    "sync_status": "sync_failed",
+                    "last_error_code": error.code,
+                    **_release_sync_lease_values(),
+                })
+            _report_sync_result(report, external_id, "failed", reason=error.code, local_product_id=local_id)
+        except Exception as error:
+            logger.warning(
+                "WooCommerce product sync failed (external_id_hash=%s, error=%s)",
+                hashlib.sha256(external_id.encode("utf-8")).hexdigest()[:12],
+                type(error).__name__,
+            )
+            current_mapping = collection(MAPPINGS_COLLECTION).find_one(_mapping_query(config, external_id)) or mapping
+            if current_mapping.get("sync_lease_token") == token:
+                _sync_state_update(config, current_mapping, token, {
+                    "sync_status": "sync_failed",
+                    "last_error_code": "woocommerce_sync_failed",
+                    **_release_sync_lease_values(),
+                })
+            _report_sync_result(report, external_id, "failed", reason="woocommerce_sync_failed", local_product_id=local_id)
+
+    log_action(user_id, "biashara.woocommerce_products_synced", "integration_connection", config["connection"]["_id"], {
+        "requested": len(ids),
+        "synced": report["synced"],
+        "conflict": report["conflict"],
+        "outcome_unknown": report["outcome_unknown"],
+        "failed": report["failed"],
+    })
+    return report
+
