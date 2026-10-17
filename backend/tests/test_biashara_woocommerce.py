@@ -258,6 +258,8 @@ def woo_db(monkeypatch):
 
 
 def _mock_api(monkeypatch, products):
+    remote_state = {str(item["id"]): deepcopy(item) for item in products}
+
     def fake_get(url, **kwargs):
         endpoint = url.split("?", 1)[0]
         if endpoint.endswith("/products"):
@@ -265,9 +267,9 @@ def _mock_api(monkeypatch, products):
             ids = params.get("include")
             if ids:
                 selected = {value.strip() for value in str(ids).split(",")}
-                body = [item for item in products if str(item["id"]) in selected and item["status"] == "publish"]
+                body = [item for key, item in remote_state.items() if key in selected and item["status"] == "publish"]
             else:
-                body = [item for item in products if item["status"] == "publish"]
+                body = [item for item in remote_state.values() if item["status"] == "publish"]
             per_page = int(params.get("per_page", 20))
             page = int(params.get("page", 1))
             start = (page - 1) * per_page
@@ -276,8 +278,15 @@ def _mock_api(monkeypatch, products):
                 "X-WP-Total": str(len(body)),
                 "X-WP-TotalPages": str(max(1, (len(body) + per_page - 1) // per_page)),
             })
+        if "/products/" in endpoint:
+            external_id = endpoint.rsplit("/products/", 1)[1]
+            if external_id not in remote_state:
+                return FakeResponse({"code": "woocommerce_rest_product_invalid_id", "message": "Not found"}, status=404)
+            return FakeResponse(remote_state[external_id])
         raise AssertionError("Unexpected WooCommerce URL: " + endpoint)
+
     monkeypatch.setattr(woocommerce.requests, "get", fake_get)
+    return remote_state
 
 
 def test_connection_test_records_last_result_without_exposing_credentials(woo_db, monkeypatch):
