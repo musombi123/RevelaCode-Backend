@@ -14,6 +14,7 @@ _test_db_module.get_db = lambda: None
 sys.modules["backend.db"] = _test_db_module
 try:
     from backend.jumuiya.biashara.automation import services as automation
+    from backend.jumuiya.biashara.automation import worker as automation_worker
     from backend.jumuiya.biashara import services as biashara
 finally:
     if _original_db_module is _missing_module:
@@ -169,8 +170,10 @@ def automation_db(monkeypatch):
         }]),
         "jumuiya_payments": FakeCollection(),
         "jumuiya_invoices": FakeCollection(),
+        "jumuiya_outbox_events": FakeCollection(),
     }
     monkeypatch.setattr(automation, "collection", lambda name: data[name])
+    monkeypatch.setattr(automation_worker, "collection", lambda name: data[name])
     monkeypatch.setattr(automation, "log_action", lambda *args, **kwargs: None)
     monkeypatch.setattr(
         automation,
@@ -356,3 +359,113 @@ def test_automation_rejects_unsupported_action_for_trigger(automation_db):
         })
     assert raised.value.code == "invalid_automation_action"
     assert len(automation_db["data"][automation.RULES_COLLECTION].documents) == 0
+
+def _automation_outbox_event(business_id="business-1", event_id="worker-event-001", status="retry", attempts=0):
+    from datetime import datetime, timezone
+    return {
+        "_id": ObjectId(),
+        "business_id": business_id,
+        "event_id": event_id,
+        "event_key": event_id,
+        "event_type": "order.created",
+        "entity_type": "order",
+        "entity_id": "order-worker-001",
+        "payload": {
+            "status": "pending",
+            "source_channel": "pos",
+            "total_amount_minor": 2500,
+            "currency": "KES",
+        },
+        "automation_dispatch_status": status,
+        "automation_dispatch_attempt_count": attempts,
+        "automation_dispatch_lease_owner": None,
+        "automation_dispatch_lease_token": None,
+        "automation_dispatch_lease_expires_at": None,
+        "automation_last_error_code": None,
+        "automation_last_run_count": 0,
+        "created_at": datetime.now(timezone.utc),
+        "updated_at": datetime.now(timezone.utc),
+    }
+
+
+def test_worker_recovers_retry_events_idempotently_without_marking_provider_delivery(automation_db):
+    automation.create_rule("owner-1", {
+        "name": "Worker order follow-up",
+        "trigger_event": "order.created",
+        "action_type": "create_fulfillment_task",
+        "conditions": {},
+        "enabled": True,
+    })
+    event = _automation_outbox_event()
+    automation_db["data"]["jumuiya_outbox_events"].documents.append(deepcopy(event))
+
+    first = automation_worker.run_dispatch_batch("worker-test-1", limit=5)
+    replay = automation_worker.run_dispatch_batch("worker-test-1", limit=5)
+
+    assert first["claimed"] == 1
+    assert first["processed"] == 1
+    assert first["provider_delivery_attempted"] is False
+    assert replay["claimed"] == 0
+    saved = automation_db["data"]["jumuiya_outbox_events"].find_one({"event_id": event["event_id"]})
+    assert saved["automation_dispatch_status"] == "processed"
+    assert saved["state"] if "state" in saved else True
+    assert saved["lease_token"] is None or saved.get("lease_token") is None
+    assert len(automation.list_tasks("owner-1")) == 1
+    assert len(automation.list_runs("owner-1")) == 1
+
+
+def test_worker_reclaims_expired_lease_and_old_worker_cannot_acknowledge(automation_db):
+    from datetime import datetime, timezone
+
+    event = _automation_outbox_event(status="processing", attempts=1)
+    event["automation_dispatch_lease_owner"] = "worker-old"
+    event["automation_dispatch_lease_token"] = "stale-token"
+    event["automation_dispatch_lease_expires_at"] = datetime(2000, 1, 1, tzinfo=timezone.utc)
+    automation_db["data"]["jumuiya_outbox_events"].documents.append(deepcopy(event))
+
+    report = automation_worker.run_dispatch_batch("worker-new", limit=1)
+    current = automation_db["data"]["jumuiya_outbox_events"].find_one({"event_id": event["event_id"]})
+
+    assert report["claimed"] == 1
+    assert report["processed"] == 1
+    assert current["automation_dispatch_status"] == "processed"
+    assert current["automation_dispatch_lease_owner"] is None
+    assert automation_worker._finish_claim(
+        event, "worker-old", "stale-token", "processed", run_count=99
+    ) is False
+    assert current["automation_last_run_count"] != 99
+
+
+def test_worker_dead_letters_after_bounded_internal_dispatch_attempts(automation_db, monkeypatch):
+    event = _automation_outbox_event(status="retry", attempts=automation_worker.MAX_DISPATCH_ATTEMPTS - 1)
+    automation_db["data"]["jumuiya_outbox_events"].documents.append(deepcopy(event))
+    monkeypatch.setattr(automation, "process_event_for_automations", lambda _event: {
+        "processed": False,
+        "error_code": "automation_test_failure",
+    })
+
+    first = automation_worker.run_dispatch_batch("worker-failure-test", limit=1)
+    replay = automation_worker.run_dispatch_batch("worker-failure-test", limit=1)
+
+    assert first["claimed"] == 1
+    assert first["dead_lettered"] == 1
+    assert replay["claimed"] == 0
+    current = automation_db["data"]["jumuiya_outbox_events"].find_one({"event_id": event["event_id"]})
+    assert current["automation_dispatch_status"] == "dead_letter"
+    assert current["automation_last_error_code"] == "automation_test_failure"
+
+
+def test_worker_can_filter_recovery_to_one_business(automation_db):
+    target = _automation_outbox_event(business_id="business-1", event_id="target-event")
+    other = _automation_outbox_event(business_id="business-2", event_id="other-event")
+    automation_db["data"]["jumuiya_outbox_events"].documents.extend([deepcopy(target), deepcopy(other)])
+
+    report = automation_worker.run_dispatch_batch("worker-tenant-filter", limit=10, business_id="business-1")
+
+    assert report["claimed"] == 1
+    assert report["processed"] == 1
+    target_saved = automation_db["data"]["jumuiya_outbox_events"].find_one({"event_id": "target-event"})
+    other_saved = automation_db["data"]["jumuiya_outbox_events"].find_one({"event_id": "other-event"})
+    assert target_saved["automation_dispatch_status"] == "processed"
+    assert other_saved["automation_dispatch_status"] == "retry"
+
