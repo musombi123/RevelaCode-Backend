@@ -270,13 +270,26 @@ def _api_put(config, endpoint, payload):
                 "woocommerce_write_outcome_unknown",
                 details={"provider_http_status": status, "outcome_may_be_unknown": True},
             )
-        body, headers = _decode_response(response)
+        try:
+            body, headers = _decode_response(response)
+        except APIError as error:
+            # A 2xx response with an empty or malformed body can follow a
+            # successful mutation. Preserve the pending write and reconcile
+            # with GET rather than classifying it as a definite failure.
+            if 200 <= status < 300:
+                raise APIError(
+                    "WooCommerce returned success without a verifiable response body. The write outcome is unknown; reconcile remote state before retrying.",
+                    502,
+                    "woocommerce_write_outcome_unknown",
+                    details={"provider_http_status": status, "outcome_may_be_unknown": True},
+                )
+            raise error
         if not isinstance(body, dict):
             raise APIError(
                 "WooCommerce accepted a write but returned no verifiable product representation. Reconcile remote state before retrying.",
                 502,
                 "woocommerce_write_outcome_unknown",
-                details={"outcome_may_be_unknown": True},
+                details={"provider_http_status": status, "outcome_may_be_unknown": True},
             )
         return body, headers
     finally:
