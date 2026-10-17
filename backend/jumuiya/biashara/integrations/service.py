@@ -31,7 +31,7 @@ PROVIDERS = {
     "woocommerce": {
         "label": "WooCommerce",
         "required_metadata": {"store_url"},
-        "optional_metadata": {"api_version"},
+        "optional_metadata": {"api_version", "store_currency"},
         "required_credentials": {"consumer_key", "consumer_secret"},
         "optional_credentials": {"webhook_secret"},
     },
@@ -243,6 +243,11 @@ def _validate_provider_metadata(provider, metadata, existing=None):
     for field, value in result.items():
         if field == "store_url" and provider == "woocommerce":
             clean[field] = _validate_store_url(value)
+        elif field == "store_currency" and provider == "woocommerce":
+            currency = str(value or "").strip().upper()
+            if not re.fullmatch(r"[A-Z]{3}", currency):
+                raise APIError("store_currency must be a three-letter currency code confirmed from the WooCommerce store settings.", 422, "invalid_integration_configuration")
+            clean[field] = currency
         elif field == "environment" and provider == "mpesa_daraja":
             environment = str(value or "").strip().lower()
             if environment not in {"sandbox", "production"}:
@@ -302,10 +307,16 @@ def _public_connection(document):
         "configured_credential_fields": sorted(document.get("credential_fields") or []),
         "credentials_configured": bool(document.get("credentials_ciphertext")),
         "enabled": bool(document.get("enabled", False)),
-        "connection_status": "configured_unverified" if document.get("enabled") else "disabled",
-        "connectivity_test_status": "not_implemented",
-        "connected": False,
-        "last_tested_at": None,
+        "connection_status": (
+            "disabled" if not document.get("enabled")
+            else "test_succeeded" if document.get("last_test_status") == "success"
+            else "test_failed" if document.get("last_test_status") == "failed"
+            else "configured_unverified"
+        ),
+        "connectivity_test_status": document.get("last_test_status", "not_implemented"),
+        "connected": bool(document.get("enabled") and document.get("last_test_status") == "success"),
+        "last_tested_at": _serialise_datetime(document.get("last_tested_at")),
+        "last_test_error_code": document.get("last_test_error_code"),
         "created_at": _serialise_datetime(document.get("created_at")),
         "updated_at": _serialise_datetime(document.get("updated_at")),
         "created_by_user_id": document.get("created_by_user_id"),
