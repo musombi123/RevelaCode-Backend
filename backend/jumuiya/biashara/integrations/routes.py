@@ -56,6 +56,22 @@ def patch_connection_enabled(connection_id):
     result = service.set_connection_enabled(current_user_id(), connection_id, payload["enabled"])
     return ok(result, "Integration connection state saved; this does not confirm provider connectivity.")
 
+@biashara_integrations_bp.patch("/<connection_id>/auto-sync")
+@require_authenticated
+@require_business_permission("integration.manage")
+def patch_auto_sync(connection_id):
+    payload = _body()
+    if "enabled" not in payload or not isinstance(payload["enabled"], bool):
+        raise APIError("enabled must be a boolean.", 422, "invalid_integration_configuration")
+    result = service.set_auto_sync_enabled(current_user_id(), connection_id, payload["enabled"])
+    message = (
+        "Automatic WooCommerce mapped-product updates enabled. Only supported catalog fields will sync; stock and cost price are never written."
+        if payload["enabled"]
+        else "Automatic provider sync disabled for this connection."
+    )
+    return ok(result, message)
+
+
 @biashara_integrations_bp.delete("/<connection_id>")
 @require_authenticated
 @require_business_permission("integration.manage")
