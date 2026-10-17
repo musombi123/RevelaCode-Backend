@@ -34,4 +34,5 @@ jobs:
       - name: Run Biashara storefront tests
         env:
           PYTHONPATH: backend
+          MONGO_URI: mongodb://localhost:27017/biashara_test
         run: python -m compileall -q backend/jumuiya/biashara backend/jumuiya/core && python -m pytest -q backend/tests/test_biashara_website.py backend/tests/test_schemas.py backend/tests/test_biashara_verification.py
