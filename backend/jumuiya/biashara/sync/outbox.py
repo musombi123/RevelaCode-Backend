@@ -38,6 +38,8 @@ SOURCE_COLLECTIONS = (
     "jumuiya_payments",
     "jumuiya_journal_entries",
     "jumuiya_expenses",
+    "jumuiya_suppliers",
+    "jumuiya_purchase_orders",
 )
 
 OUTBOX_STATES = {"pending", "processing", "retry", "delivered", "dead_letter"}
@@ -86,6 +88,13 @@ SAFE_PAYLOAD_FIELDS = {
     "tax_submission_status",
     "expense_id",
     "expense_category",
+    "supplier_id",
+    "purchase_order_id",
+    "purchase_order_number",
+    "receipt_id",
+    "received_item_count",
+    "line_count",
+    "expected_delivery_date",
 }
 
 
