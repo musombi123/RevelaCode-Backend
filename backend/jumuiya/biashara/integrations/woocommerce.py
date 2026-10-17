@@ -1227,7 +1227,6 @@ def resolve_product_conflict(user_id, connection_id, local_product_id, decision,
         connection_id,
         "integration.manage",
         require_enabled=True,
-        business_id=business_id,
     )
     require_permission(user_id, "products.manage", business_id=config["business_id"])
     decision = str(decision or "").strip().lower()
