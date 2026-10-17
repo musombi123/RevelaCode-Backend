@@ -24,6 +24,7 @@ from backend.jumuiya.biashara.automation.routes import biashara_automation_bp
 from backend.jumuiya.biashara.tenancy.routes import biashara_tenancy_bp
 from backend.jumuiya.biashara.integrations.routes import biashara_integrations_bp
 from backend.jumuiya.biashara.purchasing.routes import biashara_purchasing_bp
+from backend.jumuiya.biashara.returns.routes import biashara_returns_bp
 from backend.jumuiya.biashara.analytics.routes import (
     analytics_bp,
 )
@@ -229,6 +230,15 @@ def register_jumuiya(app):
 
     logger.info(
         "✅ Biashara Purchasing API registered."
+    )
+
+    app.register_blueprint(
+        biashara_returns_bp,
+        url_prefix="/api/jumuiya/biashara/returns",
+    )
+
+    logger.info(
+        "✅ Biashara Returns API registered."
     )
 
     # =====================================================
