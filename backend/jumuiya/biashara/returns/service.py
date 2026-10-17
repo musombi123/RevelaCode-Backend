@@ -180,7 +180,7 @@ def _change_order_return_reservation(return_doc, action):
     """CAS the order's return counters; retries recover a crash between two documents."""
     business_id = str(return_doc["business_id"])
     order_id = str(return_doc["order_id"])
-    return_id = str(return_doc["id"])
+    return_id = str(return_doc.get("id") or return_doc.get("_id"))
     requested = {
         str(item["product_id"]): Decimal(str(item["quantity"]))
         for item in return_doc.get("items", [])
@@ -266,7 +266,7 @@ def _reserve_return_in_order(return_doc):
     """Reserve quantities against the original completed sale using compare-and-set."""
     business_id = str(return_doc["business_id"])
     order_id = str(return_doc["order_id"])
-    return_id = str(return_doc["id"])
+    return_id = str(return_doc.get("id") or return_doc.get("_id"))
     requested = {
         str(item["product_id"]): Decimal(str(item["quantity"]))
         for item in return_doc.get("items", [])
@@ -350,7 +350,7 @@ def _finalize_requested(return_doc, user_id):
     returns = collection(RETURNS_COLLECTION)
     event = _return_event(return_doc, "requested", "return.requested", "requested", user_id)
     now = now_utc()
-    updated = returns.find_one_and_update(
+    returns.find_one_and_update(
         {
             "_id": _clean_id(return_doc["id"]),
             "business_id": return_doc["business_id"],
@@ -365,8 +365,8 @@ def _finalize_requested(return_doc, user_id):
             "$addToSet": {"outbox_event_manifest": event},
         },
     )
-    updated = updated or returns.find_one({
-        "_id": _clean_id(return_doc["id"]),
+    updated = returns.find_one({
+        "_id": _clean_id(return_doc.get("id") or return_doc.get("_id")),
         "business_id": return_doc["business_id"],
     }) or return_doc
     if updated.get("status") == "requested":
@@ -410,6 +410,7 @@ def create_return(user_id, order_id, payload, idempotency_key):
     if prior:
         if prior.get("request_fingerprint") != fingerprint:
             raise APIError("Idempotency-Key was reused for different return data.", 409, "idempotency_key_reused")
+        prior["id"] = str(prior.get("_id") or prior.get("id"))
         if prior.get("status") == "reservation_pending":
             _reserve_return_in_order(prior)
             return _finalize_requested(prior, user_id)
@@ -446,6 +447,7 @@ def create_return(user_id, order_id, payload, idempotency_key):
     except DuplicateKeyError:
         prior = returns.find_one({"business_id": business_id, "idempotency_key": key})
         if prior and prior.get("request_fingerprint") == fingerprint:
+            prior["id"] = str(prior.get("_id") or prior.get("id"))
             if prior.get("status") == "reservation_pending":
                 _reserve_return_in_order(prior)
                 return _finalize_requested(prior, user_id)
@@ -493,15 +495,14 @@ def _finish_return_state(return_doc, status, user_id, note=""):
         },
         "$addToSet": {"outbox_event_manifest": event},
     }
-    updated = returns.find_one_and_update(
-        {"_id": _clean_id(return_doc["id"]), "business_id": return_doc["business_id"], "status": "requested"},
+    returns.find_one_and_update(
+        {"_id": _clean_id(return_doc.get("id") or return_doc.get("_id")), "business_id": return_doc["business_id"], "status": "requested"},
         update,
     )
-    if not updated:
-        updated = returns.find_one({
-            "_id": _clean_id(return_doc["id"]),
-            "business_id": return_doc["business_id"],
-        }) or return_doc
+    updated = returns.find_one({
+        "_id": _clean_id(return_doc.get("id") or return_doc.get("_id")),
+        "business_id": return_doc["business_id"],
+    }) or return_doc
     _dispatch(RETURNS_COLLECTION, return_doc["business_id"], updated["_id"])
     return updated
 
@@ -561,6 +562,8 @@ def resolve_return(user_id, return_id, decision, note=""):
     if return_doc.get("status") in {"rejected", "reservation_conflict"}:
         raise APIError("This return cannot be approved from its current state.", 409, "invalid_return_transition")
     if return_doc.get("status") == "requested":
+        if return_doc.get("restock_requested"):
+            require_permission(user_id, "inventory.manage", business_id=business_id)
         _change_order_return_reservation(return_doc, "approve")
         return_doc = _finish_return_state(return_doc, "approved", user_id, note)
     elif return_doc.get("status") not in {"approved", "completed"}:
@@ -645,7 +648,7 @@ def request_refund_review(user_id, return_id, payload, idempotency_key):
         "created_at": now,
         "updated_at": now,
     }
-    updated = returns.find_one_and_update(
+    update_result = returns.find_one_and_update(
         {
             "_id": current["_id"],
             "business_id": business_id,
@@ -661,8 +664,9 @@ def request_refund_review(user_id, return_id, payload, idempotency_key):
             "$addToSet": {"outbox_event_manifest": event},
         },
     )
-    if not updated:
-        latest = returns.find_one({"_id": current["_id"], "business_id": business_id})
+    updated = returns.find_one({"_id": current["_id"], "business_id": business_id})
+    if not update_result or not updated or updated.get("refund_status") != "requested_manual_review":
+        latest = updated or returns.find_one({"_id": current["_id"], "business_id": business_id})
         prior = (latest or {}).get("refund_request") or {}
         if prior.get("idempotency_key") == key and prior.get("request_fingerprint") == fingerprint:
             return _serialize(latest)
