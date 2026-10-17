@@ -180,3 +180,21 @@ def list_woocommerce_product_mappings(connection_id):
     )
     return ok(rows, "WooCommerce product mapping and sync status loaded.", meta={"count": len(rows)})
 
+
+@biashara_integrations_bp.post("/<connection_id>/woocommerce/products/<local_product_id>/sync-conflict/resolve")
+@require_authenticated
+@require_business_permission("integration.manage")
+def resolve_woocommerce_product_sync_conflict(connection_id, local_product_id):
+    payload = _body()
+    result = woocommerce.resolve_product_conflict(
+        current_user_id(),
+        connection_id,
+        local_product_id,
+        payload.get("decision"),
+        payload.get("fields"),
+    )
+    return ok(
+        result,
+        "WooCommerce sync conflict resolution processed. Check sync_result for confirmed writes, remaining conflicts or ambiguous outcomes.",
+    )
+
