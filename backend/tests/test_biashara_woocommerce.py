@@ -315,7 +315,7 @@ def test_preview_sanitizes_external_html_and_does_not_change_catalog(woo_db, mon
 
 def test_preview_refuses_to_claim_importable_when_currency_unconfirmed_or_mismatched(woo_db, monkeypatch):
     _mock_api(monkeypatch, [_woo_product()])
-    connection = woo_db["connection"]
+    connection = woo_db["connections"].documents[0]
     connection["metadata"].pop("store_currency")
     preview = woocommerce.preview_products("owner-1", woo_db["connection_id"])
     assert preview["products"][0]["importable"] is False
@@ -397,12 +397,12 @@ def test_import_skips_local_sku_conflicts_and_unsupported_product_types(woo_db, 
 
 def test_import_blocks_currency_mismatch_and_unconfirmed_currency(woo_db, monkeypatch):
     _mock_api(monkeypatch, [_woo_product()])
-    woo_db["connection"]["metadata"]["store_currency"] = "USD"
+    woo_db["connections"].documents[0]["metadata"]["store_currency"] = "USD"
     with pytest.raises(APIError) as mismatch:
         woocommerce.import_products("owner-1", woo_db["connection_id"], ["201"])
     assert mismatch.value.code == "woocommerce_currency_mismatch"
 
-    woo_db["connection"]["metadata"].pop("store_currency")
+    woo_db["connections"].documents[0]["metadata"].pop("store_currency")
     with pytest.raises(APIError) as unconfirmed:
         woocommerce.import_products("owner-1", woo_db["connection_id"], ["201"])
     assert unconfirmed.value.code == "woocommerce_store_currency_not_confirmed"
