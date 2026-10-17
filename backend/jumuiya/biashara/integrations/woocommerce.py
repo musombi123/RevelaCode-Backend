@@ -540,7 +540,7 @@ def _finish_mapping(mapping, config, product, source_version):
         "connection_id": str(config["connection"]["_id"]),
         "provider": "woocommerce",
         "resource_type": "product",
-        "external_id": str(mapping.get("external_id") or product.get("integration_sources", {}).get(str(config["connection"]["_id"]), {}).get("external_id") or ""),
+        "external_id": str((mapping or {}).get("external_id") or product.get("integration_sources", {}).get(str(config["connection"]["_id"]), {}).get("external_id") or ""),
         "local_resource_id": str(product.get("_id") or product.get("id") or ""),
         "import_status": "imported",
         "external_version": str(source_version or "")[:100],
