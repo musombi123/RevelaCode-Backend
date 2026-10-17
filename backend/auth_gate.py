@@ -1097,6 +1097,10 @@ def login():
     return jsonify(
         success=True,
 
+        # Canonical identity is the same ID used in the signed JWT subject.
+        userId=str(user.get("_id") or user.get("id") or user.get("user_id") or ""),
+        id=str(user.get("_id") or user.get("id") or user.get("user_id") or ""),
+
         contact=user.get(
             "contact",
             "",
