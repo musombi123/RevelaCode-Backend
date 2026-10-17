@@ -14,10 +14,12 @@ from flask import Blueprint, request
 from backend.jumuiya.core.database import collection
 from backend.jumuiya.core.errors import APIError
 from backend.jumuiya.core.permissions import (
+    current_user_id,
     require_authenticated,
     require_roles,
 )
 from backend.jumuiya.core.responses import ok
+from backend.jumuiya.biashara import verification as biashara_verification
 
 
 # =========================================================
@@ -500,6 +502,15 @@ BIASHARA_FIELDS = (
     "payment_methods",
     "opening_hours",
     "status",
+    "verification_status",
+    "review_notes",
+    "submitted_at",
+    "reviewed_at",
+    "reviewed_by_user_id",
+    "verified_at",
+    "verified_by_user_id",
+    "rejected_at",
+    "rejected_by_user_id",
     "profile_complete",
     "created_at",
     "updated_at",
@@ -509,6 +520,59 @@ BIASHARA_PROJECTION = {
     "_id": 1,
     **{field: 1 for field in BIASHARA_FIELDS},
 }
+
+
+def biashara_status_query(status):
+    """Filter businesses by admin-verification lifecycle state."""
+    status = (status or "all").strip().lower().replace("-", "_")
+
+    if status in {"", "all"}:
+        return None
+
+    if status == "pending":
+        # Include applications returned for more information and legacy
+        # active records that predate the verification fields.
+        return {
+            "$or": [
+                {"verification_status": {"$in": ["pending", "needs_information"]}},
+                {"status": "pending_verification"},
+                {
+                    "$and": [
+                        {"status": "active"},
+                        {"verification_status": {"$exists": False}},
+                    ]
+                },
+            ]
+        }
+
+    if status == "verified":
+        return {"status": "active", "verification_status": "verified"}
+
+    if status == "needs_information":
+        return {"verification_status": "needs_information"}
+
+    if status == "rejected":
+        return {
+            "$or": [
+                {"verification_status": "rejected"},
+                {"status": "rejected"},
+            ]
+        }
+
+    if status == "suspended":
+        return {"status": "suspended"}
+
+    if status == "active":
+        return {"status": "active", "verification_status": "verified"}
+
+    if status == "inactive":
+        return {"status": "inactive", "verification_status": "verified"}
+
+    raise APIError(
+        "Unsupported business verification status filter.",
+        422,
+        "invalid_business_status",
+    )
 
 
 @platform_admin_bp.get("/businesses")
@@ -527,7 +591,7 @@ def list_business_profiles():
     page, limit = pagination()
     search = search_text()
 
-    status = status_query(request.args.get("status"))
+    status = biashara_status_query(request.args.get("status"))
 
     query = combine_queries(
         status,
@@ -557,6 +621,32 @@ def list_business_profiles():
         limit=limit,
         resource_name="biashara_businesses",
     )
+
+
+@platform_admin_bp.patch("/businesses/<business_id>/verification")
+@required_roles
+def review_business_verification(business_id):
+    """Approve, reject, or request more information for a business application."""
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        raise APIError(
+            "A valid JSON object request body is required.",
+            400,
+            "invalid_json",
+        )
+
+    decision = data.get("decision", "")
+    notes = data.get("notes", "")
+    checks = data.get("checks", {})
+
+    reviewed = biashara_verification.review_application(
+        current_user_id(),
+        business_id,
+        decision=decision,
+        notes=notes,
+        checks=checks,
+    )
+    return ok(reviewed, "Business verification review saved.")
 
 
 # =========================================================
