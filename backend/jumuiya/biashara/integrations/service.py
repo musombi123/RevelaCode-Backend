@@ -208,6 +208,8 @@ def _validate_store_url(value):
             422,
             "invalid_integration_url",
         )
+    if parsed.port not in (None, 443):
+        raise APIError("WooCommerce store_url must use the standard HTTPS port.", 422, "invalid_integration_url")
     host = parsed.hostname.rstrip(".").lower()
     if host in {"localhost", "localhost.localdomain"} or host.endswith(".localhost") or host.endswith(".local"):
         raise APIError("Local-only store URLs are not supported.", 422, "invalid_integration_url")
