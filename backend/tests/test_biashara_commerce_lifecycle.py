@@ -16,6 +16,7 @@ _test_db_module.get_db = lambda: None
 sys.modules["backend.db"] = _test_db_module
 try:
     from backend.jumuiya.biashara import services
+    from backend.jumuiya.biashara.returns import service as returns_service
 finally:
     if _original_db_module is _missing_module:
         sys.modules.pop("backend.db", None)
@@ -200,9 +201,12 @@ def commerce_db(monkeypatch):
         "jumuiya_sales": FakeCollection([]),
         "jumuiya_inventory_movements": FakeCollection([]),
         "jumuiya_outbox_events": FakeCollection([]),
+        "jumuiya_returns": FakeCollection([]),
     }
     monkeypatch.setattr(services, "collection", lambda name: collections[name])
     monkeypatch.setattr(outbox, "collection", lambda name: collections[name])
+    monkeypatch.setattr(returns_service, "collection", lambda name: collections[name])
+    monkeypatch.setattr(returns_service, "require_permission", lambda user_id, permission, business_id=None: {"id": business_id or "business-1"})
     monkeypatch.setattr(services, "_require_business", lambda user_id: {"id": "business-1", "currency": "KES"})
     monkeypatch.setattr(services, "require_permission", lambda user_id, permission, business_id=None: {"id": business_id or "business-1"})
     monkeypatch.setattr(services, "log_action", lambda *args, **kwargs: None)
@@ -731,4 +735,169 @@ def test_public_storefront_rejects_unpublished_business_before_seo_render(commer
     with pytest.raises(APIError) as raised:
         services.get_public_biashara_website("draft-store")
     assert raised.value.code == "website_not_found"
+
+def _completed_order_for_return(db, quantity=2):
+    created = services.create_order("owner-1", _payload(db, quantity=quantity))
+    services.update_order_status("owner-1", created["id"], "confirmed")
+    services.update_order_status("owner-1", created["id"], "processing")
+    completed = services.update_order_status("owner-1", created["id"], "completed")
+    assert completed["status"] == "completed"
+    return completed
+
+
+def test_return_request_reserves_sold_quantity_and_restock_is_idempotent(commerce_db):
+    order = _completed_order_for_return(commerce_db, quantity=2)
+    original_stock = commerce_db["product"]["stock_quantity"]
+    payload = {
+        "items": [{"product_id": str(commerce_db["product_id"]), "quantity": 1}],
+        "reason": "Customer returned one unopened item",
+        "restock": True,
+    }
+
+    request_one = returns_service.create_return(
+        "owner-1", order["id"], payload, "return-request-0001"
+    )
+    replay = returns_service.create_return(
+        "owner-1", order["id"], payload, "return-request-0001"
+    )
+
+    assert request_one["id"] == replay["id"]
+    assert request_one["status"] == "requested"
+    assert request_one["estimated_merchandise_value_minor"] == 15025
+    assert commerce_db["product"]["stock_quantity"] == original_stock
+
+    approved = returns_service.resolve_return("owner-1", request_one["id"], "approve", "Item inspected")
+    again = returns_service.resolve_return("owner-1", request_one["id"], "approve", "Item inspected")
+
+    assert approved["status"] == "completed"
+    assert approved["restock_status"] == "restocked"
+    assert again["status"] == "completed"
+    assert commerce_db["product"]["stock_quantity"] == original_stock + 1
+    restock_movements = [
+        row for row in commerce_db["movements"].documents
+        if row.get("reason") == "customer_return_restock"
+    ]
+    assert len(restock_movements) == 1
+    order_after = commerce_db["orders"].find_one({"_id": ObjectId(order["id"])})
+    assert order_after["returned_quantities"][str(commerce_db["product_id"])] == 1.0
+    assert order_after["return_reserved_quantities"][str(commerce_db["product_id"])] == 0.0
+
+
+def test_return_quantity_cannot_exceed_sold_units_even_across_requests(commerce_db):
+    order = _completed_order_for_return(commerce_db, quantity=1)
+    payload = {
+        "items": [{"product_id": str(commerce_db["product_id"]), "quantity": 1}],
+        "reason": "Package damaged",
+        "restock": False,
+    }
+    first = returns_service.create_return("owner-1", order["id"], payload, "return-capacity-0001")
+    assert first["status"] == "requested"
+
+    with pytest.raises(APIError) as raised:
+        returns_service.create_return(
+            "owner-1",
+            order["id"],
+            {
+                "items": [{"product_id": str(commerce_db["product_id"]), "quantity": 1}],
+                "reason": "Second request for same sold unit",
+                "restock": False,
+            },
+            "return-capacity-0002",
+        )
+    assert raised.value.code == "return_quantity_unavailable"
+    saved_order = commerce_db["orders"].find_one({"_id": ObjectId(order["id"])})
+    assert saved_order["return_reserved_quantities"][str(commerce_db["product_id"])] == 1.0
+    assert len(commerce_db["jumuiya_returns"].documents) == 2
+    assert commerce_db["jumuiya_returns"].documents[1]["status"] == "reservation_conflict"
+
+
+def test_reject_return_releases_reserved_quantity_without_changing_stock(commerce_db):
+    order = _completed_order_for_return(commerce_db, quantity=1)
+    stock_before = commerce_db["product"]["stock_quantity"]
+    result = returns_service.create_return(
+        "owner-1",
+        order["id"],
+        {
+            "items": [{"product_id": str(commerce_db["product_id"]), "quantity": 1}],
+            "reason": "Customer changed mind",
+            "restock": True,
+        },
+        "return-reject-flow-0001",
+    )
+
+    rejected = returns_service.resolve_return("owner-1", result["id"], "reject", "Seal was broken")
+    assert rejected["status"] == "rejected"
+    assert commerce_db["product"]["stock_quantity"] == stock_before
+    order_after = commerce_db["orders"].find_one({"_id": ObjectId(order["id"])})
+    assert order_after["return_reserved_quantities"][str(commerce_db["product_id"])] == 0.0
+    assert order_after.get("returned_quantities", {}) == {}
+
+
+def test_refund_review_never_claims_money_moved_and_is_idempotent(commerce_db):
+    order = _completed_order_for_return(commerce_db, quantity=1)
+    result = returns_service.create_return(
+        "owner-1",
+        order["id"],
+        {
+            "items": [{"product_id": str(commerce_db["product_id"]), "quantity": 1}],
+            "reason": "Defective item",
+            "restock": False,
+        },
+        "return-refund-review-0001",
+    )
+    completed = returns_service.resolve_return("owner-1", result["id"], "approve")
+    assert completed["status"] == "completed"
+    assert completed["restock_status"] == "not_requested"
+
+    refund = returns_service.request_refund_review(
+        "owner-1",
+        result["id"],
+        {"reason": "Owner should verify original receipt and payout route"},
+        "refund-review-idem-0001",
+    )
+    replay = returns_service.request_refund_review(
+        "owner-1",
+        result["id"],
+        {"reason": "Owner should verify original receipt and payout route"},
+        "refund-review-idem-0001",
+    )
+
+    assert refund["refund_status"] == "requested_manual_review"
+    assert refund["refund_request"]["status"] == "requested_manual_review"
+    assert refund["refund_request"]["money_moved"] is False
+    assert refund["refund_request"]["provider_refund_reference"] is None
+    assert replay["refund_request"]["idempotency_key"] == "refund-review-idem-0001"
+
+    with pytest.raises(APIError) as raised:
+        returns_service.request_refund_review(
+            "owner-1", result["id"], {"reason": "Different request"}, "refund-review-idem-0002"
+        )
+    assert raised.value.code == "refund_request_exists"
+
+
+def test_returns_are_scoped_to_selected_business(commerce_db, monkeypatch):
+    order = _completed_order_for_return(commerce_db, quantity=1)
+    result = returns_service.create_return(
+        "owner-1",
+        order["id"],
+        {
+            "items": [{"product_id": str(commerce_db["product_id"]), "quantity": 1}],
+            "reason": "Wrong item",
+            "restock": False,
+        },
+        "return-tenant-scope-0001",
+    )
+    commerce_db["jumuiya_returns"].documents.append({
+        "_id": ObjectId("64b000000000000000000099"),
+        "business_id": "business-2",
+        "idempotency_key": "other-tenant-return",
+        "order_id": "other-order",
+        "status": "requested",
+        "created_at": result["created_at"],
+    })
+
+    assert [item["id"] for item in returns_service.list_returns("owner-1")] == [result["id"]]
+    with pytest.raises(APIError) as raised:
+        returns_service.get_return("owner-1", "64b000000000000000000099")
+    assert raised.value.code == "return_not_found"
 
