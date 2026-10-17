@@ -1061,6 +1061,26 @@ def inventory_adjustment(user_id, product_id, payload):
     ):
         raise APIError("Product inventory state is inconsistent.", 409, "invalid_inventory_state")
 
+    # Internal cycle-count reconciliation supplies the state it physically
+    # observed. The compare-and-set below ensures a later change still cannot
+    # be overwritten between this validation and the write.
+    for expected_key, actual in (
+        ("expected_stock_quantity", previous_stock),
+        ("expected_reserved_quantity", reserved_stock),
+    ):
+        if expected_key not in payload:
+            continue
+        try:
+            expected = Decimal(str(payload[expected_key]))
+        except (InvalidOperation, TypeError, ValueError):
+            raise APIError("Expected inventory snapshot is invalid.", 422, "invalid_inventory_snapshot")
+        if not expected.is_finite() or expected < 0 or abs(actual - expected) > _MOVEMENT_TOLERANCE:
+            raise APIError(
+                "Inventory changed after the stock count snapshot. Recount this item before finalizing.",
+                409,
+                "stock_count_snapshot_stale",
+            )
+
     if movement_type == "add":
         new_stock = previous_stock + quantity
     elif movement_type == "remove":
