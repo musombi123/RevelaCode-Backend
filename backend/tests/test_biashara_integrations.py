@@ -582,3 +582,79 @@ def test_webhook_review_decision_is_tenant_scoped_and_never_applies_effects(inte
     assert conflicting.value.code == "webhook_delivery_already_reviewed"
     assert len(integration_db.webhook_deliveries.documents) == 1
 
+def test_woocommerce_auto_sync_is_explicit_and_requires_a_successful_test(integration_db):
+    payload = _woocommerce_payload()
+    payload["metadata"]["store_currency"] = "KES"
+    response = integrations.create_connection("owner-1", payload)
+    stored = integration_db.find_one({"_id": ObjectId(response["id"])})
+
+    assert response["auto_sync_enabled"] is False
+    with pytest.raises(APIError) as untested:
+        integrations.set_auto_sync_enabled("owner-1", response["id"], True)
+    assert untested.value.code == "integration_connection_not_tested"
+
+    stored["last_test_status"] = "success"
+    stored["last_tested_at"] = __import__("datetime").datetime.now(__import__("datetime").timezone.utc)
+    enabled = integrations.set_auto_sync_enabled("owner-1", response["id"], True)
+
+    assert enabled["auto_sync_enabled"] is True
+    assert enabled["auto_sync_enabled_at"]
+    assert enabled["enabled"] is True
+    assert "credentials_ciphertext" not in json.dumps(enabled)
+    assert "consumer_secret" not in json.dumps(enabled)
+
+
+def test_woocommerce_auto_sync_requires_confirmed_currency_and_is_provider_scoped(integration_db):
+    payload = _woocommerce_payload()
+    response = integrations.create_connection("owner-1", payload)
+    stored = integration_db.find_one({"_id": ObjectId(response["id"])})
+    stored["last_test_status"] = "success"
+    stored["last_tested_at"] = __import__("datetime").datetime.now(__import__("datetime").timezone.utc)
+
+    with pytest.raises(APIError) as no_currency:
+        integrations.set_auto_sync_enabled("owner-1", response["id"], True)
+    assert no_currency.value.code == "woocommerce_store_currency_not_confirmed"
+
+    stored["metadata"]["store_currency"] = "USD"
+    with pytest.raises(APIError) as mismatch:
+        integrations.set_auto_sync_enabled("owner-1", response["id"], True)
+    assert mismatch.value.code == "woocommerce_currency_mismatch"
+
+
+def test_metadata_or_credential_rotation_disables_auto_sync_until_retested(integration_db):
+    payload = _woocommerce_payload(consumer_key="ck_before", consumer_secret="cs_before")
+    payload["metadata"]["store_currency"] = "KES"
+    response = integrations.create_connection("owner-1", payload)
+    stored = integration_db.find_one({"_id": ObjectId(response["id"])})
+    stored["last_test_status"] = "success"
+    stored["last_tested_at"] = __import__("datetime").datetime.now(__import__("datetime").timezone.utc)
+    integrations.set_auto_sync_enabled("owner-1", response["id"], True)
+
+    updated = integrations.update_connection("owner-1", response["id"], {
+        "credentials": {
+            "consumer_key": "ck_after",
+            "consumer_secret": "cs_after",
+        }
+    })
+
+    assert updated["auto_sync_enabled"] is False
+    assert updated["connectivity_test_status"] == "not_tested"
+    with pytest.raises(APIError) as needs_test:
+        integrations.set_auto_sync_enabled("owner-1", response["id"], True)
+    assert needs_test.value.code == "integration_connection_not_tested"
+
+
+def test_disabling_connection_also_disables_auto_sync(integration_db):
+    payload = _woocommerce_payload()
+    payload["metadata"]["store_currency"] = "KES"
+    response = integrations.create_connection("owner-1", payload)
+    stored = integration_db.find_one({"_id": ObjectId(response["id"])})
+    stored["last_test_status"] = "success"
+    stored["last_tested_at"] = __import__("datetime").datetime.now(__import__("datetime").timezone.utc)
+    integrations.set_auto_sync_enabled("owner-1", response["id"], True)
+
+    disabled = integrations.set_connection_enabled("owner-1", response["id"], False)
+    assert disabled["enabled"] is False
+    assert disabled["auto_sync_enabled"] is False
+    assert disabled["connectivity_test_status"] == "not_tested"
+
