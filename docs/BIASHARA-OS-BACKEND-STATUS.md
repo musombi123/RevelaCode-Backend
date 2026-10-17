@@ -89,6 +89,29 @@ Set the resulting value as `BIASHARA_INTEGRATION_ENCRYPTION_KEY` and keep a secu
 - APIs are registered under `/api/jumuiya/biashara/inventory/counts`: list/create sessions, read a session, record a product count, reopen a conflicted line for recount, and finalize the session.
 - **Current scope:** stock is still a business-level product balance. Location-specific balances/transfers require a separate migration and a location-aware order/stock model; this count workflow does not claim multi-location inventory.
 
+### Durable internal automation worker
+
+- The durable outbox still separates provider-delivery state from internal automation-dispatch state.
+- Inline event creation and recovery now share the same lease-based worker path; duplicate dispatch attempts cannot take over a live worker lease.
+- The worker atomically claims pending/retry events, reclaims expired leases, validates lease ownership before acknowledgement and uses stable automation run/task keys to make repeated delivery idempotent.
+- Internal dispatch has a bounded retry window. Exhausted failures become `dead_letter`; an authorized owner/manager can explicitly request a replay that resets the retry window and records who initiated it and when.
+- A target-business filter and event-ID filter allow controlled recovery without scanning or processing another tenant's work.
+- This worker only creates the existing internal task/run effects. It never sends messages, creates external purchase orders, publishes websites, moves money or marks WooCommerce/provider events as delivered.
+
+**Run one batch from the repository root:**
+
+```powershell
+python -m backend.scripts.run_biashara_automation_worker --once
+```
+
+**Run as a separate long-lived background process on Render:**
+
+```powershell
+python -m backend.scripts.run_biashara_automation_worker --continuous --poll-interval 10 --batch-limit 25
+```
+
+Use a dedicated worker process with the same environment variables as the backend. A worker restart is safe; expired leases can be reclaimed. Keep provider credentials out of worker environment variables unless the specific provider adapter requires them. The CLI exits on an unhandled runtime configuration/database error and returns non-zero.
+
 ### Returns, stock restocking and refund review
 
 - Returns can be requested only against a completed order and use the original order item/price snapshots.
@@ -192,7 +215,7 @@ See the [Biashara validation workflow](https://github.com/musombi123/RevelaCode-
 - Add provider-specific WhatsApp connectivity and message-send workflows with consent, opt-out, template and approval rules; current webhook handling only verifies and queues for human review.
 - Exercise the Daraja path in Safaricom sandbox and production onboarding environments with real merchant credentials, source-IP verification at the trusted edge and outage/replay drills; do not claim real settlement reconciliation until it is implemented and tested.
 - Complete the actual KRA-approved eTIMS onboarding/certification path before claiming eTIMS compliance.
-- Add a real worker process and operational monitoring for provider sync; this branch currently provides durable queue primitives and internal automation dispatch, not a complete external-channel sync service.
+- Deploy the new internal automation worker as a separate process with monitored failed/dead-letter counts. Provider-channel sync still needs a provider-specific worker that maps durable events to approved adapter operations; the internal automation worker does not send them.
 - Review the operational chart of accounts, VAT/tax treatment, credit notes, refund execution/settlement entries and closing controls with a Kenyan accountant before using this journal as formal books.
 - Add a verified subscription lifecycle, provider-confirmed payment updates, machine-readable feature/limit policies and paid-feature enforcement before billing or paid entitlements are enabled.
 - Configure production custom-domain routing/TLS after DNS ownership verification, render SEO metadata in the frontend, and add public-route sitemap/robots integration.
@@ -208,3 +231,9 @@ See the [Biashara validation workflow](https://github.com/musombi123/RevelaCode-
 - Initial full-suite run after the implementation fix: [Run 39050127880](https://github.com/musombi123/RevelaCode-Backend/actions/runs/39050127880) — success.
 - Regression cases cover idempotent session creation, zero-variance count recording, ledger movement creation for deltas, snapshot staleness/recount recovery, reservation floors and changed-selection idempotency conflicts.
 - The inventory test suite validates the current single-stock-balance model only; multi-location stock is explicitly not yet represented.
+
+## Latest verified automation-worker slice
+
+- Worker/inline dispatch consolidation and audited dead-letter replay passed the branch CI suite: [Run 39050645977](https://github.com/musombi123/RevelaCode-Backend/actions/runs/39050645977) — success.
+- Regression coverage includes duplicate event delivery, lease expiry and reclaim, stale-worker acknowledgement rejection, bounded retries/dead-letter, tenant filters and owner-triggered dead-letter replay.
+- The worker is implemented in `backend/jumuiya/biashara/automation/worker.py`; the command entry point is `backend/scripts/run_biashara_automation_worker.py`.
