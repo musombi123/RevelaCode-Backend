@@ -582,3 +582,102 @@ def test_outbound_sync_cannot_resolve_another_business_product_mapping(woo_db, m
     assert result["results"][0]["reason"] == "no_imported_product_mapping"
     assert calls == []
 
+def test_conflict_resolution_accepts_current_remote_without_changing_stock_or_cost(woo_db, monkeypatch):
+    remote, local_id = _import_one(woo_db, monkeypatch)
+    remote["201"]["name"] = "Remote Cream"
+    remote["201"]["date_modified_gmt"] = "2026-10-17T13:00:00"
+    next(row for row in woo_db["products"].documents if str(row.get("_id")) == local_id)["name"] = "Local Cream"
+    _mock_put(monkeypatch, remote)
+
+    conflicted = woocommerce.sync_products("owner-1", woo_db["connection_id"], [local_id])
+    assert conflicted["conflict"] == 1
+
+    resolved = woocommerce.resolve_product_conflict(
+        "owner-1", woo_db["connection_id"], local_id, "accept_remote"
+    )
+
+    local = woo_db["products"].find_one({"_id": ObjectId(local_id), "business_id": "business-1"})
+    assert resolved["status"] == "resolved"
+    assert local["name"] == "Remote Cream"
+    assert local["stock_quantity"] == 0
+    assert local["cost_price"] == 0
+    mapping = woo_db["mappings"].find_one({"business_id": "business-1", "external_id": "201"})
+    assert mapping["sync_status"] == "synced"
+    assert mapping["sync_conflict"] is None
+
+
+def test_conflict_resolution_can_push_only_selected_local_fields(woo_db, monkeypatch):
+    remote, local_id = _import_one(woo_db, monkeypatch)
+    remote["201"]["name"] = "Remote Cream"
+    remote["201"]["date_modified_gmt"] = "2026-10-17T13:30:00"
+    local = next(row for row in woo_db["products"].documents if str(row.get("_id")) == local_id)
+    local["name"] = "Local Cream"
+    local["price"] = 275.0
+    calls = _mock_put(monkeypatch, remote)
+
+    conflicted = woocommerce.sync_products("owner-1", woo_db["connection_id"], [local_id])
+    assert conflicted["conflict"] == 1
+
+    resolved = woocommerce.resolve_product_conflict(
+        "owner-1", woo_db["connection_id"], local_id, "push_local", fields=["name"]
+    )
+
+    assert resolved["status"] == "rebase_complete"
+    assert resolved["sync_result"]["synced"] == 1
+    assert len(calls) == 1
+    assert calls[0]["payload"] == {"name": "Local Cream"}
+    assert remote["201"]["name"] == "Local Cream"
+    assert remote["201"]["price"] == "250.00"
+    assert remote["201"]["stock_quantity"] == 8
+    mapping = woo_db["mappings"].find_one({"business_id": "business-1", "external_id": "201"})
+    assert mapping["sync_status"] == "synced"
+    assert mapping["sync_conflict"] is None
+
+
+def test_conflict_resolution_rejects_another_remote_edit(woo_db, monkeypatch):
+    remote, local_id = _import_one(woo_db, monkeypatch)
+    remote["201"]["name"] = "First remote edit"
+    remote["201"]["date_modified_gmt"] = "2026-10-17T13:45:00"
+    _mock_put(monkeypatch, remote)
+    result = woocommerce.sync_products("owner-1", woo_db["connection_id"], [local_id])
+    assert result["conflict"] == 1
+
+    remote["201"]["name"] = "Second remote edit"
+    remote["201"]["date_modified_gmt"] = "2026-10-17T14:00:00"
+    with pytest.raises(APIError) as raised:
+        woocommerce.resolve_product_conflict(
+            "owner-1", woo_db["connection_id"], local_id, "accept_remote"
+        )
+    assert raised.value.code == "woocommerce_sync_conflict_changed"
+    mapping = woo_db["mappings"].find_one({"business_id": "business-1", "external_id": "201"})
+    assert mapping["sync_status"] == "conflict"
+    assert mapping["sync_conflict"]["current_external_version"] == "2026-10-17T14:00:00"
+
+
+def test_mapping_status_list_is_tenant_scoped_and_redacts_snapshots(woo_db, monkeypatch):
+    _mock_api(monkeypatch, [_woo_product()])
+    woocommerce.import_products("owner-1", woo_db["connection_id"], ["201"])
+    rows = woocommerce.list_product_mappings("owner-1", woo_db["connection_id"])
+
+    assert len(rows) == 1
+    assert rows[0]["external_id"] == "201"
+    assert rows[0]["sync_status"] == "synced"
+    encoded = json.dumps(rows)
+    assert "source_field_snapshot" not in encoded
+    assert "credentials_ciphertext" not in encoded
+
+    woo_db["mappings"].documents.append({
+        "_id": ObjectId("64b000000000000000000398"),
+        "business_id": "business-2",
+        "connection_id": woo_db["connection_id"],
+        "resource_type": "product",
+        "external_id": "999",
+        "local_resource_id": "foreign",
+        "import_status": "imported",
+        "sync_status": "conflict",
+        "updated_at": datetime.now(timezone.utc),
+    })
+    rows = woocommerce.list_product_mappings("owner-1", woo_db["connection_id"])
+    assert len(rows) == 1
+    assert rows[0]["external_id"] == "201"
+
