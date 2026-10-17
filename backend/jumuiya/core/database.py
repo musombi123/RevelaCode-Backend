@@ -632,6 +632,55 @@ INDEX_DEFINITIONS = {
         ),
     ],
 
+    "jumuiya_suppliers": [
+        (
+            [("business_id", ASCENDING), ("status", ASCENDING), ("created_at", DESCENDING)],
+            {"name": "ix_biashara_suppliers_status_created"},
+        ),
+        (
+            [("business_id", ASCENDING), ("idempotency_key", ASCENDING)],
+            {
+                "unique": True,
+                "name": "uq_biashara_supplier_idempotency",
+                "partialFilterExpression": {"idempotency_key": {"$type": "string"}},
+            },
+        ),
+    ],
+
+    "jumuiya_purchase_orders": [
+        (
+            [("business_id", ASCENDING), ("po_number", ASCENDING)],
+            {"unique": True, "name": "uq_biashara_purchase_order_number"},
+        ),
+        (
+            [("business_id", ASCENDING), ("idempotency_key", ASCENDING)],
+            {
+                "unique": True,
+                "name": "uq_biashara_purchase_order_idempotency",
+                "partialFilterExpression": {"idempotency_key": {"$type": "string"}},
+            },
+        ),
+        (
+            [("business_id", ASCENDING), ("status", ASCENDING), ("created_at", DESCENDING)],
+            {"name": "ix_biashara_purchase_orders_status_created"},
+        ),
+        (
+            [("business_id", ASCENDING), ("supplier_id", ASCENDING), ("created_at", DESCENDING)],
+            {"name": "ix_biashara_purchase_orders_supplier_created"},
+        ),
+    ],
+
+    "jumuiya_purchase_order_receipts": [
+        (
+            [("business_id", ASCENDING), ("purchase_order_id", ASCENDING), ("idempotency_key", ASCENDING)],
+            {"unique": True, "name": "uq_biashara_purchase_receipt_idempotency"},
+        ),
+        (
+            [("business_id", ASCENDING), ("purchase_order_id", ASCENDING), ("status", ASCENDING), ("created_at", DESCENDING)],
+            {"name": "ix_biashara_purchase_receipts_recovery"},
+        ),
+    ],
+
     "jumuiya_invoices": [
         (
             [("business_id", ASCENDING), ("invoice_number", ASCENDING)],
