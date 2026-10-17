@@ -111,3 +111,21 @@ def decide_task(task_id):
 def repair_dispatches():
     result = services.replay_failed_automation_dispatches(current_user_id(), limit=100)
     return ok(result, "Failed automation dispatches checked for recovery.")
+
+@biashara_automation_bp.post("/tasks/<task_id>/purchase-order")
+@require_authenticated
+@require_business_permission("purchasing.manage")
+def post_reorder_purchase_order(task_id):
+    payload = _body()
+    key = request.headers.get("Idempotency-Key", "").strip()
+    result = services.create_purchase_order_from_reorder_task(
+        current_user_id(),
+        task_id,
+        payload,
+        key,
+    )
+    return created(
+        result,
+        "Draft purchase order saved from the approved reorder suggestion. The supplier was not contacted and inventory was not changed.",
+    )
+
