@@ -272,6 +272,17 @@ def _dispatch_automation_event(document):
     event_id = str(document.get("event_id") or "")
     if not business_id or not event_id:
         return {"processed": False, "error_code": "invalid_automation_event"}
+
+    # A background worker owns processing-state events through an expiring
+    # lease. Inline duplicate-enqueue handling must not steal that lease or
+    # silently revive an operator-dead-lettered event.
+    dispatch_state = str(document.get("automation_dispatch_status") or "pending")
+    if dispatch_state in {"processed", "processing", "dead_letter"}:
+        return {
+            "processed": dispatch_state == "processed",
+            "skipped": True,
+            "status": dispatch_state,
+        }
     try:
         from backend.jumuiya.biashara.automation.services import process_event_for_automations
         result = process_event_for_automations(_public_event(document, include_payload=True))
