@@ -420,6 +420,29 @@ INDEX_DEFINITIONS = {
         ),
     ],
 
+    "jumuiya_returns": [
+        (
+            [("business_id", ASCENDING), ("idempotency_key", ASCENDING)],
+            {
+                "unique": True,
+                "name": "uq_biashara_return_idempotency",
+                "partialFilterExpression": {"idempotency_key": {"$type": "string"}},
+            },
+        ),
+        (
+            [("business_id", ASCENDING), ("order_id", ASCENDING), ("created_at", DESCENDING)],
+            {"name": "ix_biashara_returns_order_created"},
+        ),
+        (
+            [("business_id", ASCENDING), ("status", ASCENDING), ("created_at", DESCENDING)],
+            {"name": "ix_biashara_returns_status_created"},
+        ),
+        (
+            [("business_id", ASCENDING), ("refund_status", ASCENDING), ("created_at", DESCENDING)],
+            {"name": "ix_biashara_returns_refund_status"},
+        ),
+    ],
+
     "jumuiya_orders": [
         (
             [
