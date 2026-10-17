@@ -1349,13 +1349,24 @@ def sync_products(user_id, connection_id, local_product_ids):
             _report_sync_result(report, external_id, "synced", fields=changed_fields, local_product_id=local_id)
         except APIError as error:
             current_mapping = collection(MAPPINGS_COLLECTION).find_one(_mapping_query(config, external_id)) or mapping
+            pending_payload = current_mapping.get("pending_outbound_payload")
             if current_mapping.get("sync_lease_token") == token:
-                _sync_state_update(config, current_mapping, token, {
-                    "sync_status": "sync_failed",
-                    "last_error_code": error.code,
-                    **_release_sync_lease_values(),
-                })
-            _report_sync_result(report, external_id, "failed", reason=error.code, local_product_id=local_id)
+                if pending_payload and current_mapping.get("sync_status") in {"outcome_unknown", "syncing"}:
+                    _sync_state_update(config, current_mapping, token, {
+                        "sync_status": "outcome_unknown",
+                        "sync_last_error_code": error.code,
+                        **_release_sync_lease_values(),
+                    })
+                    _report_sync_result(report, external_id, "outcome_unknown", reason="reconciliation_required", provider_error_code=error.code, local_product_id=local_id)
+                else:
+                    _sync_state_update(config, current_mapping, token, {
+                        "sync_status": "sync_failed",
+                        "last_error_code": error.code,
+                        **_release_sync_lease_values(),
+                    })
+                    _report_sync_result(report, external_id, "failed", reason=error.code, local_product_id=local_id)
+            else:
+                _report_sync_result(report, external_id, "failed", reason=error.code, local_product_id=local_id)
         except Exception as error:
             logger.warning(
                 "WooCommerce product sync failed (external_id_hash=%s, error=%s)",
@@ -1363,13 +1374,24 @@ def sync_products(user_id, connection_id, local_product_ids):
                 type(error).__name__,
             )
             current_mapping = collection(MAPPINGS_COLLECTION).find_one(_mapping_query(config, external_id)) or mapping
+            pending_payload = current_mapping.get("pending_outbound_payload")
             if current_mapping.get("sync_lease_token") == token:
-                _sync_state_update(config, current_mapping, token, {
-                    "sync_status": "sync_failed",
-                    "last_error_code": "woocommerce_sync_failed",
-                    **_release_sync_lease_values(),
-                })
-            _report_sync_result(report, external_id, "failed", reason="woocommerce_sync_failed", local_product_id=local_id)
+                if pending_payload and current_mapping.get("sync_status") in {"outcome_unknown", "syncing"}:
+                    _sync_state_update(config, current_mapping, token, {
+                        "sync_status": "outcome_unknown",
+                        "sync_last_error_code": "woocommerce_sync_reconciliation_required",
+                        **_release_sync_lease_values(),
+                    })
+                    _report_sync_result(report, external_id, "outcome_unknown", reason="reconciliation_required", local_product_id=local_id)
+                else:
+                    _sync_state_update(config, current_mapping, token, {
+                        "sync_status": "sync_failed",
+                        "last_error_code": "woocommerce_sync_failed",
+                        **_release_sync_lease_values(),
+                    })
+                    _report_sync_result(report, external_id, "failed", reason="woocommerce_sync_failed", local_product_id=local_id)
+            else:
+                _report_sync_result(report, external_id, "failed", reason="woocommerce_sync_failed", local_product_id=local_id)
 
     log_action(user_id, "biashara.woocommerce_products_synced", "integration_connection", config["connection"]["_id"], {
         "requested": len(ids),
