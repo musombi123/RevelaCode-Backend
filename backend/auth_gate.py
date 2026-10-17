@@ -958,6 +958,10 @@ def verify():
 # =========================================================
 
 @auth_bp.route(
+    "/api/auth/login",
+    methods=["POST"],
+)
+@auth_bp.route(
     "/api/login",
     methods=["POST"],
 )
