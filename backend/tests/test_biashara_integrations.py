@@ -586,7 +586,7 @@ def test_woocommerce_auto_sync_is_explicit_and_requires_a_successful_test(integr
     payload = _woocommerce_payload()
     payload["metadata"]["store_currency"] = "KES"
     response = integrations.create_connection("owner-1", payload)
-    stored = integration_db.find_one({"_id": ObjectId(response["id"])})
+    stored = next(doc for doc in integration_db.documents if str(doc["_id"]) == response["id"])
 
     assert response["auto_sync_enabled"] is False
     with pytest.raises(APIError) as untested:
@@ -607,7 +607,7 @@ def test_woocommerce_auto_sync_is_explicit_and_requires_a_successful_test(integr
 def test_woocommerce_auto_sync_requires_confirmed_currency_and_is_provider_scoped(integration_db):
     payload = _woocommerce_payload()
     response = integrations.create_connection("owner-1", payload)
-    stored = integration_db.find_one({"_id": ObjectId(response["id"])})
+    stored = next(doc for doc in integration_db.documents if str(doc["_id"]) == response["id"])
     stored["last_test_status"] = "success"
     stored["last_tested_at"] = __import__("datetime").datetime.now(__import__("datetime").timezone.utc)
 
@@ -625,7 +625,7 @@ def test_metadata_or_credential_rotation_disables_auto_sync_until_retested(integ
     payload = _woocommerce_payload(consumer_key="ck_before", consumer_secret="cs_before")
     payload["metadata"]["store_currency"] = "KES"
     response = integrations.create_connection("owner-1", payload)
-    stored = integration_db.find_one({"_id": ObjectId(response["id"])})
+    stored = next(doc for doc in integration_db.documents if str(doc["_id"]) == response["id"])
     stored["last_test_status"] = "success"
     stored["last_tested_at"] = __import__("datetime").datetime.now(__import__("datetime").timezone.utc)
     integrations.set_auto_sync_enabled("owner-1", response["id"], True)
@@ -648,7 +648,7 @@ def test_disabling_connection_also_disables_auto_sync(integration_db):
     payload = _woocommerce_payload()
     payload["metadata"]["store_currency"] = "KES"
     response = integrations.create_connection("owner-1", payload)
-    stored = integration_db.find_one({"_id": ObjectId(response["id"])})
+    stored = next(doc for doc in integration_db.documents if str(doc["_id"]) == response["id"])
     stored["last_test_status"] = "success"
     stored["last_tested_at"] = __import__("datetime").datetime.now(__import__("datetime").timezone.utc)
     integrations.set_auto_sync_enabled("owner-1", response["id"], True)
