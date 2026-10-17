@@ -1074,7 +1074,7 @@ def inventory_adjustment(user_id, product_id, payload):
             expected = Decimal(str(payload[expected_key]))
         except (InvalidOperation, TypeError, ValueError):
             raise APIError("Expected inventory snapshot is invalid.", 422, "invalid_inventory_snapshot")
-        if not expected.is_finite() or expected < 0 or abs(actual - expected) > _MOVEMENT_TOLERANCE:
+        if not expected.is_finite() or expected < 0 or abs(actual - expected) > Decimal("0.0000001"):
             raise APIError(
                 "Inventory changed after the stock count snapshot. Recount this item before finalizing.",
                 409,
