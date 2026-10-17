@@ -297,7 +297,7 @@ def create_count_session(user_id, payload, idempotency_key):
 
 
 def list_count_sessions(user_id, status=None, limit=50):
-    _business, business_id = _business(user_id, "inventory.view")
+    business_context, business_id = _business(user_id, "inventory.view")
     try:
         limit = min(max(int(limit), 1), MAX_LIST_LIMIT)
     except (TypeError, ValueError):
@@ -313,13 +313,13 @@ def list_count_sessions(user_id, status=None, limit=50):
 
 
 def get_count_session(user_id, session_id):
-    _business, business_id = _business(user_id, "inventory.view")
+    business_context, business_id = _business(user_id, "inventory.view")
     return _serialize(_session(business_id, session_id))
 
 
 def record_count(user_id, session_id, product_id, counted_quantity):
     """Record a physical count; it does not mutate catalogue stock."""
-    _business, business_id = _business(user_id, "inventory.manage")
+    business_context, business_id = _business(user_id, "inventory.manage")
     quantity = _decimal(counted_quantity, "counted_quantity")
     session = _session(business_id, session_id)
     if session.get("status") != "in_progress":
@@ -354,7 +354,7 @@ def record_count(user_id, session_id, product_id, counted_quantity):
 
 def recount_item(user_id, session_id, product_id):
     """Refresh an item's system snapshot after a concurrent movement, then require a new physical count."""
-    _business, business_id = _business(user_id, "inventory.manage")
+    business_context, business_id = _business(user_id, "inventory.manage")
     session = _session(business_id, session_id)
     if session.get("status") not in {"in_progress", "conflict", "finalizing"}:
         raise APIError("A completed stock count cannot be reopened.", 409, "stock_count_not_reopenable")
