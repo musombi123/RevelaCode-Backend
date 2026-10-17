@@ -267,61 +267,51 @@ def _public_event(document, include_payload=True, include_lease=False):
 
 
 def _dispatch_automation_event(document):
-    """Dispatch durable internal automation and retain failed attempts for replay."""
+    """Attempt internal automation through the same leased worker used for recovery."""
     business_id = str(document.get("business_id") or "")
     event_id = str(document.get("event_id") or "")
     if not business_id or not event_id:
         return {"processed": False, "error_code": "invalid_automation_event"}
 
-    # A background worker owns processing-state events through an expiring
-    # lease. Inline duplicate-enqueue handling must not steal that lease or
-    # silently revive an operator-dead-lettered event.
-    dispatch_state = str(document.get("automation_dispatch_status") or "pending")
-    if dispatch_state in {"processed", "processing", "dead_letter"}:
-        return {
-            "processed": dispatch_state == "processed",
-            "skipped": True,
-            "status": dispatch_state,
-        }
+    state = str(document.get("automation_dispatch_status") or "pending")
+    if state in {"processed", "processing", "dead_letter"}:
+        return {"processed": state == "processed", "skipped": True, "status": state}
+
     try:
-        from backend.jumuiya.biashara.automation.services import process_event_for_automations
-        result = process_event_for_automations(_public_event(document, include_payload=True))
-        processed = bool(result.get("processed"))
-        collection(OUTBOX_COLLECTION).update_one(
-            {"business_id": business_id, "event_id": event_id},
-            {
-                "$set": {
-                    "automation_dispatch_status": "processed" if processed else "retry",
-                    "automation_last_dispatch_at": now_utc(),
-                    "automation_last_error_code": result.get("error_code"),
-                    "automation_last_run_count": int(result.get("created_runs", 0) or 0),
-                    "updated_at": now_utc(),
-                },
-                "$inc": {"automation_dispatch_attempt_count": 1},
-            },
+        # Lazy import avoids an import cycle: the worker itself reuses this
+        # module's allowlisted public-event projection.
+        from backend.jumuiya.biashara.automation.worker import run_dispatch_batch
+
+        worker_id = "inline-dispatch-" + hashlib.sha256(event_id.encode("utf-8")).hexdigest()[:16]
+        report = run_dispatch_batch(
+            worker_id=worker_id,
+            limit=1,
+            lease_seconds=60,
+            business_id=business_id,
+            event_ids=[event_id],
         )
-        return result
+        latest = collection(OUTBOX_COLLECTION).find_one({
+            "business_id": business_id,
+            "event_id": event_id,
+        }) or document
+        return {
+            "processed": latest.get("automation_dispatch_status") == "processed",
+            "status": latest.get("automation_dispatch_status", "pending"),
+            "created_runs": int(latest.get("automation_last_run_count", 0) or 0),
+            "worker_report": {
+                "claimed": report.get("claimed", 0),
+                "retried": report.get("retried", 0),
+                "dead_lettered": report.get("dead_lettered", 0),
+                "lease_lost": report.get("lease_lost", 0),
+            },
+            "error_code": latest.get("automation_last_error_code"),
+        }
     except Exception as error:
         logger.warning(
             "Biashara automation dispatch deferred (event_hash=%s, error=%s)",
             hashlib.sha256(event_id.encode("utf-8")).hexdigest()[:12],
             type(error).__name__,
         )
-        try:
-            collection(OUTBOX_COLLECTION).update_one(
-                {"business_id": business_id, "event_id": event_id},
-                {
-                    "$set": {
-                        "automation_dispatch_status": "retry",
-                        "automation_last_dispatch_at": now_utc(),
-                        "automation_last_error_code": "automation_dispatch_failed",
-                        "updated_at": now_utc(),
-                    },
-                    "$inc": {"automation_dispatch_attempt_count": 1},
-                },
-            )
-        except Exception:
-            logger.warning("Biashara automation dispatch status update deferred.")
         return {"processed": False, "error_code": "automation_dispatch_failed"}
 
 
