@@ -60,17 +60,21 @@ def _clean_id(value):
         return value
 
 
-def _context(user_id, permission):
-    context = require_permission(user_id, permission)
-    business_id = str(context.get("id") or "")
-    if not business_id:
+def _context(user_id, permission, business_id=None):
+    context = (
+        require_permission(user_id, permission, business_id=str(business_id))
+        if business_id is not None
+        else require_permission(user_id, permission)
+    )
+    selected_business_id = str(context.get("id") or "")
+    if not selected_business_id:
         raise APIError("Selected business is unavailable.", 409, "business_id_missing")
     currency = str(context.get("currency") or "KES").upper()
-    return context, business_id, currency
+    return context, selected_business_id, currency
 
 
-def _load_connection(user_id, connection_id, permission, require_enabled=True):
-    context, business_id, currency = _context(user_id, permission)
+def _load_connection(user_id, connection_id, permission, require_enabled=True, business_id=None):
+    context, business_id, currency = _context(user_id, permission, business_id=business_id)
     query = {
         "_id": _clean_id(connection_id),
         "business_id": business_id,
@@ -1218,7 +1222,13 @@ def resolve_product_conflict(user_id, connection_id, local_product_id, decision,
     push_local rebases the current remote version and pushes only explicitly
     selected fields; it does not apply stock/cost changes.
     """
-    config = _load_connection(user_id, connection_id, "integration.manage", require_enabled=True)
+    config = _load_connection(
+        user_id,
+        connection_id,
+        "integration.manage",
+        require_enabled=True,
+        business_id=business_id,
+    )
     require_permission(user_id, "products.manage", business_id=config["business_id"])
     decision = str(decision or "").strip().lower()
     if decision not in {"accept_remote", "push_local"}:
@@ -1418,7 +1428,7 @@ def resolve_product_conflict(user_id, connection_id, local_product_id, decision,
     }
 
 
-def sync_products(user_id, connection_id, local_product_ids):
+def sync_products(user_id, connection_id, local_product_ids, business_id=None):
     """Push selected local product edits only when remote state still matches our baseline.
 
     No stock/cost writes occur here. Ambiguous provider write results become
