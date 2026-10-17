@@ -36,6 +36,7 @@ ROLE_PERMISSIONS = {
         "website.view", "website.manage", "automation.view", "automation.manage",
         "sync.view", "sync.manage",
         "integration.view", "integration.manage",
+        "suppliers.view", "suppliers.manage", "purchasing.view", "purchasing.manage",
     },
     "cashier": {
         "business.view", "products.view", "inventory.view",
@@ -45,10 +46,12 @@ ROLE_PERMISSIONS = {
     "stock_controller": {
         "business.view", "products.view", "products.manage",
         "inventory.view", "inventory.manage", "orders.view",
+        "suppliers.view", "purchasing.view", "purchasing.manage",
     },
     "accountant": {
         "business.view", "orders.view", "sales.view",
         "finance.view", "finance.manage", "analytics.view", "intelligence.view",
+        "purchasing.view",
     },
     "fulfilment": {
         "business.view", "orders.view", "orders.manage",
@@ -61,12 +64,13 @@ ROLE_PERMISSIONS = {
     "advisor": {
         "business.view", "products.view", "orders.view", "sales.view",
         "finance.view", "analytics.view", "intelligence.view", "automation.view", "sync.view",
-        "integration.view",
+        "integration.view", "suppliers.view", "purchasing.view",
     },
     "read_only": {
         "business.view", "products.view", "inventory.view", "orders.view",
         "sales.view", "customers.view", "finance.view", "analytics.view", "intelligence.view",
         "website.view", "automation.view", "sync.view", "team.view",
+        "suppliers.view", "purchasing.view",
     },
 }
 ASSIGNABLE_ROLES = set(ROLE_PERMISSIONS) - {"owner"}
