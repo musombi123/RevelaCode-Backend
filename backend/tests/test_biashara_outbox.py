@@ -15,6 +15,7 @@ sys.modules["backend.db"] = _test_db_module
 try:
     from backend.jumuiya.biashara.sync import outbox
     from backend.jumuiya.biashara.automation import services as automation_services
+    from backend.jumuiya.biashara.automation import worker as automation_worker
 finally:
     if _original_db_module is _missing_module:
         sys.modules.pop("backend.db", None)
@@ -137,6 +138,7 @@ def outbox_db(monkeypatch):
     events = FakeCollection()
     monkeypatch.setattr(outbox, "collection", lambda name: events)
     monkeypatch.setattr(automation_services, "collection", lambda name: events)
+    monkeypatch.setattr(automation_worker, "collection", lambda name: events)
     return events
 
 
