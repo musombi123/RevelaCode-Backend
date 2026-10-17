@@ -1163,6 +1163,248 @@ def list_product_mappings(user_id, connection_id, limit=50):
     return output
 
 
+def _claim_conflict_resolution(config, mapping):
+    now = now_utc()
+    expiry = mapping.get("sync_lease_expires_at")
+    if (
+        mapping.get("sync_status") == "syncing"
+        and isinstance(expiry, datetime)
+        and expiry > now
+    ):
+        raise APIError("Another sync operation is still processing this product.", 409, "woocommerce_sync_in_progress")
+    if mapping.get("sync_status") != "conflict" or not isinstance(mapping.get("sync_conflict"), dict):
+        raise APIError("This product has no unresolved WooCommerce sync conflict.", 409, "woocommerce_no_sync_conflict")
+
+    token = secrets.token_urlsafe(18)
+    updated = collection(MAPPINGS_COLLECTION).find_one_and_update(
+        {
+            "_id": mapping["_id"],
+            "business_id": config["business_id"],
+            "connection_id": str(config["connection"]["_id"]),
+            "sync_status": "conflict",
+            "sync_lease_token": mapping.get("sync_lease_token"),
+        },
+        {"$set": {
+            "sync_previous_status": "conflict",
+            "sync_status": "syncing",
+            "sync_lease_token": token,
+            "sync_lease_expires_at": now + timedelta(seconds=IMPORT_LEASE_SECONDS),
+            "updated_at": now,
+        }},
+        return_document=ReturnDocument.AFTER,
+    )
+    if not updated:
+        raise APIError("The conflict changed while you were resolving it. Reload sync status and review again.", 409, "woocommerce_sync_conflict_changed")
+    return updated, token
+
+
+def resolve_product_conflict(user_id, connection_id, local_product_id, decision, fields=None):
+    """Resolve a previously detected conflict using an explicit human decision.
+
+    accept_remote changes only name/SKU/price/description locally.
+    push_local rebases the current remote version and pushes only explicitly
+    selected fields; it does not apply stock/cost changes.
+    """
+    config = _load_connection(user_id, connection_id, "integration.manage", require_enabled=True)
+    require_permission(user_id, "products.manage", business_id=config["business_id"])
+    decision = str(decision or "").strip().lower()
+    if decision not in {"accept_remote", "push_local"}:
+        raise APIError("decision must be accept_remote or push_local.", 422, "invalid_sync_conflict_decision")
+
+    allowed_fields = {"name", "sku", "price", "description"}
+    if decision == "push_local":
+        if not isinstance(fields, list) or not fields or len(fields) > len(allowed_fields):
+            raise APIError("push_local requires a non-empty fields list.", 422, "invalid_sync_conflict_fields")
+        if any(not isinstance(field, str) or field not in allowed_fields for field in fields):
+            raise APIError("Supported conflict fields are name, sku, price and description.", 422, "invalid_sync_conflict_fields")
+        selected_fields = sorted(set(fields))
+        if not selected_fields:
+            raise APIError("At least one conflict field must be selected.", 422, "invalid_sync_conflict_fields")
+    else:
+        selected_fields = []
+
+    mapping_query = {
+        "business_id": config["business_id"],
+        "connection_id": str(config["connection"]["_id"]),
+        "resource_type": "product",
+        "local_resource_id": str(local_product_id),
+        "import_status": "imported",
+    }
+    mappings = collection(MAPPINGS_COLLECTION)
+    mapping = mappings.find_one(mapping_query)
+    if not mapping:
+        raise APIError("No imported WooCommerce product mapping exists for this local product.", 404, "external_mapping_not_found")
+
+    mapping, token = _claim_conflict_resolution(config, mapping)
+    external_id = str(mapping.get("external_id") or "")
+    local_product = collection(PRODUCTS_COLLECTION).find_one({
+        "_id": _clean_id(mapping.get("local_resource_id")),
+        "business_id": config["business_id"],
+    })
+    if not local_product:
+        _sync_state_update(config, mapping, token, {
+            "sync_status": "conflict",
+            "sync_conflict": {
+                "code": "mapped_local_product_missing",
+                "detected_at": now_utc(),
+            },
+            **_release_sync_lease_values(),
+        })
+        raise APIError("Mapped local product no longer exists. The conflict was retained for review.", 409, "mapped_local_product_missing")
+
+    try:
+        remote = _get_remote_product(config, external_id)
+        clean, reasons = _source_product(remote, config)
+    except APIError as error:
+        _sync_state_update(config, mapping, token, {
+            "sync_status": "conflict",
+            "sync_last_error_code": error.code,
+            **_release_sync_lease_values(),
+        })
+        raise
+
+    if clean is None or reasons:
+        _sync_state_update(config, mapping, token, {
+            "sync_status": "conflict",
+            "sync_conflict": {
+                "code": "remote_product_not_syncable",
+                "detected_at": now_utc(),
+                "reasons": reasons or ["remote_product_invalid"],
+            },
+            **_release_sync_lease_values(),
+        })
+        raise APIError("The current remote product cannot be used for conflict resolution.", 409, "woocommerce_remote_product_not_syncable")
+
+    conflict = mapping.get("sync_conflict") if isinstance(mapping.get("sync_conflict"), dict) else {}
+    expected_version = str(conflict.get("current_external_version") or "")
+    current_version = str(clean.get("source_modified_at") or "")
+    if current_version != expected_version:
+        old_source_snapshot = mapping.get("source_field_snapshot") if isinstance(mapping.get("source_field_snapshot"), dict) else {}
+        changed_fields = _source_snapshot_changes(old_source_snapshot, _source_product_snapshot(clean))
+        _sync_state_update(config, mapping, token, {
+            "sync_status": "conflict",
+            "sync_conflict": {
+                "code": "remote_changed_again_during_conflict_resolution",
+                "detected_at": now_utc(),
+                "previous_external_version": expected_version,
+                "current_external_version": current_version,
+                "changed_source_fields": changed_fields,
+            },
+            **_release_sync_lease_values(),
+        })
+        raise APIError("WooCommerce changed again after the conflict was detected. Review the refreshed conflict before choosing a resolution.", 409, "woocommerce_sync_conflict_changed")
+
+    if decision == "accept_remote":
+        if clean.get("sku"):
+            collision = collection(PRODUCTS_COLLECTION).find_one({
+                "business_id": config["business_id"],
+                "sku": clean["sku"],
+                "status": {"$ne": "deleted"},
+                "_id": {"$ne": local_product["_id"]},
+            })
+            if collision:
+                _sync_state_update(config, mapping, token, {
+                    "sync_status": "conflict",
+                    "sync_conflict": {
+                        **conflict,
+                        "code": "local_sku_conflict",
+                        "detected_at": now_utc(),
+                    },
+                    **_release_sync_lease_values(),
+                })
+                raise APIError("The remote SKU is already used by another local product. Resolve the SKU collision before accepting remote values.", 409, "local_sku_conflict")
+        try:
+            biashara_services.update_product(
+                user_id,
+                str(local_product["_id"]),
+                {
+                    "name": clean["name"],
+                    "description": clean["description"],
+                    "sku": clean["sku"],
+                    "price": clean["price"],
+                },
+            )
+            updated_local = collection(PRODUCTS_COLLECTION).find_one({
+                "_id": local_product["_id"],
+                "business_id": config["business_id"],
+            })
+            if not updated_local:
+                raise APIError("Local product could not be reloaded after applying the remote values.", 409, "local_product_reload_failed")
+            _finish_mapping(mapping, config, updated_local, clean["source_modified_at"], source_snapshot=clean)
+        except Exception as error:
+            latest = mappings.find_one(_mapping_query(config, external_id)) or mapping
+            if latest.get("sync_lease_token") == token:
+                _sync_state_update(config, latest, token, {
+                    "sync_status": "conflict",
+                    "sync_last_error_code": error.code if isinstance(error, APIError) else "local_accept_remote_failed",
+                    **_release_sync_lease_values(),
+                })
+            raise
+        log_action(user_id, "biashara.woocommerce_sync_conflict_resolved", "external_object_mapping", mapping["_id"], {
+            "decision": decision,
+            "fields": ["name", "sku", "price", "description"],
+        })
+        return {
+            "connection_id": str(config["connection"]["_id"]),
+            "local_product_id": str(local_product["_id"]),
+            "external_id": external_id,
+            "decision": decision,
+            "status": "resolved",
+            "sync_status": "synced",
+            "updated_fields": ["name", "sku", "price", "description"],
+            "stock_changed": False,
+            "cost_price_changed": False,
+        }
+
+    # Explicit local-wins resolution: accept this current remote version as the
+    # new conflict baseline, while only selected local fields remain dirty. The
+    # normal sync path then performs the same version check and guarded PUT.
+    local_snapshot = _local_product_snapshot(local_product)
+    remote_snapshot = {
+        "name": clean["name"],
+        "sku": clean["sku"],
+        "price": clean["price"],
+        "description": clean["description"],
+    }
+    baseline = {
+        field: remote_snapshot[field] if field in selected_fields else local_snapshot[field]
+        for field in ("name", "sku", "price", "description")
+    }
+    _sync_state_update(config, mapping, token, {
+        "sync_status": "synced",
+        "sync_conflict": None,
+        "sync_last_error_code": None,
+        "source_field_snapshot": _source_product_snapshot(clean),
+        "external_version": current_version,
+        "last_seen_at": now_utc(),
+        "last_synced_local_snapshot": baseline,
+        "last_synced_local_fingerprint": _snapshot_fingerprint(baseline),
+        "pending_outbound_payload": None,
+        "pending_outbound_local_fingerprint": None,
+        **_release_sync_lease_values(),
+    })
+    result = sync_products(user_id, connection_id, [str(local_product["_id"])])
+    log_action(user_id, "biashara.woocommerce_sync_conflict_resolved", "external_object_mapping", mapping["_id"], {
+        "decision": decision,
+        "fields": selected_fields,
+        "sync_status": next(
+            (item.get("status") for item in result.get("results", []) if item.get("external_id") == external_id),
+            "unknown",
+        ),
+    })
+    return {
+        "connection_id": str(config["connection"]["_id"]),
+        "local_product_id": str(local_product["_id"]),
+        "external_id": external_id,
+        "decision": decision,
+        "status": "rebase_complete",
+        "selected_fields": selected_fields,
+        "sync_result": result,
+        "stock_changed": False,
+        "cost_price_changed": False,
+    }
+
+
 def sync_products(user_id, connection_id, local_product_ids):
     """Push selected local product edits only when remote state still matches our baseline.
 
