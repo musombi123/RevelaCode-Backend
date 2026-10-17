@@ -682,7 +682,9 @@ def _finish_mapping(mapping, config, product, source_version, source_snapshot=No
         update_query = {"_id": mapping["_id"], **query}
         if mapping.get("sync_lease_token"):
             update_query["sync_lease_token"] = mapping["sync_lease_token"]
-        mappings.update_one(update_query, {"$set": values})
+        result = mappings.update_one(update_query, {"$set": values})
+        if mapping.get("sync_lease_token") and not result.matched_count:
+            raise APIError("WooCommerce sync lease expired or changed before the mapping was acknowledged.", 409, "woocommerce_sync_lease_conflict")
         return mappings.find_one(query) or {**mapping, **values}
     document = {"_id": ObjectId(), "created_at": now, **values}
     try:
