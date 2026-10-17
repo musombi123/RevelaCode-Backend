@@ -672,33 +672,91 @@ def decide_task(user_id, task_id, decision, note=""):
     return _serialize(updated)
 
 def replay_failed_automation_dispatches(user_id, limit=100):
+    """Operator-controlled retry for failed/dead-letter internal automation dispatches."""
     require_permission(user_id, "automation.manage")
-    """Retry automation dispatch for durable outbox events explicitly marked retry."""
     _business_data, business_id = _business(user_id)
     try:
         limit = min(max(int(limit), 1), 100)
     except (TypeError, ValueError):
         limit = 100
+
     events = collection("jumuiya_outbox_events")
-    pending = list(
+    candidates = list(
         events.find({
             "business_id": business_id,
-            "automation_dispatch_status": "retry",
+            "automation_dispatch_status": {"$in": ["retry", "dead_letter"]},
         }).sort("created_at", 1).limit(limit)
     )
-    report = {"inspected": len(pending), "processed": 0, "deferred": 0}
-    for event in pending:
-        result = process_event_for_automations(event)
-        status = "processed" if result.get("processed") else "retry"
-        events.update_one(
-            {"business_id": business_id, "event_id": event.get("event_id")},
-            {"$set": {
-                "automation_dispatch_status": status,
-                "automation_last_dispatch_at": now_utc(),
-                "automation_last_error_code": result.get("error_code"),
-                "automation_last_run_count": result.get("created_runs", 0),
-            }, "$inc": {"automation_dispatch_attempt_count": 1}},
-        )
-        report["processed" if status == "processed" else "deferred"] += 1
-    return report
+    eligible_ids = []
+    dead_letters_reset = 0
+    now = now_utc()
 
+    for event in candidates:
+        event_id = str(event.get("event_id") or "")
+        if not event_id:
+            continue
+        if event.get("automation_dispatch_status") == "dead_letter":
+            # Explicit owner action begins a new bounded retry window while
+            # preserving an audit count for how often the event was replayed.
+            result = events.update_one(
+                {
+                    "business_id": business_id,
+                    "event_id": event_id,
+                    "automation_dispatch_status": "dead_letter",
+                },
+                {
+                    "$set": {
+                        "automation_dispatch_status": "retry",
+                        "automation_dispatch_attempt_count": 0,
+                        "automation_last_error_code": None,
+                        "automation_dispatch_lease_owner": None,
+                        "automation_dispatch_lease_token": None,
+                        "automation_dispatch_lease_expires_at": None,
+                        "automation_last_manual_replay_by_user_id": str(user_id),
+                        "automation_last_manual_replay_at": now,
+                        "updated_at": now,
+                    },
+                    "$inc": {"automation_manual_replay_count": 1},
+                },
+            )
+            if not getattr(result, "matched_count", 0):
+                continue
+            dead_letters_reset += 1
+        eligible_ids.append(event_id)
+
+    if not eligible_ids:
+        report = {
+            "inspected": len(candidates),
+            "selected": 0,
+            "dead_letters_reset": dead_letters_reset,
+            "processed": 0,
+            "retried": 0,
+            "dead_lettered": 0,
+            "lease_lost": 0,
+            "provider_delivery_attempted": False,
+        }
+    else:
+        from backend.jumuiya.biashara.automation.worker import run_dispatch_batch
+
+        worker_report = run_dispatch_batch(
+            worker_id="manual-replay-" + hashlib.sha256(str(user_id).encode("utf-8")).hexdigest()[:16],
+            limit=min(len(eligible_ids), 100),
+            business_id=business_id,
+            event_ids=eligible_ids,
+        )
+        report = {
+            "inspected": len(candidates),
+            "selected": len(eligible_ids),
+            "dead_letters_reset": dead_letters_reset,
+            **worker_report,
+        }
+
+    log_action(user_id, "biashara.automation_dispatch_replay_requested", "business", business_id, {
+        "inspected": report["inspected"],
+        "selected": report["selected"],
+        "dead_letters_reset": dead_letters_reset,
+        "processed": report["processed"],
+        "retried": report["retried"],
+        "dead_lettered": report["dead_lettered"],
+    })
+    return report
