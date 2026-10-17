@@ -1123,6 +1123,44 @@ def _report_sync_result(report, external_id, status, **details):
     })
 
 
+def list_product_mappings(user_id, connection_id, limit=50):
+    """List tenant-scoped import/sync state without exposing snapshots or secrets."""
+    config = _load_connection(user_id, connection_id, "integration.view", require_enabled=False)
+    try:
+        limit = min(max(int(limit), 1), 100)
+    except (TypeError, ValueError, OverflowError):
+        limit = 50
+    rows = (
+        collection(MAPPINGS_COLLECTION)
+        .find({
+            "business_id": config["business_id"],
+            "connection_id": str(config["connection"]["_id"]),
+            "resource_type": "product",
+        })
+        .sort("updated_at", -1)
+        .limit(limit)
+    )
+    output = []
+    for mapping in rows:
+        item = _public_mapping_status(mapping) or {}
+        item.update({
+            "external_id": str(mapping.get("external_id") or ""),
+            "local_product_id": str(mapping.get("local_resource_id") or "") or None,
+            "updated_at": (
+                mapping["updated_at"].isoformat()
+                if isinstance(mapping.get("updated_at"), datetime)
+                else mapping.get("updated_at")
+            ),
+            "last_seen_at": (
+                mapping["last_seen_at"].isoformat()
+                if isinstance(mapping.get("last_seen_at"), datetime)
+                else mapping.get("last_seen_at")
+            ),
+        })
+        output.append(item)
+    return output
+
+
 def sync_products(user_id, connection_id, local_product_ids):
     """Push selected local product edits only when remote state still matches our baseline.
 
