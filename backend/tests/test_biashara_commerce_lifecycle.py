@@ -17,6 +17,7 @@ sys.modules["backend.db"] = _test_db_module
 try:
     from backend.jumuiya.biashara import services
     from backend.jumuiya.biashara.returns import service as returns_service
+    from backend.jumuiya.biashara.inventory import counts as stock_counts
 finally:
     if _original_db_module is _missing_module:
         sys.modules.pop("backend.db", None)
@@ -202,11 +203,15 @@ def commerce_db(monkeypatch):
         "jumuiya_inventory_movements": FakeCollection([]),
         "jumuiya_outbox_events": FakeCollection([]),
         "jumuiya_returns": FakeCollection([]),
+        "jumuiya_stock_counts": FakeCollection([]),
     }
     monkeypatch.setattr(services, "collection", lambda name: collections[name])
     monkeypatch.setattr(outbox, "collection", lambda name: collections[name])
     monkeypatch.setattr(returns_service, "collection", lambda name: collections[name])
     monkeypatch.setattr(returns_service, "require_permission", lambda user_id, permission, business_id=None: {"id": business_id or "business-1"})
+    monkeypatch.setattr(stock_counts, "collection", lambda name: collections[name])
+    monkeypatch.setattr(stock_counts, "require_permission", lambda user_id, permission, business_id=None: {"id": business_id or "business-1"})
+    monkeypatch.setattr(stock_counts, "dispatch_manifest_for_record", lambda *args, **kwargs: {"enqueued": 1, "pending": 0, "errors": 0})
     monkeypatch.setattr(services, "_require_business", lambda user_id: {"id": "business-1", "currency": "KES"})
     monkeypatch.setattr(services, "require_permission", lambda user_id, permission, business_id=None: {"id": business_id or "business-1"})
     monkeypatch.setattr(services, "log_action", lambda *args, **kwargs: None)
