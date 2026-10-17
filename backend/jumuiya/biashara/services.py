@@ -109,7 +109,20 @@ def serialise(doc):
     if not doc:
         return None
 
-    out = dict(doc)
+    # These fields are internal recovery/synchronization metadata. Keep them
+    # in MongoDB for repair and idempotency, but never expose them through
+    # ordinary business API projections.
+    out = {
+        key: value for key, value in doc.items()
+        if key not in {
+            "outbox_event_manifest",
+            "outbox_enqueued_event_keys",
+            "request_fingerprint",
+            "integration_sources",
+            "integration_import_key",
+            "lease_token",
+        }
+    }
 
     if "_id" in out:
         out["id"] = str(out.pop("_id"))
@@ -379,10 +392,26 @@ def create_or_update_business(
 # =========================================================
 
 
-def create_product(user_id, payload):
+def create_product(user_id, payload, _integration_source=None):
     business = _require_business_with_permission(user_id, "products.manage")
     document = product_document(business["id"], payload)
     document["_id"] = ObjectId()
+    if _integration_source is not None:
+        if not isinstance(_integration_source, dict):
+            raise APIError("Internal source mapping is invalid.", 422, "invalid_integration_source")
+        provider = str(_integration_source.get("provider") or "").strip().lower()
+        connection_id = str(_integration_source.get("connection_id") or "").strip()
+        external_id = str(_integration_source.get("external_id") or "").strip()
+        if provider != "woocommerce" or not connection_id or not re.fullmatch(r"[0-9]{1,24}", external_id):
+            raise APIError("Internal source mapping is invalid.", 422, "invalid_integration_source")
+        document["integration_sources"] = {
+            connection_id: {
+                "provider": provider,
+                "external_id": external_id,
+                "source_version": str(_integration_source.get("source_version") or "")[:100],
+                "created_at": now_utc(),
+            }
+        }
     now = document.get("created_at") or now_utc()
     try:
         price_minor = int(
