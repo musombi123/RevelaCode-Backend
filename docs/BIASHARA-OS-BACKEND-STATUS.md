@@ -79,6 +79,16 @@ Set the resulting value as `BIASHARA_INTEGRATION_ENCRYPTION_KEY` and keep a secu
 - The read-only resolver accepts paid access only from a separate subscription record that is active, payment-verified, has a provider reference and verification timestamp, has started but not expired, has not been revoked, and references a currently available plan.
 - It does not create or activate subscriptions and does not enforce numeric plan limits. Feature/limit policy and verified checkout/webhook flows remain required before paid access can be enabled.
 
+### Returns, stock restocking and refund review
+
+- Returns can be requested only against a completed order and use the original order item/price snapshots.
+- The order stores aggregate reserved and accepted return quantities. Compare-and-set revisions prevent concurrent return requests from reserving more than was sold.
+- Return requests are idempotent. A failed reservation remains as a visible conflict record instead of silently disappearing.
+- Approval updates the order's returned-quantity counters. When restocking is requested, stock is added only through the existing inventory adjustment service and an idempotency key per return/product. Replaying a partially completed restock does not add the same units twice.
+- Rejected returns release their reserved quantities without touching stock.
+- Refund review records the original estimated merchandise value and a human-review request. It explicitly keeps `money_moved: false`; it does **not** issue a refund, credit note or tax document, and does not claim provider confirmation. The estimate uses original unit-price snapshots and excludes separately calculated tax/fees.
+- APIs are registered under `/api/jumuiya/biashara/returns`.
+
 ### Owner-controlled automation
 
 - Rules are versioned and limited to known trigger/action pairs; arbitrary scripts are not supported.
@@ -147,13 +157,18 @@ The branch CI workflow runs:
 python -m compileall -q backend/jumuiya/biashara backend/jumuiya/core
 python -m pytest -q \
   backend/tests/test_biashara_website.py \
+  backend/tests/test_biashara_domains.py \
   backend/tests/test_schemas.py \
   backend/tests/test_biashara_commerce_lifecycle.py \
   backend/tests/test_biashara_outbox.py \
   backend/tests/test_biashara_finance.py \
   backend/tests/test_biashara_automation.py \
   backend/tests/test_biashara_tenancy.py \
-  backend/tests/test_biashara_integrations.py
+  backend/tests/test_biashara_integrations.py \
+  backend/tests/test_biashara_woocommerce.py \
+  backend/tests/test_biashara_mpesa.py \
+  backend/tests/test_revenue_entitlements.py \
+  backend/tests/test_biashara_service_authorization.py
 ```
 
 See the [Biashara validation workflow](https://github.com/musombi123/RevelaCode-Backend/actions/workflows/biashara-storefront-check.yml) for the current run result on the branch. A successful CI run validates these automated tests; it does not replace staging tests against a real MongoDB replica set or provider sandbox.
@@ -162,11 +177,17 @@ See the [Biashara validation workflow](https://github.com/musombi123/RevelaCode-
 
 - Run the membership migration in staging and verify multi-business switching end to end from the frontend.
 - Exercise access controls on every API route with each role using a real authenticated test account; keep the negative cross-tenant suite growing as resources are added.
-- Extend WooCommerce from controlled catalog import into outbound product update sync and order import/reconciliation. External source/version conflict policies and local stock ownership must be visible before writes.
+- Extend WooCommerce beyond outbound catalogue updates into order import/reconciliation. Local stock ownership must be explicit before remote order writes affect inventory.
 - Add provider-specific WhatsApp connectivity and message-send workflows with consent, opt-out, template and approval rules; current webhook handling only verifies and queues for human review.
 - Exercise the Daraja path in Safaricom sandbox and production onboarding environments with real merchant credentials, source-IP verification at the trusted edge and outage/replay drills; do not claim real settlement reconciliation until it is implemented and tested.
 - Complete the actual KRA-approved eTIMS onboarding/certification path before claiming eTIMS compliance.
 - Add a real worker process and operational monitoring for provider sync; this branch currently provides durable queue primitives and internal automation dispatch, not a complete external-channel sync service.
-- Review the operational chart of accounts, VAT/tax treatment, refunds, settlement entries and closing controls with a Kenyan accountant before using this journal as formal books.
+- Review the operational chart of accounts, VAT/tax treatment, credit notes, refund execution/settlement entries and closing controls with a Kenyan accountant before using this journal as formal books.
 - Add a verified subscription lifecycle, provider-confirmed payment updates, machine-readable feature/limit policies and paid-feature enforcement before billing or paid entitlements are enabled.
 - Configure production custom-domain routing/TLS after DNS ownership verification, render SEO metadata in the frontend, and add public-route sitemap/robots integration.
+
+## Latest verified return slice
+
+- CI run for the return workflow and regression cases: [Run 39049518255](https://github.com/musombi123/RevelaCode-Backend/actions/runs/39049518255) — success.
+- Test coverage includes idempotent return creation, per-order quantity reservation, quantity-overrun rejection, rejection release, exactly-once stock restoration under repeated approval, refund-review idempotency and tenant isolation.
+- The status above is based on code and automated CI only. No live provider refund, formal credit note or eTIMS action is implied.
