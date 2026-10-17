@@ -15,6 +15,7 @@ sys.modules["backend.db"] = _test_db_module
 try:
     from backend.jumuiya.biashara.automation import services as automation
     from backend.jumuiya.biashara.automation import worker as automation_worker
+    from backend.jumuiya.biashara.purchasing import service as purchasing_service
     from backend.jumuiya.biashara import services as biashara
 finally:
     if _original_db_module is _missing_module:
@@ -171,9 +172,27 @@ def automation_db(monkeypatch):
         "jumuiya_payments": FakeCollection(),
         "jumuiya_invoices": FakeCollection(),
         "jumuiya_outbox_events": FakeCollection(),
+        purchasing_service.SUPPLIERS_COLLECTION: FakeCollection([{
+            "_id": ObjectId("64b000000000000000000150"),
+            "business_id": "business-1",
+            "name": "Approved Supplier Ltd",
+            "phone": "+254700123456",
+            "email": "supplier@example.test",
+            "status": "active",
+        }]),
+        purchasing_service.PURCHASE_ORDERS_COLLECTION: FakeCollection(),
+        purchasing_service.RECEIPTS_COLLECTION: FakeCollection(),
+        "jumuiya_inventory_movements": FakeCollection(),
     }
     monkeypatch.setattr(automation, "collection", lambda name: data[name])
     monkeypatch.setattr(automation_worker, "collection", lambda name: data[name])
+    monkeypatch.setattr(purchasing_service, "collection", lambda name: data[name])
+    monkeypatch.setattr(purchasing_service, "_dispatch_source", lambda *args, **kwargs: {"enqueued": 1, "pending": 0, "errors": 0})
+    monkeypatch.setattr(purchasing_service, "log_action", lambda *args, **kwargs: None)
+    monkeypatch.setattr(purchasing_service, "_context", lambda user_id, permission: (
+        {"id": "business-1" if user_id != "other-owner" else "business-2", "currency": "KES"},
+        "business-1" if user_id != "other-owner" else "business-2",
+    ))
     monkeypatch.setattr(automation, "log_action", lambda *args, **kwargs: None)
     monkeypatch.setattr(
         automation,
@@ -499,4 +518,136 @@ def test_operator_can_replay_dead_lettered_automation_with_a_fresh_retry_window(
     assert saved["automation_manual_replay_count"] == 1
     assert saved["automation_last_manual_replay_by_user_id"] == "owner-1"
     assert len(automation.list_tasks("owner-1")) == 1
+
+def _approved_reorder_task(automation_db):
+    automation.create_rule("owner-1", {
+        "name": "Draft purchase from low stock",
+        "trigger_event": "product.inventory_adjusted",
+        "action_type": "create_reorder_suggestion",
+        "conditions": {"available_quantity_lte": 2, "target_stock_quantity": 10},
+        "enabled": True,
+    })
+    product_id = str(automation_db["product_id"])
+    automation.dispatch_event_automations({
+        "business_id": "business-1",
+        "event_id": "purchase-order-task-event",
+        "event_type": "product.inventory_adjusted",
+        "entity_type": "product",
+        "entity_id": product_id,
+        "payload": {
+            "product_id": product_id,
+            "stock_quantity": 5,
+            "reserved_quantity": 4,
+        },
+    })
+    task = automation.list_tasks("owner-1")[0]
+    return automation.decide_task("owner-1", task["id"], "approve", "Supplier and cost will be confirmed before drafting")
+
+
+def test_approved_reorder_creates_one_draft_po_with_confirmed_supplier_and_cost(automation_db):
+    task = _approved_reorder_task(automation_db)
+    supplier_id = "64b000000000000000000150"
+    payload = {"supplier_id": supplier_id, "unit_cost": "35.50"}
+
+    first = automation.create_purchase_order_from_reorder_task(
+        "owner-1", task["id"], payload, "draft-from-reorder-0001"
+    )
+    replay = automation.create_purchase_order_from_reorder_task(
+        "owner-1", task["id"], payload, "draft-from-reorder-0001"
+    )
+
+    purchase_orders = automation_db["data"][purchasing_service.PURCHASE_ORDERS_COLLECTION].documents
+    assert len(purchase_orders) == 1
+    po = first["purchase_order"]
+    assert po["status"] == "draft"
+    assert po["supplier_id"] == supplier_id
+    assert po["lines"][0]["quantity_ordered"] == 9
+    assert po["lines"][0]["unit_cost_minor"] == 3550
+    assert po["total_amount_minor"] == 31950
+    assert po["notes"].startswith("Draft created from approved Biashara reorder suggestion task")
+    assert first["sent_to_supplier"] is False
+    assert first["stock_changed"] is False
+    assert replay["purchase_order"]["id"] == po["id"]
+    assert replay["task"]["details"]["purchase_order_id"] == po["id"]
+    assert replay["task"]["details"]["purchase_order_created"] is True
+    assert automation_db["data"]["jumuiya_products"].documents[0]["stock_quantity"] == 5
+
+
+def test_reorder_po_requires_approval_supplier_and_confirmed_unit_cost(automation_db):
+    # Reorder suggestion exists but is not yet approved.
+    automation.create_rule("owner-1", {
+        "name": "Require approval before procurement",
+        "trigger_event": "product.inventory_adjusted",
+        "action_type": "create_reorder_suggestion",
+        "conditions": {"available_quantity_lte": 2, "target_stock_quantity": 10},
+        "enabled": True,
+    })
+    product_id = str(automation_db["product_id"])
+    automation.dispatch_event_automations({
+        "business_id": "business-1",
+        "event_id": "unapproved-reorder-event",
+        "event_type": "product.inventory_adjusted",
+        "entity_type": "product",
+        "entity_id": product_id,
+        "payload": {"product_id": product_id, "stock_quantity": 5, "reserved_quantity": 4},
+    })
+    task = automation.list_tasks("owner-1")[0]
+
+    with pytest.raises(APIError) as not_approved:
+        automation.create_purchase_order_from_reorder_task(
+            "owner-1", task["id"],
+            {"supplier_id": "64b000000000000000000150", "unit_cost": "35.50"},
+            "draft-unapproved-reorder-0001",
+        )
+    assert not_approved.value.code == "reorder_approval_required"
+    assert len(automation_db["data"][purchasing_service.PURCHASE_ORDERS_COLLECTION].documents) == 0
+
+    approved = automation.decide_task("owner-1", task["id"], "approve")
+    with pytest.raises(APIError) as no_supplier:
+        automation.create_purchase_order_from_reorder_task(
+            "owner-1", approved["id"],
+            {"unit_cost": "35.50"},
+            "draft-no-supplier-reorder-0001",
+        )
+    assert no_supplier.value.code == "supplier_required"
+
+    with pytest.raises(APIError) as no_cost:
+        automation.create_purchase_order_from_reorder_task(
+            "owner-1", approved["id"],
+            {"supplier_id": "64b000000000000000000150"},
+            "draft-no-cost-reorder-0001",
+        )
+    assert no_cost.value.code == "unit_cost_required"
+    assert len(automation_db["data"][purchasing_service.PURCHASE_ORDERS_COLLECTION].documents) == 0
+
+
+def test_reorder_po_rejects_stale_stock_snapshot_and_changed_request(automation_db):
+    task = _approved_reorder_task(automation_db)
+    product = automation_db["data"]["jumuiya_products"].documents[0]
+    product["stock_quantity"] = 6
+
+    with pytest.raises(APIError) as stale:
+        automation.create_purchase_order_from_reorder_task(
+            "owner-1", task["id"],
+            {"supplier_id": "64b000000000000000000150", "unit_cost": "35.50"},
+            "draft-stale-reorder-0001",
+        )
+    assert stale.value.code == "reorder_snapshot_stale"
+    assert len(automation_db["data"][purchasing_service.PURCHASE_ORDERS_COLLECTION].documents) == 0
+
+    product["stock_quantity"] = 5
+    first = automation.create_purchase_order_from_reorder_task(
+        "owner-1", task["id"],
+        {"supplier_id": "64b000000000000000000150", "unit_cost": "35.50"},
+        "draft-from-reorder-0002",
+    )
+    assert first["purchase_order"]["status"] == "draft"
+    with pytest.raises(APIError) as changed:
+        automation.create_purchase_order_from_reorder_task(
+            "owner-1", task["id"],
+            {"supplier_id": "64b000000000000000000150", "unit_cost": "39.99"},
+            "draft-from-reorder-different-cost",
+        )
+    assert changed.value.code == "idempotency_key_reused"
+    assert len(automation_db["data"][purchasing_service.PURCHASE_ORDERS_COLLECTION].documents) == 1
 
