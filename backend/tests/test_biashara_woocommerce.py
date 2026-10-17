@@ -681,3 +681,29 @@ def test_mapping_status_list_is_tenant_scoped_and_redacts_snapshots(woo_db, monk
     assert len(rows) == 1
     assert rows[0]["external_id"] == "201"
 
+def test_empty_success_response_is_ambiguous_and_reconciled_without_resend(woo_db, monkeypatch):
+    remote, local_id = _import_one(woo_db, monkeypatch)
+    next(row for row in woo_db["products"].documents if str(row.get("_id")) == local_id)["name"] = "Empty Response Update"
+    calls = []
+
+    def fake_put(url, **kwargs):
+        external_id = url.rstrip("/").rsplit("/products/", 1)[1]
+        calls.append(deepcopy(kwargs.get("json") or {}))
+        remote[external_id].update(deepcopy(kwargs.get("json") or {}))
+        remote[external_id]["date_modified_gmt"] = "2026-10-17T15:00:00"
+        if "regular_price" in kwargs.get("json", {}) or "sale_price" in kwargs.get("json", {}):
+            sale = str(remote[external_id].get("sale_price") or "").strip()
+            regular = str(remote[external_id].get("regular_price") or "").strip()
+            remote[external_id]["price"] = sale if sale else regular
+        return FakeResponse(None, status=204)
+
+    monkeypatch.setattr(woocommerce.requests, "put", fake_put)
+    first = woocommerce.sync_products("owner-1", woo_db["connection_id"], [local_id])
+    assert first["outcome_unknown"] == 1
+    assert len(calls) == 1
+
+    second = woocommerce.sync_products("owner-1", woo_db["connection_id"], [local_id])
+    assert second["synced"] == 1
+    assert second["results"][0]["recovered_after_ambiguous_write"] is True
+    assert len(calls) == 1
+
