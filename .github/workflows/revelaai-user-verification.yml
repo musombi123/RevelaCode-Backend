@@ -1,0 +1,60 @@
+name: RevelaAI identity verification checks
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main, "feat/smart-memory-gemini-wiring"]
+
+jobs:
+  verify-user-endpoint:
+    runs-on: ubuntu-latest
+    env:
+      JWT_SECRET: "test-only-jwt-secret"
+      REVELAAI_SERVICE_KEY: "test-only-service-key"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install auth test dependencies
+        run: python -m pip install Flask PyJWT pymongo python-dotenv requests werkzeug
+      - name: Compile backend entry points
+        run: python -m py_compile main.py backend/auth_gate.py backend/db.py
+      - name: Test protected user-existence verification
+        run: |
+          python - <<'PY'
+          from flask import Flask
+          from backend import auth_gate
+
+          app = Flask(__name__)
+          app.register_blueprint(auth_gate.auth_bp)
+          auth_gate.REVELAAI_SERVICE_KEY = "test-only-service-key"
+          auth_gate.MONGO_AVAILABLE = False
+          auth_gate.load_users_file = lambda: {
+              "test-contact": {"_id": "test-user-id", "contact": "must-not-leak"}
+          }
+
+          client = app.test_client()
+          valid = client.get(
+              "/api/auth/verify/test-user-id",
+              headers={"X-REVELAAI-SERVICE-KEY": "test-only-service-key"},
+          )
+          assert valid.status_code == 200, valid.get_json()
+          assert valid.get_json()["exists"] is True
+          assert valid.get_json()["userId"] == "test-user-id"
+          assert "contact" not in valid.get_json()
+
+          forbidden = client.get(
+              "/api/auth/verify/test-user-id",
+              headers={"X-REVELAAI-SERVICE-KEY": "wrong-key"},
+          )
+          assert forbidden.status_code == 403, forbidden.get_json()
+
+          missing = client.get(
+              "/api/auth/verify/unknown-user",
+              headers={"X-REVELAAI-SERVICE-KEY": "test-only-service-key"},
+          )
+          assert missing.status_code == 404, missing.get_json()
+          print("Protected RevelaCode user verification checks passed.")
+          PY
