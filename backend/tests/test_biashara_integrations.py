@@ -210,6 +210,10 @@ def test_provider_metadata_and_credentials_are_strictly_validated(integration_db
         },
         {
             **_woocommerce_payload(),
+            "metadata": {"store_url": "https://shop.example.test:8443"},
+        },
+        {
+            **_woocommerce_payload(),
             "credentials": {"consumer_key": "key-only"},
         },
         {
