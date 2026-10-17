@@ -167,3 +167,16 @@ def sync_woocommerce_products(connection_id):
         "Selected WooCommerce product edits were synchronized only where the remote version was unchanged. Conflicts and ambiguous writes require reconciliation; stock and cost price were not written.",
     )
 
+
+
+@biashara_integrations_bp.get("/<connection_id>/woocommerce/products/mappings")
+@require_authenticated
+@require_business_permission("integration.view")
+def list_woocommerce_product_mappings(connection_id):
+    rows = woocommerce.list_product_mappings(
+        current_user_id(),
+        connection_id,
+        limit=request.args.get("limit", 50),
+    )
+    return ok(rows, "WooCommerce product mapping and sync status loaded.", meta={"count": len(rows)})
+
