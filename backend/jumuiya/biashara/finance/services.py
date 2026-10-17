@@ -166,6 +166,57 @@ def _post_invoice_journal(invoice, user_id):
     )
 
 
+def _post_cash_payment_journal(payment, user_id):
+    """Post manual cash to receivables or suspense when allocation conflicts."""
+    if (
+        payment.get("payment_status") != "manual_attested"
+        or payment.get("verification_status") != "manual_attested"
+        or payment.get("allocation_status") not in {"allocated", "allocation_conflict"}
+    ):
+        return None
+    amount_minor = int(payment.get("amount_minor", 0) or 0)
+    if amount_minor <= 0:
+        return None
+    payment_id = str(payment.get("_id") or payment.get("id") or "")
+    invoice_id = str(payment.get("invoice_id") or "")
+    allocated = payment.get("allocation_status") == "allocated"
+    source_key = ("cash-payment:" if allocated else "cash-payment-unallocated:") + payment_id
+    contra_account = "accounts_receivable" if allocated else "unallocated_customer_receipts"
+    contra_memo = (
+        "Cash payment allocated to invoice " + invoice_id[:80]
+        if allocated
+        else "Cash received but invoice allocation conflicts; reconcile or refund"
+    )
+    return post_journal_entry(
+        business_id=str(payment.get("business_id") or ""),
+        source_key=source_key,
+        source_type="payment.cash_allocated" if allocated else "payment.cash_unallocated",
+        source_id=payment_id,
+        currency=payment.get("currency", "KES"),
+        lines=[
+            {
+                "account_code": "cash_on_hand",
+                "debit_minor": amount_minor,
+                "credit_minor": 0,
+                "memo": "Cash receipt recorded by manual attestation",
+            },
+            {
+                "account_code": contra_account,
+                "debit_minor": 0,
+                "credit_minor": amount_minor,
+                "memo": contra_memo,
+            },
+        ],
+        actor_user_id=user_id,
+        basis=(
+            "Manual cash attestation allocated to an issued invoice; not bank reconciliation or external-provider verification."
+            if allocated
+            else "Manual cash receipt was attested, but invoice allocation conflicted. Receipt remains a liability until a separate reviewed allocation/refund is recorded."
+        ),
+        effective_at=payment.get("allocated_at") or payment.get("updated_at") or now_utc(),
+    )
+
+
 def _post_provider_payment_journal(payment, user_id):
     """Post a verified M-Pesa receipt to clearing and receivables or suspense."""
     if (
