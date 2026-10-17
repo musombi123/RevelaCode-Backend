@@ -243,7 +243,9 @@ def woo_db(monkeypatch):
     monkeypatch.setattr(biashara_services, "log_action", lambda *args, **kwargs: None)
     monkeypatch.setattr(integration_service, "log_action", lambda *args, **kwargs: None)
     monkeypatch.setattr(woocommerce, "log_action", lambda *args, **kwargs: None)
-    monkeypatch.setattr(woocommerce, "_assert_public_store_host", lambda store_url: "shop.example.test")
+    monkeypatch.setattr(woocommerce.socket, "getaddrinfo", lambda *args, **kwargs: [
+        (2, 1, 6, "", ("93.184.216.34", 443)),
+    ])
 
     return {
         "connection": connection,
