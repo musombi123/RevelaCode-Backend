@@ -21,6 +21,20 @@ jobs:
         run: python -m pip install Flask PyJWT pymongo python-dotenv requests werkzeug
       - name: Compile backend entry points
         run: python -m py_compile main.py backend/auth_gate.py backend/db.py
+      - name: Verify login route compatibility aliases
+        run: |
+          python - <<'PY'
+          from flask import Flask
+          from backend import auth_gate
+
+          app = Flask(__name__)
+          app.register_blueprint(auth_gate.auth_bp)
+          routes = {rule.rule for rule in app.url_map.iter_rules()}
+          assert "/api/login" in routes
+          assert "/api/auth/login" in routes
+          assert "/api/auth/me" in routes
+          print("Existing and auth-prefixed login routes plus /api/auth/me are registered.")
+          PY
       - name: Test authenticated current-user endpoint
         run: |
           python - <<'PY'
