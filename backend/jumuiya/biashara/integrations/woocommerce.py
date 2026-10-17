@@ -503,14 +503,32 @@ def _snapshot_fingerprint(snapshot):
 def _public_mapping_status(mapping):
     if not mapping:
         return None
+    conflict = mapping.get("sync_conflict") if isinstance(mapping.get("sync_conflict"), dict) else None
+    public_conflict = None
+    if conflict:
+        public_conflict = {
+            "code": str(conflict.get("code") or "sync_conflict")[:100],
+            "detected_at": (
+                conflict["detected_at"].isoformat()
+                if isinstance(conflict.get("detected_at"), datetime)
+                else conflict.get("detected_at")
+            ),
+            "changed_source_fields": [
+                str(value)[:80] for value in (conflict.get("changed_source_fields") or [])[:20]
+            ],
+            "previous_external_version": str(conflict.get("previous_external_version") or "")[:100],
+            "current_external_version": str(conflict.get("current_external_version") or "")[:100],
+        }
+    synced_at = mapping.get("last_synced_at")
     return {
         "status": mapping.get("import_status"),
+        "sync_status": mapping.get("sync_status", "not_synced"),
         "local_product_id": str(mapping.get("local_resource_id") or "") or None,
-        "last_synced_at": (
-            mapping["last_synced_at"].isoformat()
-            if isinstance(mapping.get("last_synced_at"), datetime)
-            else mapping.get("last_synced_at")
-        ),
+        "external_version": str(mapping.get("external_version") or "")[:100],
+        "last_synced_at": synced_at.isoformat() if isinstance(synced_at, datetime) else synced_at,
+        "last_error_code": str(mapping.get("last_error_code") or mapping.get("sync_last_error_code") or "")[:100] or None,
+        "pending_outbound_update": isinstance(mapping.get("pending_outbound_payload"), dict),
+        "conflict": public_conflict,
     }
 
 
