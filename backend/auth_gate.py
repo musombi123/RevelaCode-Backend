@@ -44,6 +44,14 @@ JWT_SECRET = os.getenv(
 
 JWT_ALGORITHM = "HS256"
 
+# Match the role allowlist used by existing platform-administration routes.
+PLATFORM_ADMIN_ROLES = frozenset({
+    "admin",
+    "platform_admin",
+    "super_admin",
+    "revelacode_admin",
+})
+
 JWT_EXPIRES_HOURS = int(
     os.getenv(
         "JWT_EXPIRES_HOURS",
@@ -455,7 +463,7 @@ def verify_admin_for_revelaai():
     # Match the singular role field used by the existing login/redirect flow.
     # Role changes take effect immediately; stale JWT role claims are ignored.
     role = str(user.get("role") or "user").strip().lower()
-    if role != "admin":
+    if role not in PLATFORM_ADMIN_ROLES:
         return jsonify(
             success=False,
             authenticated=True,
@@ -470,7 +478,7 @@ def verify_admin_for_revelaai():
         authenticated=True,
         authorized=True,
         userId=canonical_id,
-        role="admin",
+        role=role,
     ), 200
 
 
