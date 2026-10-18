@@ -18,6 +18,9 @@ def client(monkeypatch):
     monkeypatch.setattr(auth_gate, "MONGO_AVAILABLE", False)
     users = {
         "admin": {"_id": "admin-user-id", "role": "admin"},
+        "platform_admin": {"_id": "platform-admin-user-id", "role": "platform_admin"},
+        "super_admin": {"_id": "super-admin-user-id", "role": "super_admin"},
+        "revelacode_admin": {"_id": "revelacode-admin-user-id", "role": "revelacode_admin"},
         "member": {"_id": "member-user-id", "role": "user"},
     }
     monkeypatch.setattr(auth_gate, "load_users_file", lambda: users)
@@ -43,6 +46,24 @@ def test_current_database_admin_is_authorized(client):
     assert response.status_code == 200
     assert response.get_json()["authorized"] is True
     assert response.get_json()["role"] == "admin"
+
+
+@pytest.mark.parametrize(
+    ("role", "user_id"),
+    [
+        ("platform_admin", "platform-admin-user-id"),
+        ("super_admin", "super-admin-user-id"),
+        ("revelacode_admin", "revelacode-admin-user-id"),
+    ],
+)
+def test_platform_admin_role_aliases_are_authorized_from_current_record(client, role, user_id):
+    response = client.get(
+        "/api/auth/verify-admin",
+        headers={"Authorization": f"Bearer {token_for(user_id, claimed_role='user')}"},
+    )
+    assert response.status_code == 200
+    assert response.get_json()["authorized"] is True
+    assert response.get_json()["role"] == role
 
 
 def test_non_admin_is_denied_even_with_admin_jwt_claim(client):
