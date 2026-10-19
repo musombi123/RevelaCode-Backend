@@ -1522,13 +1522,20 @@ def invitation_is_expired(
     ):
         return True
 
-    return (
-        expires_at
-        <= (
-            current_time
-            or now_utc()
-        )
+    # MongoDB commonly returns BSON datetimes as naive UTC values.
+    # Normalise expiry and current time to UTC before comparing them.
+    expiry_utc = (
+        expires_at.replace(tzinfo=timezone.utc)
+        if expires_at.tzinfo is None or expires_at.utcoffset() is None
+        else expires_at.astimezone(timezone.utc)
     )
+    current = current_time or now_utc()
+    current_utc = (
+        current.replace(tzinfo=timezone.utc)
+        if current.tzinfo is None or current.utcoffset() is None
+        else current.astimezone(timezone.utc)
+    )
+    return expiry_utc <= current_utc
 
 
 def invitation_is_usable(
