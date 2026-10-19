@@ -474,11 +474,6 @@ def _deliver_invitation_email(
             expires_at=invitation.get("expires_at"),
         )
     except Exception as exc:
-        logging.getLogger(__name__).warning(
-            "Elimu staff invitation delivery failed: invitation_id=%s exception_type=%s",
-            str(invitation_id),
-            type(exc).__name__,
-        )
         detail = str(exc).lower()
         error_code = "resend_delivery_rejected"
         message = "Resend rejected the invitation email. Check the backend logs and Resend email logs, then retry."
