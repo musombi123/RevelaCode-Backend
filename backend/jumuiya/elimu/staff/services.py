@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+import logging
 import secrets
 from typing import Any, Mapping
 
@@ -471,7 +472,12 @@ def _deliver_invitation_email(
             token=raw_token,
             expires_at=invitation.get("expires_at"),
         )
-    except Exception:
+    except Exception as exc:
+        logging.getLogger(__name__).warning(
+            "Elimu staff invitation delivery failed: invitation_id=%s exception_type=%s",
+            str(invitation_id),
+            type(exc).__name__,
+        )
         message = "Email delivery failed. Check RESEND_API_KEY, EMAIL_FROM and FRONTEND_URL, then resend the invitation."
         collection(INVITATIONS).update_one(
             target,
