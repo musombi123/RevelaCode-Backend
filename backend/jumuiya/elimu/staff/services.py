@@ -417,6 +417,7 @@ def _invitation_snapshot(document: Mapping[str, Any] | None) -> dict:
         "status": data.get("status"),
         "email_status": data.get("email_status", "pending"),
         "email_error": data.get("email_error"),
+        "email_error_code": data.get("email_error_code"),
         "created_at": data.get("created_at"),
         "updated_at": data.get("updated_at"),
         "expires_at": data.get("expires_at"),
@@ -478,13 +479,40 @@ def _deliver_invitation_email(
             str(invitation_id),
             type(exc).__name__,
         )
-        message = "Email delivery failed. Check RESEND_API_KEY, EMAIL_FROM and FRONTEND_URL, then resend the invitation."
+        detail = str(exc).lower()
+        error_code = "resend_delivery_rejected"
+        message = "Resend rejected the invitation email. Check the backend logs and Resend email logs, then retry."
+        if "resend_api_key is not configured" in detail:
+            error_code = "missing_resend_api_key"
+            message = "RESEND_API_KEY is missing from the backend environment."
+        elif "resend sdk is not installed" in detail or "no module named 'resend'" in detail:
+            error_code = "resend_sdk_missing"
+            message = "The Resend SDK is missing from the backend deployment. Rebuild the backend before retrying."
+        elif "frontend_url" in detail or "revelacode_frontend_url" in detail:
+            error_code = "invalid_frontend_url"
+            message = "FRONTEND_URL must point to the public HTTPS RevelaCode frontend."
+        elif "email_from is not configured" in detail:
+            error_code = "missing_email_from"
+            message = "EMAIL_FROM is empty. Configure an authorised sender address."
+        elif any(term in detail for term in ("unauthorized", "invalid api key", "authentication failed", "status code 401", "http 401")):
+            error_code = "resend_api_key_rejected"
+            message = "Resend rejected the API key. Check RESEND_API_KEY in the backend service settings."
+        elif any(term in detail for term in ("domain is not verified", "domain not verified", "sender not verified", "only send testing emails to your own email", "not authorized to send", "from address")):
+            error_code = "sender_not_authorised"
+            message = "Resend did not authorise the sender or recipient. Verify the sending domain and use an address on that domain."
+        logging.getLogger(__name__).warning(
+            "Elimu invitation email failure: invitation_id=%s error_code=%s exception_type=%s",
+            str(invitation_id),
+            error_code,
+            type(exc).__name__,
+        )
         collection(INVITATIONS).update_one(
             target,
             {
                 "$set": {
                     "email_status": "failed",
                     "email_error": message,
+                    "email_error_code": error_code,
                     "updated_at": now_utc(),
                 },
                 "$unset": {"email_sent_at": ""},
@@ -492,6 +520,7 @@ def _deliver_invitation_email(
         )
         invitation["email_status"] = "failed"
         invitation["email_error"] = message
+        invitation["email_error_code"] = error_code
         invitation.pop("email_sent_at", None)
         return False
 
@@ -504,13 +533,14 @@ def _deliver_invitation_email(
                 "email_sent_at": sent_at,
                 "updated_at": sent_at,
             },
-            "$unset": {"email_error": ""},
+            "$unset": {"email_error": "", "email_error_code": ""},
         },
     )
     invitation["email_status"] = "sent"
     invitation["email_sent_at"] = sent_at
     invitation["updated_at"] = sent_at
     invitation.pop("email_error", None)
+    invitation.pop("email_error_code", None)
     return True
 
 
@@ -1381,7 +1411,7 @@ def resend_invitation(user_id: Any, invitation_id: Any) -> dict:
                 "email_status": "pending",
                 "updated_at": timestamp,
             },
-            "$unset": {"email_error": "", "email_sent_at": ""},
+            "$unset": {"email_error": "", "email_error_code": "", "email_sent_at": ""},
         },
     )
     if not result.matched_count:
@@ -1392,6 +1422,7 @@ def resend_invitation(user_id: Any, invitation_id: Any) -> dict:
     document["email_status"] = "pending"
     document["updated_at"] = timestamp
     document.pop("email_error", None)
+    document.pop("email_error_code", None)
     document.pop("email_sent_at", None)
     email_sent = _deliver_invitation_email(school_id, document, raw_token)
     return {"invitation": _invitation_snapshot(document), "email_sent": email_sent}
