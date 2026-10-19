@@ -285,10 +285,13 @@ def list_invitations():
 @staff_bp.post("/invitations/<invitation_id>/resend")
 @require_authenticated
 def resend_invitation(invitation_id: str):
-    return ok(
-        services.resend_invitation(current_user_id(), invitation_id),
-        "Invitation email resent.",
+    result = services.resend_invitation(current_user_id(), invitation_id)
+    message = (
+        "Invitation email resent."
+        if result.get("email_sent")
+        else "Invitation remains pending, but email delivery failed. Review the delivery error and backend email settings."
     )
+    return ok(result, message)
 
 
 @staff_bp.delete("/invitations/<invitation_id>")
