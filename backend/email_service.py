@@ -42,9 +42,9 @@ def send_verification_email(recipient, code, purpose="activation"):
     """
     recipient = str(recipient or "").strip()
     code = str(code or "").strip()
-    if not re.fullmatch(r"[^@\\s]+@[^@\\s]+\\.[^@\\s]+", recipient):
+    if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", recipient):
         raise ValueError("A valid email address is required.")
-    if not re.fullmatch(r"\\d{6}", code):
+    if not re.fullmatch(r"\d{6}", code):
         raise ValueError("Verification code must be six digits.")
 
     api_key = os.getenv("RESEND_API_KEY", "").strip()
