@@ -51,6 +51,8 @@ def send_verification_email(recipient, code, purpose="activation"):
     if not api_key:
         raise RuntimeError("RESEND_API_KEY is not configured.")
 
+    # Apply the currently configured deployment key at send time.
+    resend.api_key = api_key
     sender = os.getenv("EMAIL_FROM", "RevelaCode <noreply@revelacode.co.ke>").strip()
     if not sender:
         raise RuntimeError("EMAIL_FROM is not configured.")
