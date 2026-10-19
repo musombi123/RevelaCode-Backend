@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import random
 import threading
@@ -52,6 +53,8 @@ accounts_bp = Blueprint(
     "accounts",
     __name__,
 )
+
+logger = logging.getLogger(__name__)
 
 
 # =========================================================
@@ -319,6 +322,7 @@ def request_reset():
             purpose="password_reset",
         )
     except Exception:
+        logger.exception("Email provider delivery failed in password reset")
         if users_col is not None:
             users_col.update_one(
                 {"contact": contact},
