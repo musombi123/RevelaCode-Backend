@@ -13,6 +13,7 @@ from flask import Blueprint, request, jsonify
 from werkzeug.security import generate_password_hash
 
 from .db import users_col
+from backend.email_service import send_verification_email
 
 
 # =========================================================
@@ -314,9 +315,29 @@ def request_reset():
     # Keep this only for development.
     # Replace with your SMS/email delivery system
     # before production.
+    try:
+        send_verification_email(
+            recipient=contact,
+            code=code,
+            purpose="password_reset",
+        )
+    except Exception:
+        if users_col is not None:
+            users_col.update_one(
+                {"contact": contact},
+                {"$unset": {"password_reset": ""}},
+            )
+        else:
+            user.pop("password_reset", None)
+            save_user_to_file(user)
+        return jsonify(
+            success=False,
+            message="We could not send the password reset email. Please try again shortly.",
+        ), 502
+
     return jsonify(
         success=True,
-        debug_code=code,
+        message="Password reset code sent to your email address. It expires in 10 minutes.",
     ), 200
 
 
