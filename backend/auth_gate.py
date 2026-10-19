@@ -17,6 +17,7 @@ from datetime import datetime, timedelta, timezone
 
 from dotenv import load_dotenv
 from flask import Blueprint, jsonify, request
+from backend.email_service import send_verification_email
 from werkzeug.security import (
     check_password_hash,
     generate_password_hash,
@@ -864,7 +865,7 @@ def request_code():
             message="Email address required",
         ), 400
 
-    if not re.fullmatch(r"[^@\\s]+@[^@\\s]+\\.[^@\\s]+", contact):
+    if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", contact):
         return jsonify(
             success=False,
             message="Enter a valid email address to receive your activation code.",
