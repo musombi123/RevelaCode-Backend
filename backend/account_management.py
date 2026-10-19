@@ -312,9 +312,6 @@ def request_reset():
             user
         )
 
-    # Keep this only for development.
-    # Replace with your SMS/email delivery system
-    # before production.
     try:
         send_verification_email(
             recipient=contact,
