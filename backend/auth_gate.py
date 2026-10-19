@@ -6,6 +6,7 @@ import hmac
 import json
 import os
 import random
+import re
 import threading
 
 import jwt
@@ -855,12 +856,19 @@ def request_code():
         "contact"
     )
 
-    if not contact:
+    contact = str(contact or "").strip()
 
+    if not contact:
         return jsonify(
             success=False,
-            message="Contact required",
+            message="Email address required",
         ), 400
+
+    if not re.fullmatch(r"[^@\\s]+@[^@\\s]+\\.[^@\\s]+", contact):
+        return jsonify(
+            success=False,
+            message="Enter a valid email address to receive your activation code.",
+        ), 422
 
     user = (
         users_col.find_one(
@@ -919,13 +927,32 @@ def request_code():
         user
     )
 
+    try:
+        send_verification_email(
+            recipient=contact,
+            code=code,
+            purpose="activation",
+        )
+    except Exception:
+        # Do not leave a usable code behind when delivery failed.
+        if MONGO_AVAILABLE:
+            users_col.update_one(
+                {"contact": contact},
+                {"$unset": {"verification": ""}},
+            )
+            user = users_col.find_one({"contact": contact})
+        else:
+            user.pop("verification", None)
+        if user:
+            save_user_to_file(user)
+        return jsonify(
+            success=False,
+            message="We could not send the activation email. Please try again shortly.",
+        ), 502
+
     return jsonify(
         success=True,
-
-        # Keep this for your current development
-        # verification flow. Remove it before exposing
-        # this endpoint publicly.
-        debug_code=code,
+        message="Activation code sent to your email address. It expires in 10 minutes.",
     ), 200
 
 
