@@ -47,8 +47,8 @@ app = Flask(__name__)
 DEFAULT_FRONTEND_ORIGINS = {
     "https://revelacode.co.ke",
     "https://www.revelacode.co.ke",
-    "https://revelacode-frontend.onrender.com",
-    "https://www.revelacode-frontend.onrender.com",
+    #"https://revelacode-frontend.onrender.com",
+    #"https://www.revelacode-frontend.onrender.com",
     "http://localhost:5173",
     "http://127.0.0.1:5173",
     "http://localhost:4173",
