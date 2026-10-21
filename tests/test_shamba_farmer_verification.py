@@ -21,6 +21,8 @@ def valid_farmer_payload(**overrides):
         "primary_crops": ["maize", "beans"],
         "livestock": ["poultry"],
         "irrigation_available": False,
+        "declaration": True,
+        "privacy_consent": True,
     }
     payload.update(overrides)
     return payload
@@ -127,3 +129,51 @@ def test_create_farm_works_only_for_approved_farmer(monkeypatch):
     assert farm["farmer_profile_id"] == farmer_id
     assert farm["legal_verification_status"] == "not_submitted"
     assert len(collection.documents) == 1
+
+
+def test_farmer_draft_schema_allows_partial_data_without_consent_submission():
+    payload = schemas.farmer_payload({
+        "intent": "draft",
+        "farmer_name": "Amina",
+        "preferred_contact_method": "whatsapp",
+    })
+    assert payload["intent"] == "draft"
+    assert payload["farmer_name"] == "Amina"
+    assert payload["phone"] == ""
+    assert payload["declaration"] is False
+
+
+def test_farmer_submission_requires_declaration_and_privacy_consent():
+    data = valid_farmer_payload()
+    data["declaration"] = False
+    with pytest.raises(ValueError, match="Confirm that the profile information is accurate"):
+        schemas.farmer_payload(data)
+
+    data = valid_farmer_payload()
+    data["privacy_consent"] = False
+    with pytest.raises(ValueError, match="Consent to use these details"):
+        schemas.farmer_payload(data)
+
+
+def test_gps_coordinates_require_consent_and_valid_pair():
+    data = valid_farmer_payload(latitude=-4.05, longitude=39.67, gps_consent=False)
+    with pytest.raises(ValueError, match="GPS consent"):
+        schemas.farmer_payload(data)
+
+    data = valid_farmer_payload(latitude=91, longitude=39.67, gps_consent=True)
+    with pytest.raises(ValueError, match="latitude must be at least -90 and at most 90"):
+        schemas.farmer_payload(data)
+
+
+def test_verified_is_accepted_as_additive_review_decision_alias():
+    payload = schemas.farmer_review_payload({"decision": "verified"})
+    assert payload["decision"] == "approved"
+
+
+def test_farmer_document_draft_does_not_start_in_review():
+    document = models.farmer_document("user-123", {
+        **valid_farmer_payload(),
+        "intent": "draft",
+    })
+    assert document["verification_status"] == "draft"
+    assert document["verification_submitted_at"] is None
