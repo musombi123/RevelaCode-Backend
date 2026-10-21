@@ -260,3 +260,39 @@ def test_identical_pending_profile_submission_is_idempotent(monkeypatch):
     assert saved["submitted_at"] == now.isoformat()
 
 
+
+
+def test_farmer_submission_does_not_require_farming_type_or_experience():
+    payload = schemas.farmer_payload({
+        "intent": "submit",
+        "farmer_name": "Amina Wanjiku",
+        "phone": "+254700000001",
+        "county": "Mombasa",
+        "town": "Likoni",
+        "declaration": True,
+        "privacy_consent": True,
+    })
+
+    assert payload["farming_type"] == ""
+    assert payload["experience_years"] is None
+
+
+def test_farmer_document_preserves_unknown_farming_type_and_experience():
+    payload = schemas.farmer_payload({
+        "intent": "submit",
+        "farmer_name": "Amina Wanjiku",
+        "phone": "+254700000001",
+        "county": "Mombasa",
+        "town": "Likoni",
+        "declaration": True,
+        "privacy_consent": True,
+    })
+
+    document = models.farmer_document("user-123", payload)
+
+    assert document["farming_type"] == ""
+    assert document["experience_years"] is None
+    assert document["verification_status"] == "pending"
+    assert document["profile_completed"] is True
+
+
