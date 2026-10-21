@@ -199,6 +199,22 @@ def create_listing(
 
     resolved_data = dict(data)
     if str(resolved_data.get("hub", "community")).strip().lower() == "shamba":
+        # Seller status and individual farm-rights review are separate gates.
+        farmer = collection("jumuiya_farmers").find_one({
+            "$or": [
+                {"owner_user_id": str(user_id)},
+                {"user_id": str(user_id)},
+            ],
+            "verification_status": {"$in": ["approved", "verified"]},
+            "status": {"$ne": "deleted"},
+        })
+        if not farmer:
+            raise APIError(
+                "Shamba listings require an administrator-verified farmer profile.",
+                403,
+                "farmer_verification_required",
+            )
+
         requested_farm_id = str(resolved_data.get("farm_id") or "").strip()
         farm_query = {
             "owner_user_id": str(user_id),
