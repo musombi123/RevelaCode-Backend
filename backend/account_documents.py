@@ -215,8 +215,19 @@ def _profile(user: dict) -> dict:
 def _canonical_signature(claims: dict) -> str:
     if not JWT_SECRET:
         raise RuntimeError("JWT_SECRET is not configured")
+    # Domain-separate certificate signatures from login JWT signatures.
+    configured_key = os.getenv("REVELACODE_CERTIFICATE_SIGNING_KEY", "").strip()
+    signing_key = (
+        configured_key.encode("utf-8")
+        if configured_key
+        else hmac.new(
+            JWT_SECRET.encode("utf-8"),
+            b"revelacode-account-certificate-v1",
+            hashlib.sha256,
+        ).digest()
+    )
     payload = json.dumps(claims, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
-    return hmac.new(JWT_SECRET.encode("utf-8"), payload, hashlib.sha256).hexdigest()
+    return hmac.new(signing_key, payload, hashlib.sha256).hexdigest()
 
 
 def _pdf(title: str, subtitle: str, rows: list[tuple[str, str]], footer: str) -> bytes:
