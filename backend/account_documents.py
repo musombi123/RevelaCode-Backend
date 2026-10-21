@@ -89,8 +89,15 @@ def _authenticated_user():
         return None, (jsonify(success=False, error={"code": "account_lookup_unavailable", "message": "Account data is temporarily unavailable."}), 503)
     if not user:
         return None, (jsonify(success=False, error={"code": "user_not_found", "message": "The account for this session no longer exists."}), 404)
-    actual_id = str(user.get("_id") or user.get("id") or user.get("user_id") or "")
-    if actual_id != user_id:
+    # Tokens may identify the same account by Mongo ObjectId, legacy "id",
+    # or "user_id". Validate against every trusted identifier on the matched
+    # record instead of assuming that Mongo's _id is always the JWT subject.
+    account_ids = {
+        str(value).strip()
+        for value in (user.get("_id"), user.get("id"), user.get("user_id"))
+        if value is not None and str(value).strip()
+    }
+    if user_id not in account_ids:
         return None, (jsonify(success=False, error={"code": "user_identity_mismatch", "message": "The session identity does not match the account record."}), 403)
     return user, None
 
