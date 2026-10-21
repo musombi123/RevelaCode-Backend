@@ -96,7 +96,8 @@ def test_create_farm_blocks_missing_or_unapproved_farmer(monkeypatch):
     assert error.value.code == "farmer_profile_verification_required"
 
 
-def test_create_farm_works_only_for_approved_farmer(monkeypatch):
+@pytest.mark.parametrize("review_status", ["approved", "verified"])
+def test_create_farm_works_only_for_approved_farmer(monkeypatch, review_status):
     farmer_id = str(ObjectId())
     farm_id = ObjectId()
 
@@ -119,7 +120,7 @@ def test_create_farm_works_only_for_approved_farmer(monkeypatch):
     collection = FakeCollection()
     monkeypatch.setattr(services, "get_farmer", lambda user_id: {
         "id": farmer_id,
-        "verification_status": "approved",
+        "verification_status": review_status,
     })
     monkeypatch.setattr(services, "_collection", lambda name: collection)
     monkeypatch.setattr(services, "log_action", lambda *args, **kwargs: None)
