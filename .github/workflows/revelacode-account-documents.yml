@@ -1,0 +1,54 @@
+name: RevelaCode account documents backend
+
+on:
+  push:
+    branches:
+      - feat/usect-foundry-fastapi-native
+  pull_request:
+    branches:
+      - feat/usect-foundry-fastapi-native
+
+jobs:
+  backend-validation:
+    runs-on: ubuntu-latest
+    env:
+      JWT_SECRET: test-only-jwt-secret-for-ci
+      MONGO_URI: mongodb://127.0.0.1:27017/revelacode_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install targeted backend dependencies
+        run: python -m pip install Flask flask-cors PyJWT pymongo python-dotenv reportlab
+      - name: Compile authentication and account document modules
+        run: python -m py_compile main.py backend/auth_gate.py backend/account_documents.py
+      - name: Verify account-document route contracts
+        run: |
+          python - <<'PY'
+          import ast
+          from pathlib import Path
+
+          path = Path("backend/account_documents.py")
+          source = path.read_text(encoding="utf-8")
+          tree = ast.parse(source, filename=str(path))
+          routes = set()
+          for node in ast.walk(tree):
+              if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                  continue
+              for decorator in node.decorator_list:
+                  if isinstance(decorator, ast.Call) and isinstance(decorator.func, ast.Attribute):
+                      if decorator.func.attr == "route" and decorator.args and isinstance(decorator.args[0], ast.Constant):
+                          routes.add((decorator.args[0].value, node.name))
+          expected = {
+              ("/api/accounts/profile/download", "download_account_profile"),
+              ("/api/accounts/certificates", "issue_account_certificate"),
+              ("/api/accounts/certificates/<certificate_id>/download", "download_account_certificate"),
+              ("/api/accounts/certificates/<certificate_id>/revoke", "revoke_account_certificate"),
+              ("/api/verify/certificate/<certificate_id>", "verify_account_certificate"),
+          }
+          missing = expected - routes
+          assert not missing, f"Missing account-document routes: {sorted(missing)}"
+          print(f"Verified {len(expected)} account-document route contracts.")
+          PY
