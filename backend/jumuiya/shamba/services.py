@@ -341,7 +341,7 @@ def create_or_update_farmer(user_id: str, payload: dict) -> dict:
             {"verification_status": "pending", "submitted_at": existing.get("verification_submitted_at")},
         )
 
-    required = ("farmer_name", "phone", "county", "town", "farming_type")
+    required = ("farmer_name", "phone", "county", "town")
     profile_completed = all(str(payload.get(key, "")).strip() for key in required)
     if intent == "submit" and not profile_completed:
         raise APIError(
