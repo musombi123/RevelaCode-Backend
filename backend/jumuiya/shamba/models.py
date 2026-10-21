@@ -121,7 +121,7 @@ def farmer_document(user_id, data):
         "location_source": payload.get("location_source", "manual"),
         "location_precision": payload.get("location_precision", "unspecified"),
         "gps_consent": _bool(payload.get("gps_consent")),
-        "farm_size": _float(payload.get("farm_size")),
+        "farm_size": payload.get("farm_size"),
         "farm_size_unit": payload.get("farm_size_unit", "acres"),
         "primary_crops": _list(payload.get("primary_crops")),
         "livestock": _list(payload.get("livestock")),
