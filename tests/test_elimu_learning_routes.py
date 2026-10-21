@@ -7,11 +7,23 @@ import types
 import pytest
 from flask import Flask, g, jsonify
 
-# These route tests use a deterministic in-memory fake database. Prevent the
+# These route tests use deterministic in-memory databases. Prevent the
 # production database module from pinging a real MongoDB instance at import
-# time; the fixture patches routes.get_db with FakeDB for every test.
+# time. This minimal object is only for module initialization; each test
+# replaces route/database collection references with its own FakeDB fixture.
+class _ImportOnlyCollection:
+    def __init__(self, name):
+        self.name = name
+
+
+class _ImportOnlyDatabase:
+    def get_collection(self, name):
+        return _ImportOnlyCollection(name)
+
+
 _test_db_module = types.ModuleType("backend.db")
-_test_db_module.get_db = lambda: None
+_test_db_module.db = _ImportOnlyDatabase()
+_test_db_module.get_db = lambda: _test_db_module.db
 sys.modules["backend.db"] = _test_db_module
 
 from backend.jumuiya.core.errors import APIError
