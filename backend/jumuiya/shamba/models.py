@@ -91,182 +91,50 @@ def _list(value, default=None):
 # ============================================================
 
 def farmer_document(user_id, data):
-    """
-    Create the canonical Shamba farmer profile.
-
-    A farmer is more than an authenticated user. This document
-    contains the agricultural profile required by Shamba and
-    RevelaAI to understand the farmer's operating environment.
-    """
-
+    """Create the canonical Shamba farmer profile with server-owned review state."""
     now = now_utc()
+    payload = dict(data or {})
+    required = ("farmer_name", "phone", "county", "town", "farming_type")
+    profile_completed = all(str(payload.get(key, "")).strip() for key in required)
 
     return {
-        # ----------------------------------------------------
-        # IDENTITY
-        # ----------------------------------------------------
+        "owner_user_id": str(user_id),
+        # Keep the legacy alias while owner_user_id is the canonical key.
         "user_id": str(user_id),
-
-        "farmer_name": data["farmer_name"],
-
-        "phone": data.get(
-            "phone",
-            "",
-        ),
-
-        # ----------------------------------------------------
-        # FARM PROFILE
-        # ----------------------------------------------------
-        "farm_name": data.get(
-            "farm_name",
-            "",
-        ),
-
-        "farm_count": _int(
-            data.get("farm_count"),
-            1,
-        ),
-
-        "farming_type": data.get(
-            "farming_type",
-            "mixed",
-        ),
-
-        "experience_years": _int(
-            data.get("experience_years"),
-            0,
-        ),
-
-        # ----------------------------------------------------
-        # LOCATION
-        # ----------------------------------------------------
-        "county": data.get(
-            "county",
-            "",
-        ),
-
-        "town": data.get(
-            "town",
-            "",
-        ),
-
-        "location": data.get(
-            "location",
-            "",
-        ),
-
-        # Optional precise farm coordinates.
-        #
-        # These should only be supplied when the farmer has
-        # explicitly granted location permission or entered
-        # the coordinates manually.
-        "latitude": data.get(
-            "latitude"
-        ),
-
-        "longitude": data.get(
-            "longitude"
-        ),
-
-        "location_accuracy": data.get(
-            "location_accuracy"
-        ),
-
-        "location_source": data.get(
-            "location_source",
-            "manual",
-        ),
-
-        # ----------------------------------------------------
-        # FARM SIZE
-        # ----------------------------------------------------
-        "farm_size": _float(
-            data.get("farm_size")
-        ),
-
-        "farm_size_unit": data.get(
-            "farm_size_unit",
-            "acres",
-        ),
-
-        # ----------------------------------------------------
-        # AGRICULTURAL PROFILE
-        # ----------------------------------------------------
-        "primary_crops": _list(
-            data.get("primary_crops")
-        ),
-
-        "livestock": _list(
-            data.get("livestock")
-        ),
-
-        "soil_type": data.get(
-            "soil_type",
-            "",
-        ),
-
-        "water_source": data.get(
-            "water_source",
-            "",
-        ),
-
-        "irrigation_available": _bool(
-            data.get("irrigation_available")
-        ),
-
-        # ----------------------------------------------------
-        # FARM OBJECTIVES
-        # ----------------------------------------------------
-        "primary_goal": data.get(
-            "primary_goal",
-            "food_and_income",
-        ),
-
-        # Possible values:
-        #
-        # food_and_income
-        # commercial
-        # subsistence
-        # livestock
-        # export
-        # agribusiness
-
-        "target_market": data.get(
-            "target_market",
-            "",
-        ),
-
-        "description": data.get(
-            "description",
-            "",
-        ),
-
-        # ----------------------------------------------------
-        # SHAMBA INTELLIGENCE STATE
-        # ----------------------------------------------------
-        "profile_completed": bool(
-            data.get(
-                "profile_completed",
-                False,
-            )
-        ),
-
+        "farmer_name": payload.get("farmer_name", ""),
+        "phone": payload.get("phone", ""),
+        "farm_name": payload.get("farm_name", ""),
+        "farm_count": _int(payload.get("farm_count"), 1),
+        "farming_type": payload.get("farming_type", "mixed"),
+        "experience_years": _int(payload.get("experience_years"), 0),
+        "county": payload.get("county", ""),
+        "town": payload.get("town", ""),
+        "location": payload.get("location", ""),
+        "latitude": payload.get("latitude"),
+        "longitude": payload.get("longitude"),
+        "location_accuracy": payload.get("location_accuracy"),
+        "location_source": payload.get("location_source", "manual"),
+        "farm_size": _float(payload.get("farm_size")),
+        "farm_size_unit": payload.get("farm_size_unit", "acres"),
+        "primary_crops": _list(payload.get("primary_crops")),
+        "livestock": _list(payload.get("livestock")),
+        "soil_type": payload.get("soil_type", ""),
+        "water_source": payload.get("water_source", ""),
+        "irrigation_available": _bool(payload.get("irrigation_available")),
+        "primary_goal": payload.get("primary_goal", "food_and_income"),
+        "target_market": payload.get("target_market", ""),
+        "description": payload.get("description", ""),
+        "profile_completed": profile_completed,
+        "verification_status": "pending",
+        "verification_submitted_at": now,
+        "verification_review_notes": "",
+        "verification_reviewer_user_id": None,
+        "verification_reviewed_at": None,
         "last_ai_analysis": None,
-
         "last_weather_sync": None,
-
         "last_market_sync": None,
-
-        # ----------------------------------------------------
-        # STATUS
-        # ----------------------------------------------------
         "status": "active",
-
-        # ----------------------------------------------------
-        # AUDIT
-        # ----------------------------------------------------
         "created_at": now,
-
         "updated_at": now,
     }
 
@@ -276,195 +144,44 @@ def farmer_document(user_id, data):
 # ============================================================
 
 def farm_document(user_id, data):
-    """
-    Create a Shamba farm.
-
-    The farm is the central agricultural operating unit.
-    Crops, activities, harvests, intelligence and future
-    marketplace operations can all reference this farm.
-    """
-
+    """Create a Shamba farm; farm-rights verification remains a separate review."""
     now = now_utc()
-
+    payload = dict(data or {})
     return {
-        # ----------------------------------------------------
-        # OWNERSHIP
-        # ----------------------------------------------------
         "owner_user_id": str(user_id),
-
-        # ----------------------------------------------------
-        # FARM IDENTITY
-        # ----------------------------------------------------
-        "name": data["name"],
-
-        "farm_code": data.get(
-            "farm_code",
-            "",
-        ),
-
-        # ----------------------------------------------------
-        # LOCATION
-        # ----------------------------------------------------
-        "county": data.get(
-            "county",
-            "",
-        ),
-
-        "town": data.get(
-            "town",
-            "",
-        ),
-
-        "location": data.get(
-            "location",
-            "",
-        ),
-
-        # GPS intelligence.
-        #
-        # latitude / longitude:
-        #   Farm coordinates.
-        #
-        # location_accuracy:
-        #   Estimated GPS accuracy in metres.
-        #
-        # location_source:
-        #   gps / manual / map / imported
-        "latitude": data.get(
-            "latitude"
-        ),
-
-        "longitude": data.get(
-            "longitude"
-        ),
-
-        "location_accuracy": data.get(
-            "location_accuracy"
-        ),
-
-        "location_source": data.get(
-            "location_source",
-            "manual",
-        ),
-
-        # ----------------------------------------------------
-        # LAND
-        # ----------------------------------------------------
-        "size": _float(
-            data.get("size")
-        ),
-
-        "size_unit": data.get(
-            "size_unit",
-            "acres",
-        ),
-
-        # ----------------------------------------------------
-        # SOIL
-        # ----------------------------------------------------
-        "soil_type": data.get(
-            "soil_type",
-            "",
-        ),
-
-        "soil_ph": data.get(
-            "soil_ph"
-        ),
-
-        "soil_fertility": data.get(
-            "soil_fertility",
-            "",
-        ),
-
-        # ----------------------------------------------------
-        # WATER
-        # ----------------------------------------------------
-        "irrigation": _bool(
-            data.get("irrigation")
-        ),
-
-        "water_source": data.get(
-            "water_source",
-            "",
-        ),
-
-        "water_reliability": data.get(
-            "water_reliability",
-            "",
-        ),
-
-        # ----------------------------------------------------
-        # FARMING SYSTEM
-        # ----------------------------------------------------
-        "farming_type": data.get(
-            "farming_type",
-            "mixed",
-        ),
-
-        "production_system": data.get(
-            "production_system",
-            "conventional",
-        ),
-
-        # ----------------------------------------------------
-        # PRODUCTIVITY
-        # ----------------------------------------------------
-        "productivity_score": data.get(
-            "productivity_score"
-        ),
-
-        "health_score": data.get(
-            "health_score"
-        ),
-
-        # ----------------------------------------------------
-        # CLIMATE / SEASON
-        # ----------------------------------------------------
-        "climate_zone": data.get(
-            "climate_zone",
-            "",
-        ),
-
-        "current_season": data.get(
-            "current_season",
-            "",
-        ),
-
-        # ----------------------------------------------------
-        # RISK
-        # ----------------------------------------------------
-        "risk_level": data.get(
-            "risk_level",
-            "unknown",
-        ),
-
-        # ----------------------------------------------------
-        # INTELLIGENCE SYNC
-        # ----------------------------------------------------
+        "name": payload["name"],
+        "farm_code": payload.get("farm_code", ""),
+        "county": payload.get("county", ""),
+        "town": payload.get("town", ""),
+        "location": payload.get("location", ""),
+        "latitude": payload.get("latitude"),
+        "longitude": payload.get("longitude"),
+        "location_accuracy": payload.get("location_accuracy"),
+        "location_source": payload.get("location_source", "manual"),
+        "size": _float(payload.get("size")),
+        "size_unit": payload.get("size_unit", "acres"),
+        "soil_type": payload.get("soil_type", ""),
+        "soil_ph": payload.get("soil_ph"),
+        "soil_fertility": payload.get("soil_fertility", ""),
+        "irrigation": _bool(payload.get("irrigation")),
+        "water_source": payload.get("water_source", ""),
+        "water_reliability": payload.get("water_reliability", ""),
+        "farming_type": payload.get("farming_type", "mixed"),
+        "production_system": payload.get("production_system", "conventional"),
+        "productivity_score": payload.get("productivity_score"),
+        "health_score": payload.get("health_score"),
+        "climate_zone": payload.get("climate_zone", ""),
+        "current_season": payload.get("current_season", ""),
+        "risk_level": payload.get("risk_level", "unknown"),
         "last_weather_sync": None,
-
         "last_market_sync": None,
-
         "last_ai_analysis": None,
-
-        # ----------------------------------------------------
-        # DESCRIPTION
-        # ----------------------------------------------------
-        "description": data.get(
-            "description",
-            "",
-        ),
-
-        # ----------------------------------------------------
-        # STATUS
-        # ----------------------------------------------------
+        "description": payload.get("description", ""),
+        # A new farm must separately complete the existing rights-review flow.
+        "legal_verification_status": "not_submitted",
+        "publication_status": "pending_verification",
         "status": "active",
-
-        # ----------------------------------------------------
-        # AUDIT
-        # ----------------------------------------------------
         "created_at": now,
-
         "updated_at": now,
     }
 
