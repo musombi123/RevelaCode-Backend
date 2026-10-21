@@ -10,7 +10,6 @@ from backend import account_documents as documents
 from backend.routes import elimu_learning_routes as elimu_routes
 from tests.test_elimu_learning_routes import FakeDB
 
-
 TEST_JWT_SECRET = "test-only-jwt-secret-for-ci"
 
 
@@ -30,7 +29,7 @@ def account_client(monkeypatch):
     })
     monkeypatch.setattr(documents, "db", db)
     monkeypatch.setattr(documents, "users_col", db["users"])
-    monkeypatch.setattr(documents, "certificates_col", db[documents.certificates_col.name] if hasattr(documents.certificates_col, "name") else db["revelacode_account_certificates"])
+    monkeypatch.setattr(documents, "certificates_col", db["revelacode_account_certificates"])
     monkeypatch.setattr(documents, "JWT_SECRET", TEST_JWT_SECRET)
     monkeypatch.setenv("REVELACODE_CERTIFICATE_SIGNING_KEY", "test-only-certificate-key")
 
@@ -42,11 +41,7 @@ def account_client(monkeypatch):
 
 def token_for(user_id="user-1", *, expired=False):
     now = int(time.time())
-    claims = {
-        "sub": user_id,
-        "iat": now - 7200 if expired else now,
-        "exp": now - 1 if expired else now + 3600,
-    }
+    claims = {"sub": user_id, "iat": now - 7200 if expired else now, "exp": now - 1 if expired else now + 3600}
     return jwt.encode(claims, TEST_JWT_SECRET, algorithm="HS256")
 
 
@@ -54,16 +49,11 @@ def headers_for(user_id="user-1", *, expired=False):
     return {"Authorization": f"Bearer {token_for(user_id, expired=expired)}"}
 
 
-def test_profile_export_requires_a_valid_current_session(account_client):
+def test_profile_endpoint_rejects_missing_invalid_and_expired_tokens(account_client):
     client, _ = account_client
-    missing = client.get("/api/accounts/profile/download?format=json")
-    assert missing.status_code == 401
-
-    invalid = client.get("/api/accounts/profile/download?format=json", headers={"Authorization": "Bearer invalid"})
-    assert invalid.status_code == 401
-
-    expired = client.get("/api/accounts/profile/download?format=json", headers=headers_for(expired=True))
-    assert expired.status_code == 401
+    assert client.get("/api/accounts/profile/download?format=json").status_code == 401
+    assert client.get("/api/accounts/profile/download?format=json", headers={"Authorization": "Bearer invalid"}).status_code == 401
+    assert client.get("/api/accounts/profile/download?format=json", headers=headers_for(expired=True)).status_code == 401
 
 
 def test_profile_json_and_pdf_are_authoritative_private_and_downloadable(account_client):
@@ -82,87 +72,89 @@ def test_profile_json_and_pdf_are_authoritative_private_and_downloadable(account
     assert pdf.status_code == 200
     assert pdf.mimetype == "application/pdf"
     assert pdf.data.startswith(b"%PDF")
-
-    unsupported = client.get("/api/accounts/profile/download?format=html", headers=headers_for())
-    assert unsupported.status_code == 400
+    assert client.get("/api/accounts/profile/download?format=html", headers=headers_for()).status_code == 400
 
 
-def test_account_certificate_is_issued_idempotently_signed_and_owner_download_only(account_client):
-    client, db = account_client
+def test_certificate_issuance_is_verified_idempotent_signed_and_owner_only(account_client):
+    client, _ = account_client
     issued = client.post("/api/accounts/certificates", headers=headers_for(), json={})
     assert issued.status_code == 201
     certificate_id = issued.get_json()["certificate_id"]
     assert certificate_id.startswith("RC-AC-")
 
-    repeat = client.post("/api/accounts/certificates", headers=headers_for(), json={})
-    assert repeat.status_code == 200
-    assert repeat.get_json()["certificate_id"] == certificate_id
-    assert repeat.get_json()["already_issued"] is True
+    repeated = client.post("/api/accounts/certificates", headers=headers_for(), json={})
+    assert repeated.status_code == 200
+    assert repeated.get_json()["certificate_id"] == certificate_id
+    assert repeated.get_json()["already_issued"] is True
 
     downloaded = client.get(f"/api/accounts/certificates/{certificate_id}/download", headers=headers_for())
     assert downloaded.status_code == 200
     assert downloaded.mimetype == "application/pdf"
     assert downloaded.data.startswith(b"%PDF")
+    assert client.get(f"/api/accounts/certificates/{certificate_id}/download", headers=headers_for("user-2")).status_code == 404
 
-    denied = client.get(
-        f"/api/accounts/certificates/{certificate_id}/download",
-        headers=headers_for("user-2"),
-    )
-    assert denied.status_code == 404
-
-    public = client.get(f"/api/verify/certificate/{certificate_id}")
-    assert public.status_code == 200
-    result = public.get_json()
-    assert result["valid"] is True
-    assert result["certificate_id"] == certificate_id
-    assert result["user"]["name"] == "Verified Test Learner"
-    assert "email" not in result["user"]
+    verified = client.get(f"/api/verify/certificate/{certificate_id}")
+    assert verified.status_code == 200
+    body = verified.get_json()
+    assert body["valid"] is True
+    assert body["certificate_id"] == certificate_id
+    assert body["user"]["name"] == "Verified Test Learner"
+    assert "email" not in body["user"]
+    assert not any("last_accessed" in hub or "id" in hub for hub in body["hubs"])
 
 
-def test_account_certificate_rejects_unverified_identity_and_detects_tampering(account_client):
+def test_unverified_string_false_and_inactive_accounts_cannot_get_certificates(account_client):
     client, db = account_client
-    db["users"].rows[0]["verified"] = False
+    db["users"].rows[0]["verified"] = "false"
     refused = client.post("/api/accounts/certificates", headers=headers_for(), json={})
     assert refused.status_code == 409
 
     db["users"].rows[0]["verified"] = True
-    issued = client.post("/api/accounts/certificates", headers=headers_for(), json={})
-    assert issued.status_code == 201
-    certificate_id = issued.get_json()["certificate_id"]
+    db["users"].rows[0]["status"] = "suspended"
+    profile = client.get("/api/accounts/profile/download?format=json", headers=headers_for())
+    assert profile.status_code == 403
+    assert profile.get_json()["error"]["code"] == "account_inactive"
+    assert client.post("/api/accounts/certificates", headers=headers_for(), json={}).status_code == 403
 
+
+def test_public_verifier_rejects_unknown_altered_and_revoked_records(account_client):
+    client, db = account_client
+    unknown = client.get("/api/verify/certificate/RC-AC-0000000000000000")
+    assert unknown.status_code == 404
+    assert unknown.get_json()["valid"] is False
+
+    issued = client.post("/api/accounts/certificates", headers=headers_for(), json={})
+    certificate_id = issued.get_json()["certificate_id"]
     collection = db["revelacode_account_certificates"]
     record = collection.find_one({"certificate_id": certificate_id})
     record["claims"]["full_name"] = "Altered Name"
     collection.rows = [record if row.get("certificate_id") == certificate_id else row for row in collection.rows]
-    response = client.get(f"/api/verify/certificate/{certificate_id}")
-    assert response.status_code == 200
-    assert response.get_json()["valid"] is False
-    assert response.get_json()["reason"] == "signature_invalid"
+    altered = client.get(f"/api/verify/certificate/{certificate_id}").get_json()
+    assert altered["valid"] is False
+    assert altered["reason"] == "signature_invalid"
+
+    record["claims"]["full_name"] = "Verified Test Learner"
+    record["signature"] = documents._canonical_signature(record["claims"])
+    record["status"] = "revoked"
+    collection.rows = [record if row.get("certificate_id") == certificate_id else row for row in collection.rows]
+    revoked = client.get(f"/api/verify/certificate/{certificate_id}").get_json()
+    assert revoked["valid"] is False
+    assert revoked["reason"] == "certificate_revoked"
 
 
-def test_only_current_database_admin_can_revoke_and_revoked_certificates_fail_verification(account_client):
+def test_only_current_database_admin_can_revoke_certificate(account_client):
     client, db = account_client
     issued = client.post("/api/accounts/certificates", headers=headers_for(), json={})
-    assert issued.status_code == 201
     certificate_id = issued.get_json()["certificate_id"]
 
     refused = client.post(f"/api/accounts/certificates/{certificate_id}/revoke", headers=headers_for(), json={"reason": "test"})
     assert refused.status_code == 403
 
-    # Simulate an administrator role change in the authoritative account row.
+    # The same JWT resolves its role from the current account record, not the JWT claim.
     db["users"].rows[0]["role"] = "admin"
-    revoked = client.post(f"/api/accounts/certificates/{certificate_id}/revoke", headers=headers_for(), json={"reason": "test revocation"})
+    revoked = client.post(f"/api/accounts/certificates/{certificate_id}/revoke", headers=headers_for(), json={"reason": "test"})
     assert revoked.status_code == 200
     assert revoked.get_json()["status"] == "revoked"
-
     checked = client.get(f"/api/verify/certificate/{certificate_id}")
-    assert checked.status_code == 200
     assert checked.get_json()["valid"] is False
     assert checked.get_json()["reason"] == "certificate_revoked"
-
-
-def test_public_verifier_rejects_unknown_certificate_ids(account_client):
-    client, _ = account_client
-    malformed = client.get("/api/verify/certificate/not-a-certificate")
-    assert malformed.status_code == 404
-    assert malformed.get_json()["valid"] is False

@@ -1,0 +1,103 @@
+name: RevelaCode account documents backend
+
+on:
+  push:
+    branches:
+      - feat/usect-foundry-fastapi-native
+  pull_request:
+    branches:
+      - feat/usect-foundry-fastapi-native
+
+jobs:
+  backend-validation:
+    runs-on: ubuntu-latest
+    env:
+      JWT_SECRET: test-only-jwt-secret-for-ci
+      MONGO_URI: mongodb://127.0.0.1:27017/revelacode_test
+      REVELACODE_CERTIFICATE_SIGNING_KEY: test-only-certificate-key
+    services:
+      mongodb:
+        image: mongo:7
+        ports:
+          - 27017:27017
+        options: >-
+          --health-cmd "mongosh --quiet --eval 'quit(0)'"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install targeted backend test dependencies
+        run: python -m pip install Flask flask-cors PyJWT pymongo python-dotenv reportlab pytest
+      - name: Compile authentication, account document, and Elimu modules
+        run: python -m py_compile main.py backend/auth_gate.py backend/account_documents.py backend/routes/elimu_learning_routes.py
+      - name: Verify account document and Elimu route registration contracts
+        run: |
+          python - <<'PY'
+          import ast
+          from pathlib import Path
+
+          def decorated_routes(path, accepted_decorators):
+              tree = ast.parse(Path(path).read_text(encoding="utf-8"), filename=path)
+              routes = set()
+              for node in ast.walk(tree):
+                  if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                      continue
+                  for decorator in node.decorator_list:
+                      if not isinstance(decorator, ast.Call) or not isinstance(decorator.func, ast.Attribute):
+                          continue
+                      name = decorator.func.attr
+                      if name not in accepted_decorators or not decorator.args or not isinstance(decorator.args[0], ast.Constant):
+                          continue
+                      route = decorator.args[0].value
+                      if name == "route":
+                          methods = {"GET"}
+                          for keyword in decorator.keywords:
+                              if keyword.arg == "methods" and isinstance(keyword.value, (ast.List, ast.Tuple)):
+                                  methods = {elt.value for elt in keyword.value.elts if isinstance(elt, ast.Constant)}
+                      else:
+                          methods = {name.upper()}
+                      routes.update((method, route, node.name) for method in methods)
+              return routes
+
+          account_routes = decorated_routes("backend/account_documents.py", {"route"})
+          expected_account = {
+              ("GET", "/api/accounts/profile/download", "download_account_profile"),
+              ("POST", "/api/accounts/certificates", "issue_account_certificate"),
+              ("GET", "/api/accounts/certificates/<certificate_id>/download", "download_account_certificate"),
+              ("POST", "/api/accounts/certificates/<certificate_id>/revoke", "revoke_account_certificate"),
+              ("GET", "/api/verify/certificate/<certificate_id>", "verify_account_certificate"),
+          }
+          missing_account = expected_account - account_routes
+          assert not missing_account, f"Missing account-document routes: {sorted(missing_account)}"
+
+          elimu_routes = decorated_routes("backend/routes/elimu_learning_routes.py", {"get", "post"})
+          expected_elimu = {
+              ("GET", "/elimu/hubs", "list_hubs"),
+              ("GET", "/elimu/hubs/<hub_id>", "get_hub"),
+              ("GET", "/elimu/progress", "get_progress"),
+              ("POST", "/elimu/progress", "save_progress"),
+              ("POST", "/certificates/generate", "generate_certificate"),
+              ("GET", "/certificates/<certificate_id>", "download_certificate"),
+              ("GET", "/certificates/verify/<certificate_id>", "verify_certificate"),
+          }
+          missing_elimu = expected_elimu - elimu_routes
+          assert not missing_elimu, f"Missing Elimu routes: {sorted(missing_elimu)}"
+
+          main_tree = ast.parse(Path("main.py").read_text(encoding="utf-8-sig"), filename="main.py")
+          registrations = set()
+          for node in ast.walk(main_tree):
+              if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "register_bp" and len(node.args) >= 2:
+                  if all(isinstance(value, ast.Constant) and isinstance(value.value, str) for value in node.args[:2]):
+                      registrations.add((node.args[0].value, node.args[1].value))
+          assert ("backend.routes.elimu_learning_routes", "elimu_learning_bp") in registrations, "Elimu learning blueprint is not registered by main.py"
+          print(f"Verified {len(expected_account)} account-document routes, {len(expected_elimu)} Elimu routes, and Elimu blueprint registration.")
+          PY
+      - name: Run Elimu progress and certificate tests
+        run: python -m pytest -q tests/test_elimu_learning_routes.py tests/test_account_documents.py
+
+
