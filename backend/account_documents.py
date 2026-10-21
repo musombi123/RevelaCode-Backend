@@ -249,7 +249,7 @@ def _pdf(title: str, subtitle: str, rows: list[tuple[str, str]], footer: str) ->
 
 def _profile_pdf(profile: dict) -> bytes:
     hub_text = "\n".join(
-        f"{hub['name']} — {hub.get('status', 'recorded')}" + (f" — role: {hub['role']}" if hub.get("role") else "")
+        f"{hub['name']} — {hub.get('status', 'recorded')}" + (f" — institution: {hub['institution']}" if hub.get("institution") else "") + (f" — role: {hub['role']}" if hub.get("role") else "") + (f" — progress: {hub['progress_percent']}%" if hub.get("progress_percent") is not None else "")
         for hub in profile.get("hubs", [])
     ) or "No hub usage/affiliation data is recorded on this account."
     rows = [
@@ -274,7 +274,7 @@ def _certificate_pdf(record: dict) -> bytes:
     claims = record["claims"]
     hubs = claims.get("hubs") or []
     hub_text = "\n".join(
-        f"{hub.get('name', 'Hub')} — {hub.get('status', 'recorded')}" + (f" — role: {hub['role']}" if hub.get("role") else "")
+        f"{hub.get('name', 'Hub')} — {hub.get('status', 'recorded')}" + (f" — institution: {hub['institution']}" if hub.get("institution") else "") + (f" — role: {hub['role']}" if hub.get("role") else "") + (f" — progress: {hub['progress_percent']}%" if hub.get("progress_percent") is not None else "")
         for hub in hubs
     ) or "No hub usage/affiliation data was recorded at issuance."
     rows = [
