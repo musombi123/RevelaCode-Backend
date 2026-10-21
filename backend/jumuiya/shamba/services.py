@@ -228,6 +228,69 @@ def _status_value(document: dict, default: str = "") -> str:
 # FARMER PROFILE
 # ============================================================
 
+def _farmer_profile_response(document: dict | None) -> dict | None:
+    """Expose additive, safe status aliases while retaining existing wire fields."""
+    if not document:
+        return None
+    result = serialise(document)
+    if not isinstance(result, dict):
+        return result
+    status = str(result.get("verification_status") or "not_submitted").strip().lower()
+    result.setdefault("verification_review_notes", "")
+    result.setdefault("profile_completed", False)
+    result["submitted_at"] = result.get("verification_submitted_at")
+    result["reviewed_at"] = result.get("verification_reviewed_at")
+    result["review_notes"] = result.get("verification_review_notes") or ""
+    result["verified_at"] = (
+        result.get("verification_reviewed_at") if status in {"approved", "verified"} else None
+    )
+    result["review_required"] = status in {"pending", "more_info"}
+    result["verification_status_display"] = "verified" if status in {"approved", "verified"} else status
+    return result
+
+
+def _farmer_payload_matches(existing: dict, payload: dict) -> bool:
+    """Compare normalized submitted fields for idempotent pending submissions."""
+    list_fields = {"primary_crops", "livestock"}
+    boolean_fields = {"irrigation_available", "gps_consent", "declaration", "privacy_consent"}
+    optional_text_fields = {
+        "preferred_contact_method", "sub_county", "village", "location",
+        "farm_name", "soil_type", "water_source", "primary_goal", "target_market",
+        "description", "farm_size_unit", "location_source", "location_precision",
+    }
+    optional_numeric_fields = {"farm_size", "latitude", "longitude", "location_accuracy"}
+    for key, value in payload.items():
+        if key == "intent":
+            continue
+        old = existing.get(key)
+        if key in list_fields:
+            old = old or []
+        elif key in boolean_fields:
+            old = _normalise_bool(old)
+        elif key in optional_text_fields:
+            old = "" if old is None else str(old)
+            value = "" if value is None else str(value)
+        elif key in optional_numeric_fields:
+            if value is None and old in (None, "", 0, 0.0):
+                continue
+            if old is None and value in ("", None):
+                continue
+            try:
+                old = float(old) if old not in (None, "") else None
+                value = float(value) if value not in (None, "") else None
+            except (TypeError, ValueError):
+                return False
+        if old != value:
+            return False
+    return True
+
+
+def _normalise_bool(value) -> bool:
+    if isinstance(value, bool):
+        return value
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 def get_farmer(user_id: str) -> dict | None:
     """Return the single farmer profile, including a safe default for legacy records."""
     document = _collection(FARMERS).find_one({
@@ -245,12 +308,17 @@ def get_farmer(user_id: str) -> dict | None:
     document.setdefault("verification_status", "not_submitted")
     document.setdefault("verification_review_notes", "")
     document.setdefault("profile_completed", False)
-    return serialise(document)
+    return _farmer_profile_response(document)
 
 
 def create_or_update_farmer(user_id: str, payload: dict) -> dict:
-    """Create/resubmit a farmer profile. Approval state is controlled only by admins."""
+    """Save a Shamba draft or submit one review case; only admin review grants approval."""
     now = now_utc()
+    payload = dict(payload or {})
+    intent = str(payload.pop("intent", "submit") or "submit").strip().lower()
+    if intent not in {"draft", "submit"}:
+        raise APIError("Profile intent must be draft or submit.", 422, "invalid_farmer_profile_intent")
+
     query = {
         "$or": [
             {"owner_user_id": str(user_id)},
@@ -259,20 +327,55 @@ def create_or_update_farmer(user_id: str, payload: dict) -> dict:
         "status": {"$ne": "deleted"},
     }
     existing = _collection(FARMERS).find_one(query, sort=[("updated_at", -1), ("created_at", -1)])
+    current_status = str((existing or {}).get("verification_status") or "not_submitted").strip().lower()
+
+    # A pending case cannot be edited into or out of the queue. A repeated identical
+    # submit is idempotent; changed fields require the reviewer to finish first.
+    if existing and current_status == "pending":
+        if intent == "submit" and _farmer_payload_matches(existing, payload):
+            return _farmer_profile_response(existing)
+        raise APIError(
+            "This farmer profile is already awaiting review. Wait for the review decision before editing or submitting it again.",
+            409,
+            "farmer_profile_under_review",
+            {"verification_status": "pending", "submitted_at": existing.get("verification_submitted_at")},
+        )
+
     required = ("farmer_name", "phone", "county", "town", "farming_type")
     profile_completed = all(str(payload.get(key, "")).strip() for key in required)
+    if intent == "submit" and not profile_completed:
+        raise APIError(
+            "Complete your farmer name, contact phone, county, town and farming type before submission.",
+            422,
+            "farmer_profile_incomplete",
+        )
 
+    history = list((existing or {}).get("verification_history") or [])
+    if existing and current_status in {"approved", "verified", "rejected", "more_info"}:
+        reviewed_at = existing.get("verification_reviewed_at")
+        if reviewed_at or existing.get("verification_review_notes"):
+            history.append({
+                "status": current_status,
+                "reviewer_user_id": str(existing.get("verification_reviewer_user_id") or ""),
+                "reviewed_at": reviewed_at,
+                "review_notes": str(existing.get("verification_review_notes") or "")[:800],
+                "superseded_at": now,
+            })
+            history = history[-20:]
+
+    status = "draft" if intent == "draft" else "pending"
     update = {
         **payload,
         "owner_user_id": str(user_id),
         "user_id": str(user_id),
         "profile_completed": profile_completed,
-        # Every profile submission / material edit requires a fresh manual review.
-        "verification_status": "pending",
-        "verification_submitted_at": now,
+        "verification_status": status,
+        "verification_submitted_at": now if intent == "submit" else None,
         "verification_review_notes": "",
         "verification_reviewer_user_id": None,
         "verification_reviewed_at": None,
+        "verification_history": history,
+        "review_required": intent == "submit",
         "updated_at": now,
         "status": "active",
     }
@@ -283,17 +386,26 @@ def create_or_update_farmer(user_id: str, payload: dict) -> dict:
             {"$set": update},
             return_document=ReturnDocument.AFTER,
         )
-        log_action(user_id, "shamba_farmer_resubmitted", {"farmer_id": clean_id(existing["_id"])})
-        return serialise(result)
+        log_action(
+            user_id,
+            "shamba_farmer_draft_saved" if intent == "draft" else "shamba_farmer_submitted_for_review",
+            {"farmer_id": clean_id(existing["_id"]), "verification_status": status},
+        )
+        return _farmer_profile_response(result)
 
-    document = farmer_document(user_id, payload)
+    document = farmer_document(user_id, {**payload, "intent": intent})
     document["profile_completed"] = profile_completed
+    document["review_required"] = intent == "submit"
     document["created_at"] = now
     document["updated_at"] = now
     result = _collection(FARMERS).insert_one(document)
     created_profile = _collection(FARMERS).find_one({"_id": result.inserted_id})
-    log_action(user_id, "shamba_farmer_created_for_review", {"farmer_id": clean_id(result.inserted_id)})
-    return serialise(created_profile)
+    log_action(
+        user_id,
+        "shamba_farmer_draft_created" if intent == "draft" else "shamba_farmer_created_for_review",
+        {"farmer_id": clean_id(result.inserted_id), "verification_status": status},
+    )
+    return _farmer_profile_response(created_profile)
 
 
 def list_farmer_verification_queue() -> list[dict]:
@@ -313,6 +425,10 @@ def review_farmer_profile(farmer_id: str, reviewer_user_id: str, payload: dict) 
     farmer = _collection(FARMERS).find_one({"_id": target_id, "status": {"$ne": "deleted"}})
     if not farmer:
         raise APIError("Farmer profile not found.", 404, "farmer_profile_not_found")
+
+    owner_id = str(farmer.get("owner_user_id") or farmer.get("user_id") or "")
+    if owner_id and owner_id == str(reviewer_user_id):
+        raise APIError("You cannot review your own farmer profile.", 403, "farmer_self_review_forbidden")
 
     decision = payload["decision"]
     if decision == "approved":
@@ -338,7 +454,7 @@ def review_farmer_profile(farmer_id: str, reviewer_user_id: str, payload: dict) 
         "owner_user_id": str(farmer.get("owner_user_id") or farmer.get("user_id") or ""),
         "decision": decision,
     })
-    return serialise(updated)
+    return _farmer_profile_response(updated)
 
 
 # ============================================================
