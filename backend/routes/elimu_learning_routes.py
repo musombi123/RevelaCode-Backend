@@ -132,6 +132,27 @@ def get_hub(hub_id):
     return jsonify(success=True, hub=hub)
 
 
+@elimu_learning_bp.get("/elimu/progress")
+@require_authenticated
+def get_progress():
+    """Return the authenticated user's persisted progress for the requested hub."""
+    requested_hub = _text(request.args.get("hub_id")) or HUB_ID
+    if requested_hub != HUB_ID:
+        return jsonify(success=False, error={"code": "hub_not_found", "message": "Learning hub not found."}), 404
+
+    user_id = _text(current_user_id())
+    hub = _hub(user_id)
+    if not hub:
+        return jsonify(success=False, error={"code": "learning_content_unavailable", "message": "No published education materials are available yet."}), 404
+
+    return jsonify(
+        success=True,
+        hub_id=HUB_ID,
+        progress=hub["progress"],
+        hub=hub,
+    ), 200
+
+
 @elimu_learning_bp.post("/elimu/progress")
 @require_authenticated
 def save_progress():
