@@ -318,11 +318,11 @@ def issue_account_certificate():
 
 
 @account_documents_bp.route("/api/accounts/certificates/<certificate_id>/download", methods=["GET"])
-def download_account_certificate():
+def download_account_certificate(certificate_id: str):
     user, error = _authenticated_user()
     if error:
         return error
-    certificate_id = str(request.view_args.get("certificate_id") or "").strip()
+    certificate_id = str(certificate_id or "").strip()
     record = certificates_col.find_one({"certificate_id": certificate_id, "user_id": str(user.get("_id") or user.get("id") or user.get("user_id") or ""), "status": "active"})
     if not record:
         return jsonify(success=False, error={"code": "certificate_not_found", "message": "No active certificate was found for this account."}), 404
@@ -335,8 +335,8 @@ def download_account_certificate():
 
 
 @account_documents_bp.route("/api/verify/certificate/<certificate_id>", methods=["GET"])
-def verify_account_certificate():
-    certificate_id = str(request.view_args.get("certificate_id") or "").strip()
+def verify_account_certificate(certificate_id: str):
+    certificate_id = str(certificate_id or "").strip()
     if not re.fullmatch(r"RC-AC-[A-F0-9]{16}", certificate_id):
         return jsonify(valid=False, certificate_id=certificate_id, reason="certificate_not_found"), 404
     record = certificates_col.find_one({"certificate_id": certificate_id})
