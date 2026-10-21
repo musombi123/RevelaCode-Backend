@@ -152,7 +152,7 @@ def allocate_invoice_payment(invoice_id):
                   "verification_status": "owner_recorded_unverified"}
     result = collection("jumuiya_biashara_payment_allocations").insert_one(allocation)
     new_allocated = allocated + amount
-    status = "paid_recorded" if new_allocated == total else "partially_allocated"
+    status = "fully_allocated_unverified" if new_allocated == total else "partially_allocated_unverified"
     collection("jumuiya_biashara_invoices").update_one(
         {"_id": invoice["_id"], "owner_user_id": uid, "business_id": _business_id(business)},
         {"$set": {"allocated_amount": str(new_allocated), "status": status, "updated_at": now}})
@@ -221,7 +221,9 @@ def update_automation_rule(rule_id):
     if "enabled" in data:
         if not isinstance(data["enabled"], bool):
             raise APIError("enabled must be a boolean.", 422, "validation_error")
-        update["enabled"] = data["enabled"]
+        if data["enabled"]:
+            raise APIError("Automation execution is unavailable until a supported worker is configured.", 409, "automation_worker_unavailable")
+        update["enabled"] = False
     if not update:
         raise APIError("Provide name or enabled.", 422, "validation_error")
     update["updated_at"] = _now()
