@@ -1,0 +1,362 @@
+"""Authenticated account-profile exports and verifiable RevelaCode account certificates.
+
+These are account identity/participation documents, not academic qualifications,
+professional licences, or external accreditation. Source data comes from the
+RevelaCode users collection and explicitly recorded hub-affiliation fields.
+"""
+from __future__ import annotations
+
+import hashlib
+import hmac
+import io
+import json
+import os
+import re
+import secrets
+from datetime import datetime, timezone
+from typing import Any
+
+import jwt
+from bson import ObjectId
+from flask import Blueprint, jsonify, request, send_file
+from reportlab.lib import colors
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.units import mm
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+
+from backend.db import db
+
+account_documents_bp = Blueprint("account_documents_bp", __name__)
+users_col = db.get_collection("users")
+certificates_col = db.get_collection("revelacode_account_certificates")
+JWT_SECRET = os.getenv("JWT_SECRET", "").strip()
+JWT_ALGORITHM = "HS256"
+
+
+def _now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _iso(value: Any) -> str | None:
+    if value is None or value == "":
+        return None
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc).isoformat()
+    return str(value)
+
+
+def _json_safe(value: Any) -> Any:
+    if isinstance(value, ObjectId):
+        return str(value)
+    if isinstance(value, datetime):
+        return _iso(value)
+    if isinstance(value, dict):
+        return {str(k): _json_safe(v) for k, v in value.items() if not str(k).startswith("_")}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(v) for v in value]
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    return str(value)
+
+
+def _authenticated_user():
+    if not JWT_SECRET:
+        return None, (jsonify(success=False, error={"code": "auth_not_configured", "message": "Authentication is not configured."}), 503)
+    authorization = (request.headers.get("Authorization") or "").strip()
+    if not authorization.lower().startswith("bearer "):
+        return None, (jsonify(success=False, error={"code": "authentication_required", "message": "Sign in to access account documents."}), 401)
+    token = authorization[7:].strip()
+    if not token:
+        return None, (jsonify(success=False, error={"code": "authentication_required", "message": "A Bearer token is required."}), 401)
+    try:
+        claims = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM], options={"require": ["sub", "iat", "exp"]})
+    except jwt.ExpiredSignatureError:
+        return None, (jsonify(success=False, error={"code": "token_expired", "message": "Your session has expired. Sign in again."}), 401)
+    except jwt.InvalidTokenError:
+        return None, (jsonify(success=False, error={"code": "invalid_token", "message": "The authentication token is invalid."}), 401)
+    user_id = str(claims.get("sub") or claims.get("user_id") or "").strip()
+    if not user_id or len(user_id) > 128:
+        return None, (jsonify(success=False, error={"code": "invalid_user_identity", "message": "The token does not identify an account."}), 401)
+    query = {"$or": [{"id": user_id}, {"user_id": user_id}]}
+    if ObjectId.is_valid(user_id):
+        query = {"$or": [{"_id": ObjectId(user_id)}, {"id": user_id}, {"user_id": user_id}]}
+    try:
+        user = users_col.find_one(query)
+    except Exception:
+        return None, (jsonify(success=False, error={"code": "account_lookup_unavailable", "message": "Account data is temporarily unavailable."}), 503)
+    if not user:
+        return None, (jsonify(success=False, error={"code": "user_not_found", "message": "The account for this session no longer exists."}), 404)
+    actual_id = str(user.get("_id") or user.get("id") or user.get("user_id") or "")
+    if actual_id != user_id:
+        return None, (jsonify(success=False, error={"code": "user_identity_mismatch", "message": "The session identity does not match the account record."}), 403)
+    return user, None
+
+
+def _roles(user: dict) -> list[str]:
+    raw = user.get("roles")
+    values = raw if isinstance(raw, list) else ([raw] if isinstance(raw, str) and raw.strip() else [])
+    if user.get("role"):
+        values.append(user["role"])
+    normalized = []
+    seen = set()
+    for item in values:
+        role = str(item or "").strip()
+        if role and role.casefold() not in seen:
+            seen.add(role.casefold())
+            normalized.append(role)
+    return normalized or ["user"]
+
+
+def _hubs(user: dict) -> list[dict]:
+    """Only report hub affiliations/usage explicitly stored on the user record."""
+    raw = user.get("hub_usage")
+    if not isinstance(raw, list):
+        raw = user.get("current_hubs")
+    if not isinstance(raw, list):
+        raw = user.get("hubs")
+    if not isinstance(raw, list):
+        raw = user.get("enabled_hubs")
+    if not isinstance(raw, list):
+        raw = []
+    result = []
+    seen = set()
+    for item in raw:
+        if isinstance(item, str):
+            entry = {"name": item.strip(), "status": "recorded"}
+        elif isinstance(item, dict):
+            name = str(item.get("name") or item.get("hub_name") or item.get("title") or "").strip()
+            if not name:
+                continue
+            entry = {
+                "id": str(item.get("id") or item.get("hub_id") or ""),
+                "name": name,
+                "status": str(item.get("status") or item.get("membership_status") or "recorded"),
+                "role": str(item.get("role") or item.get("hub_role") or ""),
+                "last_accessed": _iso(item.get("last_accessed") or item.get("lastAccessed")),
+            }
+            for key in ("progress_percent", "completed_lessons", "total_lessons", "time_spent_label"):
+                if item.get(key) is not None:
+                    entry[key] = item[key]
+        else:
+            continue
+        key = entry["name"].casefold()
+        if key not in seen:
+            seen.add(key)
+            result.append(entry)
+    return result
+
+
+def _profile(user: dict) -> dict:
+    roles = _roles(user)
+    hubs = _hubs(user)
+    contact = str(user.get("contact") or user.get("email") or "")
+    verified = bool(user.get("verified", user.get("is_verified", False)))
+    public_profile = {
+        "id": str(user.get("_id") or user.get("id") or user.get("user_id") or ""),
+        "full_name": str(user.get("full_name") or user.get("fullName") or user.get("name") or user.get("username") or ""),
+        "username": str(user.get("username") or ""),
+        "contact": contact,
+        "email": str(user.get("email") or (contact if "@" in contact else "")),
+        "phone": str(user.get("phone") or (contact if "@" not in contact else "")),
+        "verified": verified,
+        "account_status": str(user.get("status") or ("active" if verified else "unverified")),
+        "created_at": _iso(user.get("created_at") or user.get("joined_at")),
+        "roles": roles,
+        "role": roles[0] if roles else "user",
+        "hubs": hubs,
+        "hubs_count": len(hubs),
+        "certificates_count": certificates_col.count_documents({"user_id": str(user.get("_id") or user.get("id") or user.get("user_id") or "")}),
+        "document_issued_at": _now().isoformat(),
+        "issuer": "RevelaCode",
+        "document_scope": "Account identity and recorded platform participation",
+    }
+    # Never serialize credential or operational secrets into an export.
+    return public_profile
+
+
+def _canonical_signature(claims: dict) -> str:
+    if not JWT_SECRET:
+        raise RuntimeError("JWT_SECRET is not configured")
+    payload = json.dumps(claims, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    return hmac.new(JWT_SECRET.encode("utf-8"), payload, hashlib.sha256).hexdigest()
+
+
+def _pdf(title: str, subtitle: str, rows: list[tuple[str, str]], footer: str) -> bytes:
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=20*mm, leftMargin=20*mm, topMargin=22*mm, bottomMargin=20*mm, title=title, author="RevelaCode")
+    styles = getSampleStyleSheet()
+    styles.add(ParagraphStyle(name="RCBrand", parent=styles["Title"], fontName="Helvetica-Bold", fontSize=24, leading=29, textColor=colors.HexColor("#0A74DA"), spaceAfter=5))
+    styles.add(ParagraphStyle(name="RCSubtitle", parent=styles["Heading2"], fontSize=13, leading=18, textColor=colors.HexColor("#2E8B57"), spaceAfter=15))
+    styles.add(ParagraphStyle(name="RCBody", parent=styles["BodyText"], fontSize=9, leading=13, textColor=colors.HexColor("#263238")))
+    story = [Paragraph("RevelaCode", styles["RCBrand"]), Paragraph(title, styles["RCSubtitle"]), Paragraph(subtitle, styles["BodyText"]), Spacer(1, 7*mm)]
+    table_data = []
+    for label, value in rows:
+        safe_label = str(label).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        safe_value = str(value or "Not recorded").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\n", "<br/>")
+        table_data.append([Paragraph(f"<b>{safe_label}</b>", styles["RCBody"]), Paragraph(safe_value, styles["RCBody"])])
+    table = Table(table_data, colWidths=[47*mm, 115*mm], hAlign="LEFT")
+    table.setStyle(TableStyle([
+        ("BACKGROUND", (0,0), (0,-1), colors.HexColor("#EEF5FC")),
+        ("GRID", (0,0), (-1,-1), 0.4, colors.HexColor("#D6E0E8")),
+        ("VALIGN", (0,0), (-1,-1), "TOP"),
+        ("LEFTPADDING", (0,0), (-1,-1), 8),
+        ("RIGHTPADDING", (0,0), (-1,-1), 8),
+        ("TOPPADDING", (0,0), (-1,-1), 7),
+        ("BOTTOMPADDING", (0,0), (-1,-1), 7),
+    ]))
+    story.extend([table, Spacer(1, 8*mm), Paragraph(footer.replace("&", "&amp;"), styles["Italic"])])
+    doc.build(story)
+    return buffer.getvalue()
+
+
+def _profile_pdf(profile: dict) -> bytes:
+    hub_text = "\n".join(
+        f"{hub['name']} — {hub.get('status', 'recorded')}" + (f" — role: {hub['role']}" if hub.get("role") else "")
+        for hub in profile.get("hubs", [])
+    ) or "No hub usage/affiliation data is recorded on this account."
+    rows = [
+        ("Full name", profile.get("full_name")),
+        ("Account ID", profile.get("id")),
+        ("Username", profile.get("username")),
+        ("Email", profile.get("email")),
+        ("Phone", profile.get("phone")),
+        ("Account verified", "Yes" if profile.get("verified") else "No"),
+        ("Account status", profile.get("account_status")),
+        ("Account created", profile.get("created_at")),
+        ("Roles", ", ".join(profile.get("roles", []))),
+        ("Recorded hubs", hub_text),
+        ("Hub count", profile.get("hubs_count")),
+        ("Document reference", f"RC-PROFILE-{profile.get('id')}"),
+        ("Issued at (UTC)", profile.get("document_issued_at")),
+    ]
+    return _pdf("Account Profile", "Authenticated account record", rows, "This document summarizes account data available from RevelaCode at the issue time. It is not proof of academic qualification or external accreditation.")
+
+
+def _certificate_pdf(record: dict) -> bytes:
+    claims = record["claims"]
+    hubs = claims.get("hubs") or []
+    hub_text = "\n".join(
+        f"{hub.get('name', 'Hub')} — {hub.get('status', 'recorded')}" + (f" — role: {hub['role']}" if hub.get("role") else "")
+        for hub in hubs
+    ) or "No hub usage/affiliation data was recorded at issuance."
+    rows = [
+        ("Certificate number", record["certificate_id"]),
+        ("Issued to", claims.get("full_name")),
+        ("Account ID", claims.get("user_id")),
+        ("Verified account", "Yes" if claims.get("verified") else "No"),
+        ("Roles recorded", ", ".join(claims.get("roles") or [])),
+        ("Hub affiliations recorded", hub_text),
+        ("Issue date (UTC)", claims.get("issued_at")),
+        ("Verification URL", claims.get("verification_url")),
+        ("Issuer", "RevelaCode"),
+        ("Certificate scope", "Account identity and recorded platform participation only"),
+    ]
+    return _pdf("RevelaCode Account Certificate", "Certificate of account identity and recorded platform participation", rows, "This is an account identity/participation certificate, not an academic qualification, professional licence, competency award, or government accreditation. Public verification checks the issued record and its server-side signature.")
+
+
+@account_documents_bp.route("/api/accounts/profile/download", methods=["GET"])
+def download_account_profile():
+    user, error = _authenticated_user()
+    if error:
+        return error
+    profile = _profile(user)
+    output_format = (request.args.get("format") or "pdf").strip().lower()
+    if output_format == "json":
+        response = jsonify(success=True, profile=profile)
+        response.headers["Cache-Control"] = "no-store"
+        return response
+    if output_format != "pdf":
+        return jsonify(success=False, error={"code": "unsupported_format", "message": "Supported formats are pdf and json."}), 400
+    raw = _profile_pdf(profile)
+    response = send_file(io.BytesIO(raw), mimetype="application/pdf", as_attachment=True, download_name=f"revelacode-profile-{re.sub(r'[^A-Za-z0-9_-]+', '-', profile['id'])}.pdf", max_age=0)
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@account_documents_bp.route("/api/accounts/certificates", methods=["POST"])
+def issue_account_certificate():
+    user, error = _authenticated_user()
+    if error:
+        return error
+    profile = _profile(user)
+    user_id = profile["id"]
+    if not profile["verified"]:
+        return jsonify(success=False, error={"code": "account_not_verified", "message": "Verify your RevelaCode account before requesting an account certificate."}), 409
+    # Issue one active account certificate per user; repeated calls are idempotent.
+    existing = certificates_col.find_one({"user_id": user_id, "status": "active"})
+    if existing:
+        return jsonify(success=True, certificate_id=existing["certificate_id"], already_issued=True, verification_url=existing["claims"]["verification_url"], download_url=f"/api/accounts/certificates/{existing['certificate_id']}/download")
+    issued_at = _now().isoformat()
+    certificate_id = "RC-AC-" + secrets.token_hex(8).upper()
+    claims = {
+        "certificate_id": certificate_id,
+        "user_id": user_id,
+        "full_name": profile["full_name"],
+        "verified": profile["verified"],
+        "roles": profile["roles"],
+        "hubs": profile["hubs"],
+        "issued_at": issued_at,
+        "issuer": "RevelaCode",
+        "scope": "account_identity_and_recorded_platform_participation",
+    }
+    claims["verification_url"] = f"{request.url_root.rstrip('/')}/api/verify/certificate/{certificate_id}"
+    signature = _canonical_signature(claims)
+    record = {
+        "certificate_id": certificate_id,
+        "user_id": user_id,
+        "status": "active",
+        "claims": claims,
+        "signature": signature,
+        "signature_algorithm": "HMAC-SHA256",
+        "created_at": _now(),
+    }
+    certificates_col.insert_one(record)
+    return jsonify(success=True, certificate_id=certificate_id, already_issued=False, verification_url=claims["verification_url"], download_url=f"/api/accounts/certificates/{certificate_id}/download"), 201
+
+
+@account_documents_bp.route("/api/accounts/certificates/<certificate_id>/download", methods=["GET"])
+def download_account_certificate():
+    user, error = _authenticated_user()
+    if error:
+        return error
+    certificate_id = str(request.view_args.get("certificate_id") or "").strip()
+    record = certificates_col.find_one({"certificate_id": certificate_id, "user_id": str(user.get("_id") or user.get("id") or user.get("user_id") or ""), "status": "active"})
+    if not record:
+        return jsonify(success=False, error={"code": "certificate_not_found", "message": "No active certificate was found for this account."}), 404
+    if not hmac.compare_digest(str(record.get("signature") or ""), _canonical_signature(record.get("claims") or {})):
+        return jsonify(success=False, error={"code": "certificate_signature_invalid", "message": "The certificate record failed integrity verification."}), 409
+    raw = _certificate_pdf(record)
+    response = send_file(io.BytesIO(raw), mimetype="application/pdf", as_attachment=True, download_name=f"{certificate_id}.pdf", max_age=0)
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@account_documents_bp.route("/api/verify/certificate/<certificate_id>", methods=["GET"])
+def verify_account_certificate():
+    certificate_id = str(request.view_args.get("certificate_id") or "").strip()
+    if not re.fullmatch(r"RC-AC-[A-F0-9]{16}", certificate_id):
+        return jsonify(valid=False, certificate_id=certificate_id, reason="certificate_not_found"), 404
+    record = certificates_col.find_one({"certificate_id": certificate_id})
+    if not record:
+        return jsonify(valid=False, certificate_id=certificate_id, reason="certificate_not_found"), 404
+    if record.get("status") != "active":
+        return jsonify(valid=False, certificate_id=certificate_id, reason="certificate_revoked"), 200
+    claims = record.get("claims") or {}
+    expected = _canonical_signature(claims)
+    if not hmac.compare_digest(str(record.get("signature") or ""), expected):
+        return jsonify(valid=False, certificate_id=certificate_id, reason="signature_invalid"), 200
+    return jsonify(
+        valid=True,
+        certified_by="RevelaCode",
+        certificate_id=certificate_id,
+        user={"id": claims.get("user_id"), "name": claims.get("full_name"), "roles": claims.get("roles") or []},
+        hub={"name": "Recorded platform affiliations", "hubs": claims.get("hubs") or []},
+        roles=claims.get("roles") or [],
+        issued_at=claims.get("issued_at"),
+        verification_url=claims.get("verification_url"),
+        signature_algorithm="HMAC-SHA256",
+        certificate_scope="Account identity and recorded platform participation; not an academic or professional qualification.",
+    )
