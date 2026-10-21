@@ -350,18 +350,41 @@ def authenticated_user_me():
     if not user_id or len(user_id) > 128:
         return jsonify(success=False, code="invalid_user_identity"), 401
 
+    profile_projection = {
+        "_id": 1,
+        "id": 1,
+        "user_id": 1,
+        "full_name": 1,
+        "fullName": 1,
+        "name": 1,
+        "username": 1,
+        "contact": 1,
+        "email": 1,
+        "phone": 1,
+        "role": 1,
+        "roles": 1,
+        "verified": 1,
+        "is_verified": 1,
+        "status": 1,
+        "created_at": 1,
+        "joined_at": 1,
+        "hub_usage": 1,
+        "current_hubs": 1,
+        "hubs": 1,
+        "enabled_hubs": 1,
+    }
     user = None
     try:
         if MONGO_AVAILABLE and users_col is not None:
             if ObjectId.is_valid(user_id):
                 user = users_col.find_one(
                     {"_id": ObjectId(user_id)},
-                    {"_id": 1, "id": 1, "user_id": 1},
+                    profile_projection,
                 )
             if user is None:
                 user = users_col.find_one(
                     {"$or": [{"id": user_id}, {"user_id": user_id}]},
-                    {"_id": 1, "id": 1, "user_id": 1},
+                    profile_projection,
                 )
         else:
             for record in load_users_file().values():
@@ -383,11 +406,41 @@ def authenticated_user_me():
     if not actual_id or actual_id != user_id:
         return jsonify(success=False, code="user_identity_mismatch"), 403
 
+    raw_roles = user.get("roles")
+    if isinstance(raw_roles, str):
+        raw_roles = [raw_roles]
+    if not isinstance(raw_roles, list):
+        raw_roles = []
+    canonical_roles = list(dict.fromkeys(
+        [str(role).strip() for role in raw_roles if str(role).strip()]
+        + ([str(user.get("role")).strip()] if user.get("role") else [])
+    )) or ["user"]
+    canonical_role = str(user.get("role") or canonical_roles[0]).strip() or "user"
+    safe_user = {
+        "id": actual_id,
+        "user_id": actual_id,
+        "full_name": user.get("full_name") or user.get("fullName") or user.get("name") or user.get("username") or "",
+        "name": user.get("name") or user.get("full_name") or user.get("fullName") or user.get("username") or "",
+        "username": user.get("username") or "",
+        "contact": user.get("contact") or user.get("email") or user.get("phone") or "",
+        "email": user.get("email") or "",
+        "phone": user.get("phone") or "",
+        "role": canonical_role,
+        "roles": canonical_roles,
+        "verified": bool(user.get("verified", user.get("is_verified", False))),
+        "account_status": user.get("status") or ("active" if user.get("verified", user.get("is_verified", False)) else "unverified"),
+        "created_at": user.get("created_at") or user.get("joined_at"),
+        "hub_usage": user.get("hub_usage") or user.get("current_hubs") or user.get("hubs") or user.get("enabled_hubs") or [],
+    }
+
     return jsonify(
         success=True,
         authenticated=True,
         userId=actual_id,
         id=actual_id,
+        user=safe_user,
+        role=canonical_role,
+        roles=canonical_roles,
     ), 200
 
 
