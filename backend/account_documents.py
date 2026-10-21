@@ -111,7 +111,7 @@ def _roles(user: dict) -> list[str]:
 
 
 def _hubs(user: dict) -> list[dict]:
-    """Only report hub affiliations/usage explicitly stored on the user record."""
+    """Report explicit hub data and authoritative active Elimu school memberships."""
     raw = user.get("hub_usage")
     if not isinstance(raw, list):
         raw = user.get("current_hubs")
@@ -143,9 +143,44 @@ def _hubs(user: dict) -> list[dict]:
         else:
             continue
         key = entry["name"].casefold()
-        if key not in seen:
+        if key and key not in seen:
             seen.add(key)
             result.append(entry)
+
+    # Elimu school membership is stored separately from the core user record.
+    # Include only active/accepted memberships belonging to this authenticated ID.
+    user_id = str(user.get("_id") or user.get("id") or user.get("user_id") or "")
+    if user_id:
+        try:
+            members = db.get_collection("jumuiya_elimu_school_members")
+            for membership in members.find({
+                "user_id": user_id,
+                "status": {"$in": ["active", "accepted"]},
+            }):
+                school_id = str(membership.get("school_id") or membership.get("school_oid") or "")
+                school = None
+                if school_id:
+                    school_query = {"$or": [{"_id": school_id}, {"id": school_id}, {"school_id": school_id}]}
+                    if ObjectId.is_valid(school_id):
+                        school_query["$or"].insert(0, {"_id": ObjectId(school_id)})
+                    school = db.get_collection("jumuiya_schools").find_one(school_query, {"name": 1, "school_name": 1, "display_name": 1})
+                school_name = str((school or {}).get("name") or (school or {}).get("school_name") or (school or {}).get("display_name") or membership.get("school_name") or "School affiliation").strip()
+                key = f"elimu:{school_id}:{school_name}".casefold()
+                if key in seen:
+                    continue
+                seen.add(key)
+                result.append({
+                    "id": school_id,
+                    "name": "Elimu",
+                    "status": str(membership.get("status") or "active"),
+                    "role": str(membership.get("role") or membership.get("school_role") or ""),
+                    "institution": school_name,
+                    "joined_at": _iso(membership.get("created_at") or membership.get("joined_at")),
+                })
+        except Exception:
+            # Core profile export remains available if an optional hub registry
+            # is temporarily unavailable; it does not fabricate missing records.
+            pass
     return result
 
 
@@ -332,6 +367,25 @@ def download_account_certificate(certificate_id: str):
     response = send_file(io.BytesIO(raw), mimetype="application/pdf", as_attachment=True, download_name=f"{certificate_id}.pdf", max_age=0)
     response.headers["Cache-Control"] = "no-store"
     return response
+
+
+@account_documents_bp.route("/api/accounts/certificates/<certificate_id>/revoke", methods=["POST"])
+def revoke_account_certificate(certificate_id: str):
+    user, error = _authenticated_user()
+    if error:
+        return error
+    admin_roles = {"admin", "platform_admin", "super_admin", "revelacode_admin"}
+    if not admin_roles.intersection({role.casefold() for role in _roles(user)}):
+        return jsonify(success=False, error={"code": "admin_required", "message": "A RevelaCode platform administrator is required to revoke a certificate."}), 403
+    reason_payload = request.get_json(silent=True) or {}
+    reason = str(reason_payload.get("reason") or "Revoked by platform administrator").strip()[:500]
+    result = certificates_col.update_one(
+        {"certificate_id": str(certificate_id or "").strip(), "status": "active"},
+        {"$set": {"status": "revoked", "revoked_at": _now(), "revoked_by": str(user.get("_id") or user.get("id") or user.get("user_id") or ""), "revocation_reason": reason}},
+    )
+    if result.matched_count == 0:
+        return jsonify(success=False, error={"code": "active_certificate_not_found", "message": "No active certificate was found for revocation."}), 404
+    return jsonify(success=True, certificate_id=certificate_id, status="revoked"), 200
 
 
 @account_documents_bp.route("/api/verify/certificate/<certificate_id>", methods=["GET"])
