@@ -6,7 +6,7 @@ They deliberately do not claim external payment, automation, or sync completion.
 from __future__ import annotations
 
 import secrets
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from decimal import Decimal, InvalidOperation
 
 from flask import Blueprint, request
@@ -131,9 +131,8 @@ def create_invoice():
 
 @contracts_bp.post("/finance/invoices/<invoice_id>/allocations")
 @require_authenticated
-def allocate_invoice_payment():
+def allocate_invoice_payment(invoice_id):
     uid, business = _owner_business()
-    invoice_id = request.view_args["invoice_id"]
     data = _body()
     amount = Decimal(_decimal_amount(data.get("amount")))
     invoice = _owned("jumuiya_biashara_invoices", uid, _business_id(business), invoice_id)
@@ -165,9 +164,9 @@ def allocate_invoice_payment():
 
 @contracts_bp.get("/finance/invoices/<invoice_id>/allocations")
 @require_authenticated
-def list_invoice_allocations():
+def list_invoice_allocations(invoice_id):
     uid, business = _owner_business()
-    invoice = _owned("jumuiya_biashara_invoices", uid, _business_id(business), request.view_args["invoice_id"])
+    invoice = _owned("jumuiya_biashara_invoices", uid, _business_id(business), invoice_id)
     docs = collection("jumuiya_biashara_payment_allocations").find({
         "owner_user_id": uid, "business_id": _business_id(business), "invoice_id": str(invoice["_id"])
     }).sort("created_at", -1).limit(100)
@@ -210,9 +209,8 @@ def create_automation_rule():
 
 @contracts_bp.patch("/automations/rules/<rule_id>")
 @require_authenticated
-def update_automation_rule():
+def update_automation_rule(rule_id):
     uid, business = _owner_business()
-    rule_id = request.view_args["rule_id"]
     data = _body()
     update = {}
     if "name" in data:
@@ -298,7 +296,7 @@ def invite_team_member():
     now = _now()
     doc = {"owner_user_id": uid, "business_id": bid, "email": email, "role": role,
            "status": "pending", "invitation_token": secrets.token_urlsafe(32),
-           "created_at": now, "expires_at": now.replace(year=now.year + 1),
+           "created_at": now, "expires_at": now + timedelta(days=30),
            "delivery_status": "not_configured", "created_by_user_id": uid}
     result = invites.insert_one(doc)
     doc["_id"] = result.inserted_id
@@ -310,16 +308,16 @@ def invite_team_member():
 
 @contracts_bp.delete("/team/members/<member_id>")
 @require_authenticated
-def remove_team_member():
+def remove_team_member(member_id):
     uid, business = _owner_business()
     bid = _business_id(business)
     result = collection("jumuiya_biashara_memberships").delete_one({
-        "_id": clean_id(request.view_args["member_id"]), "business_id": bid, "owner_user_id": uid,
+        "_id": clean_id(member_id), "business_id": bid, "owner_user_id": uid,
         "role": {"$ne": "owner"}
     })
     if not result.deleted_count:
         raise APIError("Member not found or owner membership cannot be removed.", 404, "resource_not_found")
-    log_action(uid, "biashara.team.member_removed", "biashara_membership", request.view_args["member_id"])
+    log_action(uid, "biashara.team.member_removed", "biashara_membership", member_id)
     return ok({"removed": True})
 
 
