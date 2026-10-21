@@ -122,6 +122,18 @@ def listings(
     # Filter legacy/unreviewed Shamba listings even when the client requests
     # the all-hubs marketplace without passing ?hub=shamba.
     if normalized_hub in {"", "shamba"}:
+        verified_farmers = list(collection("jumuiya_farmers").find(
+            {
+                "verification_status": {"$in": ["approved", "verified"]},
+                "status": {"$ne": "deleted"},
+            },
+            {"owner_user_id": 1, "user_id": 1},
+        ))
+        verified_owner_ids = {
+            str(item.get("owner_user_id") or item.get("user_id") or "")
+            for item in verified_farmers
+            if item.get("owner_user_id") or item.get("user_id")
+        }
         reviewed_farms = list(collection("jumuiya_farms").find(
             {
                 "legal_verification_status": "verified",
@@ -132,6 +144,7 @@ def listings(
         reviewed_owner_by_id = {
             str(item.get("_id")): str(item.get("owner_user_id") or "")
             for item in reviewed_farms
+            if str(item.get("owner_user_id") or "") in verified_owner_ids
         }
         reviewed_ids = list(reviewed_owner_by_id.keys())
 
@@ -199,6 +212,22 @@ def create_listing(
 
     resolved_data = dict(data)
     if str(resolved_data.get("hub", "community")).strip().lower() == "shamba":
+        # Seller status and individual farm-rights review are separate gates.
+        farmer = collection("jumuiya_farmers").find_one({
+            "$or": [
+                {"owner_user_id": str(user_id)},
+                {"user_id": str(user_id)},
+            ],
+            "verification_status": {"$in": ["approved", "verified"]},
+            "status": {"$ne": "deleted"},
+        })
+        if not farmer:
+            raise APIError(
+                "Shamba listings require an administrator-verified farmer profile.",
+                403,
+                "farmer_verification_required",
+            )
+
         requested_farm_id = str(resolved_data.get("farm_id") or "").strip()
         farm_query = {
             "owner_user_id": str(user_id),

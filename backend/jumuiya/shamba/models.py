@@ -91,30 +91,37 @@ def _list(value, default=None):
 # ============================================================
 
 def farmer_document(user_id, data):
-    """Create the canonical Shamba farmer profile with server-owned review state."""
+    """Create a canonical Shamba farmer profile without trusting client review state."""
     now = now_utc()
     payload = dict(data or {})
-    required = ("farmer_name", "phone", "county", "town", "farming_type")
+    intent = str(payload.pop("intent", "submit") or "submit").strip().lower()
+    required = ("farmer_name", "phone", "county", "town")
     profile_completed = all(str(payload.get(key, "")).strip() for key in required)
+    submitted = intent == "submit"
 
-    return {
+    document = {
         "owner_user_id": str(user_id),
-        # Keep the legacy alias while owner_user_id is the canonical key.
+        # Retain the legacy alias; owner_user_id is canonical for new writes.
         "user_id": str(user_id),
         "farmer_name": payload.get("farmer_name", ""),
         "phone": payload.get("phone", ""),
+        "preferred_contact_method": payload.get("preferred_contact_method", "phone"),
         "farm_name": payload.get("farm_name", ""),
         "farm_count": _int(payload.get("farm_count"), 1),
-        "farming_type": payload.get("farming_type", "mixed"),
-        "experience_years": _int(payload.get("experience_years"), 0),
+        "farming_type": payload.get("farming_type", ""),
+        "experience_years": payload.get("experience_years"),
         "county": payload.get("county", ""),
+        "sub_county": payload.get("sub_county", ""),
         "town": payload.get("town", ""),
+        "village": payload.get("village", ""),
         "location": payload.get("location", ""),
         "latitude": payload.get("latitude"),
         "longitude": payload.get("longitude"),
         "location_accuracy": payload.get("location_accuracy"),
         "location_source": payload.get("location_source", "manual"),
-        "farm_size": _float(payload.get("farm_size")),
+        "location_precision": payload.get("location_precision", "unspecified"),
+        "gps_consent": _bool(payload.get("gps_consent")),
+        "farm_size": payload.get("farm_size"),
         "farm_size_unit": payload.get("farm_size_unit", "acres"),
         "primary_crops": _list(payload.get("primary_crops")),
         "livestock": _list(payload.get("livestock")),
@@ -124,12 +131,16 @@ def farmer_document(user_id, data):
         "primary_goal": payload.get("primary_goal", "food_and_income"),
         "target_market": payload.get("target_market", ""),
         "description": payload.get("description", ""),
+        "declaration": _bool(payload.get("declaration")),
+        "privacy_consent": _bool(payload.get("privacy_consent")),
         "profile_completed": profile_completed,
-        "verification_status": "pending",
-        "verification_submitted_at": now,
+        # The server owns review state; saving a draft grants no privileges.
+        "verification_status": "pending" if submitted else "draft",
+        "verification_submitted_at": now if submitted else None,
         "verification_review_notes": "",
         "verification_reviewer_user_id": None,
         "verification_reviewed_at": None,
+        "verification_history": [],
         "last_ai_analysis": None,
         "last_weather_sync": None,
         "last_market_sync": None,
@@ -137,6 +148,7 @@ def farmer_document(user_id, data):
         "created_at": now,
         "updated_at": now,
     }
+    return document
 
 
 # ============================================================

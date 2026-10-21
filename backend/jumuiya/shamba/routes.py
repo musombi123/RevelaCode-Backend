@@ -210,7 +210,12 @@ def get_farmer():
 def save_farmer():
     payload = validate(schemas.farmer_payload, body())
     profile = services.create_or_update_farmer(current_user_id(), payload)
-    return ok(profile, "Farmer profile submitted for administrator review.")
+    message = (
+        "Farmer profile draft saved."
+        if payload.get("intent") == "draft"
+        else "Farmer profile submitted for administrator review."
+    )
+    return ok(profile, message)
 
 
 @shamba_bp.get("/farmer/verification-queue")

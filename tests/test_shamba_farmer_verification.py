@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -21,6 +22,8 @@ def valid_farmer_payload(**overrides):
         "primary_crops": ["maize", "beans"],
         "livestock": ["poultry"],
         "irrigation_available": False,
+        "declaration": True,
+        "privacy_consent": True,
     }
     payload.update(overrides)
     return payload
@@ -93,7 +96,8 @@ def test_create_farm_blocks_missing_or_unapproved_farmer(monkeypatch):
     assert error.value.code == "farmer_profile_verification_required"
 
 
-def test_create_farm_works_only_for_approved_farmer(monkeypatch):
+@pytest.mark.parametrize("review_status", ["approved", "verified"])
+def test_create_farm_works_only_for_approved_farmer(monkeypatch, review_status):
     farmer_id = str(ObjectId())
     farm_id = ObjectId()
 
@@ -116,7 +120,7 @@ def test_create_farm_works_only_for_approved_farmer(monkeypatch):
     collection = FakeCollection()
     monkeypatch.setattr(services, "get_farmer", lambda user_id: {
         "id": farmer_id,
-        "verification_status": "approved",
+        "verification_status": review_status,
     })
     monkeypatch.setattr(services, "_collection", lambda name: collection)
     monkeypatch.setattr(services, "log_action", lambda *args, **kwargs: None)
@@ -127,3 +131,169 @@ def test_create_farm_works_only_for_approved_farmer(monkeypatch):
     assert farm["farmer_profile_id"] == farmer_id
     assert farm["legal_verification_status"] == "not_submitted"
     assert len(collection.documents) == 1
+
+
+def test_farmer_draft_schema_allows_partial_data_without_consent_submission():
+    payload = schemas.farmer_payload({
+        "intent": "draft",
+        "farmer_name": "Amina",
+        "preferred_contact_method": "whatsapp",
+    })
+    assert payload["intent"] == "draft"
+    assert payload["farmer_name"] == "Amina"
+    assert payload["phone"] == ""
+    assert payload["declaration"] is False
+
+
+def test_farmer_submission_requires_declaration_and_privacy_consent():
+    data = valid_farmer_payload()
+    data["declaration"] = False
+    with pytest.raises(ValueError, match="Confirm that the profile information is accurate"):
+        schemas.farmer_payload(data)
+
+    data = valid_farmer_payload()
+    data["privacy_consent"] = False
+    with pytest.raises(ValueError, match="Consent to use these details"):
+        schemas.farmer_payload(data)
+
+
+def test_gps_coordinates_require_consent_and_valid_pair():
+    data = valid_farmer_payload(latitude=-4.05, longitude=39.67, gps_consent=False)
+    with pytest.raises(ValueError, match="GPS consent"):
+        schemas.farmer_payload(data)
+
+    data = valid_farmer_payload(latitude=91, longitude=39.67, gps_consent=True)
+    with pytest.raises(ValueError, match="latitude must be at least -90 and at most 90"):
+        schemas.farmer_payload(data)
+
+
+def test_verified_is_accepted_as_additive_review_decision_alias():
+    payload = schemas.farmer_review_payload({"decision": "verified"})
+    assert payload["decision"] == "approved"
+
+
+def test_farmer_document_draft_does_not_start_in_review():
+    document = models.farmer_document("user-123", {
+        **valid_farmer_payload(),
+        "intent": "draft",
+    })
+    assert document["verification_status"] == "draft"
+    assert document["verification_submitted_at"] is None
+
+
+def test_draft_profile_is_persisted_without_creating_review_case(monkeypatch):
+    profile_id = ObjectId()
+
+    class FakeCollection:
+        def __init__(self):
+            self.documents = []
+
+        def find_one(self, query, **kwargs):
+            if "_id" in query:
+                return next((deepcopy(item) for item in self.documents if item.get("_id") == query["_id"]), None)
+            return None
+
+        def insert_one(self, document):
+            stored = deepcopy(document)
+            stored["_id"] = profile_id
+            self.documents.append(stored)
+            return SimpleNamespace(inserted_id=profile_id)
+
+        def find_one_and_update(self, *args, **kwargs):
+            raise AssertionError("saving a first draft must insert, not update")
+
+    collection = FakeCollection()
+    monkeypatch.setattr(services, "_collection", lambda name: collection)
+    monkeypatch.setattr(services, "log_action", lambda *args, **kwargs: None)
+    draft = schemas.farmer_payload({
+        "intent": "draft",
+        "farmer_name": "Amina",
+        "experience_years": 2,
+    })
+
+    saved = services.create_or_update_farmer("user-123", draft)
+
+    assert saved["verification_status"] == "draft"
+    assert saved["verification_submitted_at"] is None
+    assert saved["review_required"] is False
+    assert len(collection.documents) == 1
+
+
+def test_identical_pending_profile_submission_is_idempotent(monkeypatch):
+    profile_id = ObjectId()
+    now = datetime.now(timezone.utc)
+    payload = schemas.farmer_payload(valid_farmer_payload())
+    payload.pop("intent", None)
+    existing = {
+        **payload,
+        "_id": profile_id,
+        "owner_user_id": "user-123",
+        "user_id": "user-123",
+        "verification_status": "pending",
+        "verification_submitted_at": now,
+        "verification_review_notes": "",
+        "verification_reviewer_user_id": None,
+        "verification_reviewed_at": None,
+        "verification_history": [],
+        "profile_completed": True,
+        "status": "active",
+        "created_at": now,
+        "updated_at": now,
+    }
+
+    class FakeCollection:
+        def find_one(self, query, **kwargs):
+            return deepcopy(existing)
+
+        def find_one_and_update(self, *args, **kwargs):
+            raise AssertionError("duplicate pending submit must be idempotent")
+
+        def insert_one(self, *args, **kwargs):
+            raise AssertionError("duplicate pending submit must not create another profile")
+
+    monkeypatch.setattr(services, "_collection", lambda name: FakeCollection())
+    saved = services.create_or_update_farmer("user-123", {
+        **payload,
+        "intent": "submit",
+    })
+
+    assert saved["verification_status"] == "pending"
+    assert saved["submitted_at"] == now.isoformat()
+
+
+
+
+def test_farmer_submission_does_not_require_farming_type_or_experience():
+    payload = schemas.farmer_payload({
+        "intent": "submit",
+        "farmer_name": "Amina Wanjiku",
+        "phone": "+254700000001",
+        "county": "Mombasa",
+        "town": "Likoni",
+        "declaration": True,
+        "privacy_consent": True,
+    })
+
+    assert payload["farming_type"] == ""
+    assert payload["experience_years"] is None
+
+
+def test_farmer_document_preserves_unknown_farming_type_and_experience():
+    payload = schemas.farmer_payload({
+        "intent": "submit",
+        "farmer_name": "Amina Wanjiku",
+        "phone": "+254700000001",
+        "county": "Mombasa",
+        "town": "Likoni",
+        "declaration": True,
+        "privacy_consent": True,
+    })
+
+    document = models.farmer_document("user-123", payload)
+
+    assert document["farming_type"] == ""
+    assert document["experience_years"] is None
+    assert document["verification_status"] == "pending"
+    assert document["profile_completed"] is True
+
+
