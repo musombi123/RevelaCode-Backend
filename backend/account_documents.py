@@ -418,7 +418,7 @@ def verify_account_certificate(certificate_id: str):
         valid=True,
         certified_by="RevelaCode",
         certificate_id=certificate_id,
-        user={"id": claims.get("user_id"), "name": claims.get("full_name"), "roles": claims.get("roles") or []},
+        user={"name": claims.get("full_name"), "roles": claims.get("roles") or []},
         hub={"name": "Recorded platform affiliations", "hubs": claims.get("hubs") or []},
         roles=claims.get("roles") or [],
         issued_at=claims.get("issued_at"),
