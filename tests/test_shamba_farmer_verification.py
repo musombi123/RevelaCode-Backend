@@ -177,3 +177,85 @@ def test_farmer_document_draft_does_not_start_in_review():
     })
     assert document["verification_status"] == "draft"
     assert document["verification_submitted_at"] is None
+
+
+def test_draft_profile_is_persisted_without_creating_review_case(monkeypatch):
+    profile_id = ObjectId()
+
+    class FakeCollection:
+        def __init__(self):
+            self.documents = []
+
+        def find_one(self, query, **kwargs):
+            if "_id" in query:
+                return next((deepcopy(item) for item in self.documents if item.get("_id") == query["_id"]), None)
+            return None
+
+        def insert_one(self, document):
+            stored = deepcopy(document)
+            stored["_id"] = profile_id
+            self.documents.append(stored)
+            return SimpleNamespace(inserted_id=profile_id)
+
+        def find_one_and_update(self, *args, **kwargs):
+            raise AssertionError("saving a first draft must insert, not update")
+
+    collection = FakeCollection()
+    monkeypatch.setattr(services, "_collection", lambda name: collection)
+    monkeypatch.setattr(services, "log_action", lambda *args, **kwargs: None)
+    draft = schemas.farmer_payload({
+        "intent": "draft",
+        "farmer_name": "Amina",
+        "experience_years": 2,
+    })
+
+    saved = services.create_or_update_farmer("user-123", draft)
+
+    assert saved["verification_status"] == "draft"
+    assert saved["verification_submitted_at"] is None
+    assert saved["review_required"] is False
+    assert len(collection.documents) == 1
+
+
+def test_identical_pending_profile_submission_is_idempotent(monkeypatch):
+    profile_id = ObjectId()
+    now = datetime.now(timezone.utc)
+    payload = schemas.farmer_payload(valid_farmer_payload())
+    payload.pop("intent", None)
+    existing = {
+        **payload,
+        "_id": profile_id,
+        "owner_user_id": "user-123",
+        "user_id": "user-123",
+        "verification_status": "pending",
+        "verification_submitted_at": now,
+        "verification_review_notes": "",
+        "verification_reviewer_user_id": None,
+        "verification_reviewed_at": None,
+        "verification_history": [],
+        "profile_completed": True,
+        "status": "active",
+        "created_at": now,
+        "updated_at": now,
+    }
+
+    class FakeCollection:
+        def find_one(self, query, **kwargs):
+            return deepcopy(existing)
+
+        def find_one_and_update(self, *args, **kwargs):
+            raise AssertionError("duplicate pending submit must be idempotent")
+
+        def insert_one(self, *args, **kwargs):
+            raise AssertionError("duplicate pending submit must not create another profile")
+
+    monkeypatch.setattr(services, "_collection", lambda name: FakeCollection())
+    saved = services.create_or_update_farmer("user-123", {
+        **payload,
+        "intent": "submit",
+    })
+
+    assert saved["verification_status"] == "pending"
+    assert saved["submitted_at"] == now.isoformat()
+
+
