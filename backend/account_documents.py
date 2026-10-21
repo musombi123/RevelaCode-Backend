@@ -99,7 +99,22 @@ def _authenticated_user():
     }
     if user_id not in account_ids:
         return None, (jsonify(success=False, error={"code": "user_identity_mismatch", "message": "The session identity does not match the account record."}), 403)
+    account_status = str(user.get("status") or "active").strip().casefold()
+    if user.get("is_active") is False or account_status in {"inactive", "disabled", "suspended", "blocked", "banned", "deleted", "revoked"}:
+        return None, (jsonify(success=False, error={"code": "account_inactive", "message": "This account is not active. Contact RevelaCode support if you believe this is an error."}), 403)
     return user, None
+
+
+def _is_verified(user: dict) -> bool:
+    """Parse verified flags without treating strings such as 'false' as truthy."""
+    value = user.get("verified")
+    if value is None:
+        value = user.get("is_verified", False)
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value == 1
+    return str(value or "").strip().casefold() in {"true", "1", "yes", "verified"}
 
 
 def _roles(user: dict) -> list[str]:
@@ -193,7 +208,7 @@ def _profile(user: dict) -> dict:
     roles = _roles(user)
     hubs = _hubs(user)
     contact = str(user.get("contact") or user.get("email") or "")
-    verified = bool(user.get("verified", user.get("is_verified", False)))
+    verified = _is_verified(user)
     public_profile = {
         "id": str(user.get("_id") or user.get("id") or user.get("user_id") or ""),
         "full_name": str(user.get("full_name") or user.get("fullName") or user.get("name") or user.get("username") or ""),
