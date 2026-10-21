@@ -120,6 +120,9 @@ class FakeDB:
             self.collections[name] = FakeCollection()
         return self.collections[name]
 
+    def get_collection(self, name):
+        return self[name]
+
 
 @pytest.fixture()
 def app_client(monkeypatch):
