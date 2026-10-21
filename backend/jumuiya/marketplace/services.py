@@ -122,6 +122,18 @@ def listings(
     # Filter legacy/unreviewed Shamba listings even when the client requests
     # the all-hubs marketplace without passing ?hub=shamba.
     if normalized_hub in {"", "shamba"}:
+        verified_farmers = list(collection("jumuiya_farmers").find(
+            {
+                "verification_status": {"$in": ["approved", "verified"]},
+                "status": {"$ne": "deleted"},
+            },
+            {"owner_user_id": 1, "user_id": 1},
+        ))
+        verified_owner_ids = {
+            str(item.get("owner_user_id") or item.get("user_id") or "")
+            for item in verified_farmers
+            if item.get("owner_user_id") or item.get("user_id")
+        }
         reviewed_farms = list(collection("jumuiya_farms").find(
             {
                 "legal_verification_status": "verified",
@@ -132,6 +144,7 @@ def listings(
         reviewed_owner_by_id = {
             str(item.get("_id")): str(item.get("owner_user_id") or "")
             for item in reviewed_farms
+            if str(item.get("owner_user_id") or "") in verified_owner_ids
         }
         reviewed_ids = list(reviewed_owner_by_id.keys())
 
