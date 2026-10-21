@@ -61,3 +61,5 @@ defusedxml==0.7.1
 six==1.17.0
 tzdata
 cloudinary==1.46.3
+# PDF generation for account profile and certificate exports
+reportlab>=4.2,<5.0
