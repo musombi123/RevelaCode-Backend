@@ -95,7 +95,7 @@ def farmer_document(user_id, data):
     now = now_utc()
     payload = dict(data or {})
     intent = str(payload.pop("intent", "submit") or "submit").strip().lower()
-    required = ("farmer_name", "phone", "county", "town", "farming_type")
+    required = ("farmer_name", "phone", "county", "town")
     profile_completed = all(str(payload.get(key, "")).strip() for key in required)
     submitted = intent == "submit"
 
@@ -108,8 +108,8 @@ def farmer_document(user_id, data):
         "preferred_contact_method": payload.get("preferred_contact_method", "phone"),
         "farm_name": payload.get("farm_name", ""),
         "farm_count": _int(payload.get("farm_count"), 1),
-        "farming_type": payload.get("farming_type", "mixed"),
-        "experience_years": _int(payload.get("experience_years"), 0),
+        "farming_type": payload.get("farming_type", ""),
+        "experience_years": payload.get("experience_years"),
         "county": payload.get("county", ""),
         "sub_county": payload.get("sub_county", ""),
         "town": payload.get("town", ""),
