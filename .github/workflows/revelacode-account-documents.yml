@@ -35,7 +35,7 @@ jobs:
           python-version: "3.11"
           cache: pip
       - name: Install targeted backend test dependencies
-        run: python -m pip install Flask flask-cors PyJWT pymongo python-dotenv reportlab pytest
+        run: python -m pip install -r requirements.txt pytest
       - name: Compile authentication, account document, and Elimu modules
         run: python -m py_compile main.py backend/auth_gate.py backend/account_documents.py backend/routes/study_routes.py
       - name: Verify account document and Elimu route registration contracts
