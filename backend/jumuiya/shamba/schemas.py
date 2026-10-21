@@ -112,7 +112,7 @@ def farmer_payload(data):
     phone = _text(data, "phone", submitted, 30)
     county = _text(data, "county", submitted, 100)
     town = _text(data, "town", submitted, 100)
-    farming_type = _text(data, "farming_type", submitted, 60).lower()
+    farming_type = _text(data, "farming_type", False, 60).lower()
 
     if farming_type and farming_type not in {
         "mixed", "crop", "livestock", "horticulture",
@@ -120,8 +120,8 @@ def farmer_payload(data):
     }:
         raise ValueError("farming_type is not a supported Shamba option.")
 
-    experience = _number(data, "experience_years", False)
-    if experience > 80 or int(experience) != experience:
+    experience = _optional_number(data, "experience_years", 0, 80)
+    if experience is not None and int(experience) != experience:
         raise ValueError("experience_years must be a whole number from 0 to 80.")
 
     preferred_contact = _text(
@@ -183,8 +183,8 @@ def farmer_payload(data):
         "farm_count": 1,
         "farm_size": farm_size,
         "farm_size_unit": farm_size_unit,
-        "farming_type": farming_type or "mixed",
-        "experience_years": int(experience),
+        "farming_type": farming_type,
+        "experience_years": int(experience) if experience is not None else None,
         "primary_crops": _items(data, "primary_crops"),
         "livestock": _items(data, "livestock"),
         "soil_type": _text(data, "soil_type", False, 100),
