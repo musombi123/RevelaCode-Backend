@@ -320,6 +320,15 @@ def verify_user_for_revelaai(user_id: str):
     ), 200
 
 
+def _auth_profile_verified(value) -> bool:
+    """Interpret database verification flags without truthy-string mistakes."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value == 1
+    return str(value or "").strip().casefold() in {"true", "1", "yes", "verified"}
+
+
 @auth_bp.route(
     "/api/auth/me",
     methods=["GET"],
@@ -406,6 +415,10 @@ def authenticated_user_me():
     if not actual_id or actual_id != user_id:
         return jsonify(success=False, code="user_identity_mismatch"), 403
 
+    account_status = str(user.get("status") or "active").strip().casefold()
+    if user.get("is_active") is False or account_status in {"inactive", "disabled", "suspended", "blocked", "banned", "deleted", "revoked"}:
+        return jsonify(success=False, authenticated=False, code="account_inactive", message="This account is not active."), 403
+
     raw_roles = user.get("roles")
     if isinstance(raw_roles, str):
         raw_roles = [raw_roles]
@@ -416,6 +429,10 @@ def authenticated_user_me():
         + ([str(user.get("role")).strip()] if user.get("role") else [])
     )) or ["user"]
     canonical_role = str(user.get("role") or canonical_roles[0]).strip() or "user"
+    verified_value = user.get("verified")
+    if verified_value is None:
+        verified_value = user.get("is_verified", False)
+    verified = _auth_profile_verified(verified_value)
     safe_user = {
         "id": actual_id,
         "user_id": actual_id,
@@ -427,8 +444,8 @@ def authenticated_user_me():
         "phone": user.get("phone") or "",
         "role": canonical_role,
         "roles": canonical_roles,
-        "verified": bool(user.get("verified", user.get("is_verified", False))),
-        "account_status": user.get("status") or ("active" if user.get("verified", user.get("is_verified", False)) else "unverified"),
+        "verified": verified,
+        "account_status": user.get("status") or ("active" if verified else "unverified"),
         "created_at": user.get("created_at") or user.get("joined_at"),
         "hub_usage": user.get("hub_usage") or user.get("current_hubs") or user.get("hubs") or user.get("enabled_hubs") or [],
     }
