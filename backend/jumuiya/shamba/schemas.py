@@ -24,7 +24,7 @@ def _text(data, key, required=False, max_len=300):
 def _number(data, key, required=False, minimum=0):
     value = data.get(key)
 
-    if value is None and not required:
+    if (value is None or value == "") and not required:
         return 0.0
 
     try:
@@ -147,9 +147,7 @@ def farm_payload(data):
         "soil_type": _text(
             data, "soil_type", False, 100
         ),
-        "irrigation": bool(
-            data.get("irrigation", False)
-        ),
+        "irrigation": _boolean(data.get("irrigation"), False),
         "description": _text(
             data, "description", False, 1000
         ),
