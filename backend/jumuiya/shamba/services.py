@@ -229,120 +229,147 @@ def _status_value(document: dict, default: str = "") -> str:
 # ============================================================
 
 def get_farmer(user_id: str) -> dict | None:
-    document = _collection(FARMERS).find_one(
-        {
-            "owner_user_id": str(user_id),
-            "status": {"$ne": "deleted"},
-        }
-    )
+    """Return the single farmer profile, including a safe default for legacy records."""
+    document = _collection(FARMERS).find_one({
+        "$or": [
+            {"owner_user_id": str(user_id)},
+            {"user_id": str(user_id)},
+        ],
+        "status": {"$ne": "deleted"},
+    }, sort=[("updated_at", -1), ("created_at", -1)])
 
+    if not document:
+        return None
+
+    # Legacy profiles predate mandatory manual review and are NOT silently approved.
+    document.setdefault("verification_status", "not_submitted")
+    document.setdefault("verification_review_notes", "")
+    document.setdefault("profile_completed", False)
     return serialise(document)
 
 
-def create_or_update_farmer(
-    user_id: str,
-    payload: dict,
-) -> dict:
-    """
-    Create or update the farmer profile.
-    """
-
+def create_or_update_farmer(user_id: str, payload: dict) -> dict:
+    """Create/resubmit a farmer profile. Approval state is controlled only by admins."""
     now = now_utc()
+    query = {
+        "$or": [
+            {"owner_user_id": str(user_id)},
+            {"user_id": str(user_id)},
+        ],
+        "status": {"$ne": "deleted"},
+    }
+    existing = _collection(FARMERS).find_one(query, sort=[("updated_at", -1), ("created_at", -1)])
+    required = ("farmer_name", "phone", "county", "town", "farming_type")
+    profile_completed = all(str(payload.get(key, "")).strip() for key in required)
 
-    existing = _collection(FARMERS).find_one(
-        {
-            "owner_user_id": str(user_id),
-            "status": {"$ne": "deleted"},
-        }
-    )
+    update = {
+        **payload,
+        "owner_user_id": str(user_id),
+        "user_id": str(user_id),
+        "profile_completed": profile_completed,
+        # Every profile submission / material edit requires a fresh manual review.
+        "verification_status": "pending",
+        "verification_submitted_at": now,
+        "verification_review_notes": "",
+        "verification_reviewer_user_id": None,
+        "verification_reviewed_at": None,
+        "updated_at": now,
+        "status": "active",
+    }
 
     if existing:
-        update = {
-            **payload,
-            "owner_user_id": str(user_id),
-            "updated_at": now,
-        }
-
         result = _collection(FARMERS).find_one_and_update(
-            {
-                "_id": existing["_id"],
-                "owner_user_id": str(user_id),
-            },
-            {
-                "$set": update,
-            },
+            {"_id": existing["_id"]},
+            {"$set": update},
             return_document=ReturnDocument.AFTER,
         )
-
-        log_action(
-            user_id,
-            "shamba_farmer_updated",
-            {
-                "farmer_id": clean_id(existing["_id"]),
-            },
-        )
-
+        log_action(user_id, "shamba_farmer_resubmitted", {"farmer_id": clean_id(existing["_id"])})
         return serialise(result)
 
-    document = farmer_document(
-        owner_user_id=str(user_id),
-        **payload,
-    )
-
-    document.setdefault("created_at", now)
-    document.setdefault("updated_at", now)
-    document.setdefault("status", "active")
-
+    document = farmer_document(user_id, payload)
+    document["profile_completed"] = profile_completed
+    document["created_at"] = now
+    document["updated_at"] = now
     result = _collection(FARMERS).insert_one(document)
+    created_profile = _collection(FARMERS).find_one({"_id": result.inserted_id})
+    log_action(user_id, "shamba_farmer_created_for_review", {"farmer_id": clean_id(result.inserted_id)})
+    return serialise(created_profile)
 
-    created = _collection(FARMERS).find_one(
-        {"_id": result.inserted_id}
+
+def list_farmer_verification_queue() -> list[dict]:
+    """Pending or more-information farmer profiles for authorized administrators."""
+    items = list(
+        _collection(FARMERS)
+        .find({"verification_status": {"$in": ["pending", "more_info"]}, "status": {"$ne": "deleted"}})
+        .sort("verification_submitted_at", 1)
+        .limit(200)
     )
+    return serialise_many(items)
 
-    log_action(
-        user_id,
-        "shamba_farmer_created",
-        {
-            "farmer_id": clean_id(result.inserted_id),
-        },
+
+def review_farmer_profile(farmer_id: str, reviewer_user_id: str, payload: dict) -> dict:
+    """Apply an authenticated administrator decision to a farmer profile."""
+    target_id = object_id(farmer_id)
+    farmer = _collection(FARMERS).find_one({"_id": target_id, "status": {"$ne": "deleted"}})
+    if not farmer:
+        raise APIError("Farmer profile not found.", 404, "farmer_profile_not_found")
+
+    decision = payload["decision"]
+    if decision == "approved":
+        required = ("farmer_name", "phone", "county", "town", "farming_type")
+        if not all(str(farmer.get(key, "")).strip() for key in required):
+            raise APIError("This profile is incomplete and cannot be approved.", 422, "farmer_profile_incomplete")
+
+    now = now_utc()
+    update = {
+        "verification_status": decision,
+        "verification_review_notes": payload.get("review_notes", ""),
+        "verification_reviewer_user_id": str(reviewer_user_id),
+        "verification_reviewed_at": now,
+        "updated_at": now,
+    }
+    updated = _collection(FARMERS).find_one_and_update(
+        {"_id": target_id},
+        {"$set": update},
+        return_document=ReturnDocument.AFTER,
     )
-
-    return serialise(created)
+    log_action(reviewer_user_id, "shamba_farmer_profile_reviewed", {
+        "farmer_id": str(target_id),
+        "owner_user_id": str(farmer.get("owner_user_id") or farmer.get("user_id") or ""),
+        "decision": decision,
+    })
+    return serialise(updated)
 
 
 # ============================================================
 # FARMS
 # ============================================================
 
-def create_farm(
-    user_id: str,
-    payload: dict,
-) -> dict:
-    document = farm_document(
-        owner_user_id=str(user_id),
-        **payload,
-    )
+def create_farm(user_id: str, payload: dict) -> dict:
+    """Create a farm only after the owner's Shamba profile is approved."""
+    farmer = get_farmer(user_id)
+    if not farmer or farmer.get("verification_status") != "approved":
+        state = (farmer or {}).get("verification_status", "not_submitted")
+        raise APIError(
+            "Submit a complete Shamba farmer profile and wait for administrator approval before adding a farm.",
+            403,
+            "farmer_profile_verification_required",
+            {"verification_status": state},
+        )
 
+    document = farm_document(user_id, payload)
+    document["farmer_profile_id"] = clean_id(farmer.get("id") or farmer.get("_id"))
     now = now_utc()
-
     document.setdefault("created_at", now)
     document.setdefault("updated_at", now)
     document.setdefault("status", "active")
 
     result = _collection(FARMS).insert_one(document)
-
-    farm = _collection(FARMS).find_one(
-        {"_id": result.inserted_id}
-    )
-
-    log_action(
-        user_id,
-        "shamba_farm_created",
-        {
-            "farm_id": clean_id(result.inserted_id),
-        },
-    )
-
+    farm = _collection(FARMS).find_one({"_id": result.inserted_id})
+    log_action(user_id, "shamba_farm_created", {
+        "farm_id": clean_id(result.inserted_id),
+        "farmer_profile_id": clean_id(farmer.get("id") or farmer.get("_id")),
+    })
     return serialise(farm)
 
 

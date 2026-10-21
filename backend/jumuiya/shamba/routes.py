@@ -4,6 +4,7 @@ from flask import Blueprint, request
 
 from backend.jumuiya.core.permissions import (
     require_authenticated,
+    require_roles,
     current_user_id,
 )
 
@@ -201,33 +202,36 @@ def health():
 @shamba_bp.get("/farmer")
 @require_authenticated
 def get_farmer():
-    return ok(
-        services.get_farmer(
-            current_user_id()
-        )
-    )
+    return ok(services.get_farmer(current_user_id()))
 
 
 @shamba_bp.post("/farmer")
 @require_authenticated
 def save_farmer():
-    payload = validate(
-        schemas.farmer_payload,
-        body(),
+    payload = validate(schemas.farmer_payload, body())
+    profile = services.create_or_update_farmer(current_user_id(), payload)
+    return ok(profile, "Farmer profile submitted for administrator review.")
+
+
+@shamba_bp.get("/farmer/verification-queue")
+@require_authenticated
+@require_roles("admin", "super_admin")
+def farmer_verification_queue():
+    return ok({"items": services.list_farmer_verification_queue()})
+
+
+@shamba_bp.post("/farmer/<farmer_id>/review")
+@require_authenticated
+@require_roles("admin", "super_admin")
+def review_farmer_profile(farmer_id):
+    payload = validate(schemas.farmer_review_payload, body())
+    result = services.review_farmer_profile(
+        farmer_id,
+        current_user_id(),
+        payload,
     )
+    return ok(result, "Farmer profile review decision saved.")
 
-    return ok(
-        services.create_or_update_farmer(
-            current_user_id(),
-            payload,
-        ),
-        "Farmer profile saved.",
-    )
-
-
-# ============================================================
-# FARMS
-# ============================================================
 
 @shamba_bp.get("/farms")
 @require_authenticated
