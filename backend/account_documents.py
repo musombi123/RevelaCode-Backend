@@ -104,7 +104,7 @@ def _authenticated_user():
 
 def _roles(user: dict) -> list[str]:
     raw = user.get("roles")
-    values = raw if isinstance(raw, list) else ([raw] if isinstance(raw, str) and raw.strip() else [])
+    values = list(raw) if isinstance(raw, list) else ([raw] if isinstance(raw, str) and raw.strip() else [])
     if user.get("role"):
         values.append(user["role"])
     normalized = []
@@ -436,12 +436,40 @@ def verify_account_certificate(certificate_id: str):
     expected = _canonical_signature(claims)
     if not hmac.compare_digest(str(record.get("signature") or ""), expected):
         return jsonify(valid=False, certificate_id=certificate_id, reason="signature_invalid"), 200
+    # Public verification exposes only fields needed to validate the account
+    # certificate. Internal school IDs, access timestamps, and other metadata
+    # remain private even when stored in the signed claims.
+    public_hubs = []
+    for item in claims.get("hubs") or []:
+        if isinstance(item, str):
+            name = item.strip()
+            if name:
+                public_hubs.append({"name": name, "status": "recorded"})
+            continue
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or item.get("hub_name") or item.get("title") or "").strip()
+        if not name:
+            continue
+        hub = {
+            "name": name,
+            "status": str(item.get("status") or item.get("membership_status") or "recorded"),
+        }
+        role = str(item.get("role") or item.get("hub_role") or "").strip()
+        institution = str(item.get("institution") or "").strip()
+        if role:
+            hub["role"] = role
+        if institution:
+            hub["institution"] = institution
+        public_hubs.append(hub)
+
     return jsonify(
         valid=True,
         certified_by="RevelaCode",
         certificate_id=certificate_id,
         user={"name": claims.get("full_name"), "roles": claims.get("roles") or []},
-        hub={"name": "Recorded platform affiliations", "hubs": claims.get("hubs") or []},
+        hub={"name": "Recorded platform affiliations", "hubs": public_hubs},
+        hubs=public_hubs,
         roles=claims.get("roles") or [],
         issued_at=claims.get("issued_at"),
         verification_url=claims.get("verification_url"),
