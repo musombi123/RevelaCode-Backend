@@ -1,9 +1,18 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import sys
+import types
 
 import pytest
 from flask import Flask, g, jsonify
+
+# These route tests use a deterministic in-memory fake database. Prevent the
+# production database module from pinging a real MongoDB instance at import
+# time; the fixture patches routes.get_db with FakeDB for every test.
+_test_db_module = types.ModuleType("backend.db")
+_test_db_module.get_db = lambda: None
+sys.modules["backend.db"] = _test_db_module
 
 from backend.jumuiya.core.errors import APIError
 from backend.routes import elimu_learning_routes as routes
