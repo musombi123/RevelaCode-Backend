@@ -27,7 +27,7 @@ _test_db_module.get_db = lambda: _test_db_module.db
 sys.modules["backend.db"] = _test_db_module
 
 from backend.jumuiya.core.errors import APIError
-from backend.routes import elimu_learning_routes as routes
+from backend.routes import study_routes as routes
 
 
 class FakeCursor(list):
@@ -114,8 +114,8 @@ class FakeDB:
                     "metadata": {"course_id": "foundations", "course_title": "Foundations"},
                 },
             ]),
-            routes.PROGRESS: FakeCollection(),
-            routes.CERTIFICATES: FakeCollection(),
+            routes._ELIMU_LEARNING_PROGRESS: FakeCollection(),
+            routes._ELIMU_LEARNING_CERTIFICATES: FakeCollection(),
             "users": FakeCollection([
                 {
                     "_id": "user-1",
@@ -152,7 +152,7 @@ def app_client(monkeypatch):
     monkeypatch.setenv("REVELACODE_CERTIFICATE_SIGNING_KEY", "test-only-certificate-key")
 
     app = Flask(__name__)
-    app.register_blueprint(routes.elimu_learning_bp)
+    app.register_blueprint(routes.study_bp, url_prefix="/api/study")
 
     @app.before_request
     def set_test_identity():
@@ -176,10 +176,10 @@ def auth(token="test-user-1"):
 def complete_all_lessons(client):
     for lesson_id in ("lesson-01", "lesson-02"):
         response = client.post(
-            "/api/elimu/progress",
+            "/api/study/elimu/progress",
             headers=auth(),
             json={
-                "hub_id": routes.HUB_ID,
+                "hub_id": routes._ELIMU_LEARNING_HUB_ID,
                 "course_id": "foundations",
                 "action": "complete_lesson",
                 "lesson_id": lesson_id,
@@ -187,39 +187,39 @@ def complete_all_lessons(client):
         )
         assert response.status_code == 200, response.get_json()
     response = client.post(
-        "/api/elimu/progress",
+        "/api/study/elimu/progress",
         headers=auth(),
-        json={"hub_id": routes.HUB_ID, "course_id": "foundations", "action": "complete_course"},
+        json={"hub_id": routes._ELIMU_LEARNING_HUB_ID, "course_id": "foundations", "action": "complete_course"},
     )
     assert response.status_code == 200, response.get_json()
 
 
 def test_elimu_learning_routes_require_authenticated_identity(app_client):
     client, _ = app_client
-    response = client.get("/api/elimu/hubs")
+    response = client.get("/api/study/elimu/hubs")
     assert response.status_code == 401
     assert response.get_json()["error"]["code"] == "authentication_required"
 
 
 def test_list_hubs_and_persisted_progress_read(app_client):
     client, _ = app_client
-    hubs = client.get("/api/elimu/hubs", headers=auth())
+    hubs = client.get("/api/study/elimu/hubs", headers=auth())
     assert hubs.status_code == 200
     assert len(hubs.get_json()["hubs"]) == 1
-    assert hubs.get_json()["hubs"][0]["id"] == routes.HUB_ID
+    assert hubs.get_json()["hubs"][0]["id"] == routes._ELIMU_LEARNING_HUB_ID
 
     saved = client.post(
-        "/api/elimu/progress",
+        "/api/study/elimu/progress",
         headers=auth(),
         json={
-            "hub_id": routes.HUB_ID,
+            "hub_id": routes._ELIMU_LEARNING_HUB_ID,
             "course_id": "foundations",
             "action": "complete_lesson",
             "lesson_id": "lesson-01",
         },
     )
     assert saved.status_code == 200
-    progress = client.get(f"/api/elimu/progress?hub_id={routes.HUB_ID}", headers=auth())
+    progress = client.get(f"/api/study/elimu/progress?hub_id={routes._ELIMU_LEARNING_HUB_ID}", headers=auth())
     assert progress.status_code == 200
     assert progress.get_json()["progress"]["completed_lessons"] == 1
     assert progress.get_json()["progress"]["total_lessons"] == 2
@@ -228,10 +228,10 @@ def test_list_hubs_and_persisted_progress_read(app_client):
 def test_progress_rejects_unknown_lesson_and_incomplete_course(app_client):
     client, _ = app_client
     invalid_lesson = client.post(
-        "/api/elimu/progress",
+        "/api/study/elimu/progress",
         headers=auth(),
         json={
-            "hub_id": routes.HUB_ID,
+            "hub_id": routes._ELIMU_LEARNING_HUB_ID,
             "course_id": "foundations",
             "action": "complete_lesson",
             "lesson_id": "not-in-this-course",
@@ -240,32 +240,32 @@ def test_progress_rejects_unknown_lesson_and_incomplete_course(app_client):
     assert invalid_lesson.status_code == 404
 
     incomplete = client.post(
-        "/api/elimu/progress",
+        "/api/study/elimu/progress",
         headers=auth(),
-        json={"hub_id": routes.HUB_ID, "course_id": "foundations", "action": "complete_course"},
+        json={"hub_id": routes._ELIMU_LEARNING_HUB_ID, "course_id": "foundations", "action": "complete_course"},
     )
     assert incomplete.status_code == 409
 
 
 def test_certificate_requires_complete_recorded_course_and_owner_for_download(app_client):
     client, db = app_client
-    early = client.post("/api/certificates/generate", headers=auth(), json={"hub_id": routes.HUB_ID})
+    early = client.post("/api/study/elimu/certificates/generate", headers=auth(), json={"hub_id": routes._ELIMU_LEARNING_HUB_ID})
     assert early.status_code == 409
 
     complete_all_lessons(client)
-    issued = client.post("/api/certificates/generate", headers=auth(), json={"hub_id": routes.HUB_ID})
+    issued = client.post("/api/study/elimu/certificates/generate", headers=auth(), json={"hub_id": routes._ELIMU_LEARNING_HUB_ID})
     assert issued.status_code == 201
     certificate_id = issued.get_json()["certificate_id"]
     assert certificate_id.startswith("RC-EL-")
 
-    downloaded = client.get(f"/api/certificates/{certificate_id}", headers=auth())
+    downloaded = client.get(f"/api/study/elimu/certificates/{certificate_id}", headers=auth())
     assert downloaded.status_code == 200
     assert downloaded.mimetype == "application/pdf"
 
-    other_user = client.get(f"/api/certificates/{certificate_id}", headers=auth("test-user-2"))
+    other_user = client.get(f"/api/study/elimu/certificates/{certificate_id}", headers=auth("test-user-2"))
     assert other_user.status_code == 404
 
-    valid = client.get(f"/api/certificates/verify/{certificate_id}")
+    valid = client.get(f"/api/study/elimu/certificates/verify/{certificate_id}")
     assert valid.status_code == 200
     assert valid.get_json()["valid"] is True
     assert valid.get_json()["certificate_id"] == certificate_id
@@ -274,25 +274,25 @@ def test_certificate_requires_complete_recorded_course_and_owner_for_download(ap
 def test_certificate_verifier_rejects_unknown_tampered_and_revoked_records(app_client):
     client, db = app_client
     complete_all_lessons(client)
-    issue = client.post("/api/certificates/generate", headers=auth(), json={"hub_id": routes.HUB_ID})
+    issue = client.post("/api/study/elimu/certificates/generate", headers=auth(), json={"hub_id": routes._ELIMU_LEARNING_HUB_ID})
     certificate_id = issue.get_json()["certificate_id"]
-    collection = db[routes.CERTIFICATES]
+    collection = db[routes._ELIMU_LEARNING_CERTIFICATES]
 
-    unknown = client.get("/api/certificates/verify/RC-EL-0000000000000000")
+    unknown = client.get("/api/study/elimu/certificates/verify/RC-EL-0000000000000000")
     assert unknown.status_code == 404
     assert unknown.get_json()["valid"] is False
 
     record = collection.find_one({"certificate_id": certificate_id})
     record["claims"]["full_name"] = "Tampered Name"
     collection.rows = [record if row.get("certificate_id") == certificate_id else row for row in collection.rows]
-    tampered = client.get(f"/api/certificates/verify/{certificate_id}")
+    tampered = client.get(f"/api/study/elimu/certificates/verify/{certificate_id}")
     assert tampered.get_json()["valid"] is False
     assert tampered.get_json()["reason"] == "signature_invalid"
 
     record["claims"]["full_name"] = "Verified Test Learner"
-    record["signature"] = routes._signature(record["claims"])
+    record["signature"] = routes._elimu_learning_signature(record["claims"])
     record["status"] = "revoked"
     collection.rows = [record if row.get("certificate_id") == certificate_id else row for row in collection.rows]
-    revoked = client.get(f"/api/certificates/verify/{certificate_id}")
+    revoked = client.get(f"/api/study/elimu/certificates/verify/{certificate_id}")
     assert revoked.get_json()["valid"] is False
     assert revoked.get_json()["reason"] == "certificate_revoked"
