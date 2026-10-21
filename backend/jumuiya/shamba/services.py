@@ -464,7 +464,7 @@ def review_farmer_profile(farmer_id: str, reviewer_user_id: str, payload: dict) 
 def create_farm(user_id: str, payload: dict) -> dict:
     """Create a farm only after the owner's Shamba profile is approved."""
     farmer = get_farmer(user_id)
-    if not farmer or farmer.get("verification_status") != "approved":
+    if not farmer or str(farmer.get("verification_status") or "").lower() not in {"approved", "verified"}:
         state = (farmer or {}).get("verification_status", "not_submitted")
         raise APIError(
             "Submit a complete Shamba farmer profile and wait for administrator approval before adding a farm.",
