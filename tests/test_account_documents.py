@@ -7,7 +7,7 @@ import pytest
 from flask import Flask
 
 from backend import account_documents as documents
-from backend.routes import elimu_learning_routes as elimu_routes
+from backend.routes import study_routes as elimu_routes
 from tests.test_elimu_learning_routes import FakeDB
 
 TEST_JWT_SECRET = "test-only-jwt-secret-for-ci"
@@ -35,7 +35,7 @@ def account_client(monkeypatch):
 
     app = Flask(__name__)
     app.register_blueprint(documents.account_documents_bp)
-    app.register_blueprint(elimu_routes.elimu_learning_bp)
+    app.register_blueprint(elimu_routes.study_bp, url_prefix="/api/study")
     return app.test_client(), db
 
 

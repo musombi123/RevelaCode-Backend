@@ -4,13 +4,26 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import date, datetime
+import re
+from html import escape as html_escape
+import secrets
+import os
+import io
+import hmac
+import hashlib
+from datetime import date, datetime, timezone
 from typing import Any, Dict, List, Optional
 
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, jsonify, request, send_file
+from reportlab.lib import colors
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.units import mm
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
 
 from backend.db import get_db
 from backend.utils.decorators import require_role
+from backend.jumuiya.core.permissions import current_user_id, require_authenticated
 
 from backend.study.study_service import (
     StudyService,
@@ -2582,3 +2595,522 @@ def import_sda_quarter():
             500,
             error=exc,
         )
+
+# REVELACODE_ELIMU_LEARNING_ROUTES_V1
+# The course-learning API lives in the existing study blueprint and therefore
+# uses the established database and authentication modules. This avoids a
+# second, standalone Elimu blueprint and preserves the school's separate
+# /api/jumuiya/elimu management surface.
+
+_ELIMU_LEARNING_HUB_ID = "elimu-education"
+_ELIMU_LEARNING_PROGRESS = "revelacode_elimu_learning_progress"
+_ELIMU_LEARNING_CERTIFICATES = "revelacode_elimu_learning_certificates"
+
+
+def _elimu_learning_now():
+    return datetime.now(timezone.utc)
+
+
+def _elimu_learning_text(value):
+    return str(value or "").strip()
+
+
+def _elimu_learning_slug(value):
+    return re.sub(r"[^a-z0-9_-]+", "-", _elimu_learning_text(value).lower()).strip("-")[:100] or "general"
+
+
+def _elimu_learning_materials():
+    rows = list(
+        get_db()["study_materials"]
+        .find({"category": {"$in": ["education", "elimu"]}})
+        .limit(2000)
+    )
+    result = []
+    for row in rows:
+        status = _elimu_learning_text(
+            row.get("status") or row.get("publication_status") or "published"
+        ).lower()
+        if status not in {"published", "active", "available"}:
+            continue
+        metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+        material_id = _elimu_learning_text(row.get("id") or row.get("_id"))
+        title = _elimu_learning_text(row.get("title") or metadata.get("lesson_title"))
+        if material_id and title:
+            result.append((row, metadata, material_id, title))
+    return result
+
+
+def _elimu_learning_hub(user_id):
+    materials = _elimu_learning_materials()
+    if not materials:
+        return None
+
+    rows = list(
+        get_db()[_ELIMU_LEARNING_PROGRESS].find({
+            "user_id": user_id,
+            "hub_id": _ELIMU_LEARNING_HUB_ID,
+        })
+    )
+    completed_lessons = {
+        str(item.get("lesson_id"))
+        for item in rows
+        if item.get("action") == "complete_lesson"
+    }
+    started = {
+        str(item.get("course_id"))
+        for item in rows
+        if item.get("action") == "start"
+    }
+    completed_courses = {
+        str(item.get("course_id"))
+        for item in rows
+        if item.get("action") == "complete_course"
+    }
+
+    groups = {}
+    for row, metadata, material_id, title in materials:
+        raw_key = (
+            metadata.get("course_id")
+            or metadata.get("course_title")
+            or row.get("course_id")
+            or row.get("course_title")
+            or row.get("subcategory")
+            or row.get("subject")
+            or "General"
+        )
+        key = _elimu_learning_slug(raw_key)
+        course = groups.setdefault(key, {
+            "id": key,
+            "course_id": key,
+            "title": _elimu_learning_text(
+                metadata.get("course_title")
+                or row.get("course_title")
+                or row.get("subcategory")
+                or row.get("subject")
+                or title
+            ),
+            "description": _elimu_learning_text(
+                metadata.get("course_description") or row.get("course_description")
+            ),
+            "lessons": [],
+        })
+        course["lessons"].append({
+            "id": material_id,
+            "lesson_id": material_id,
+            "title": title,
+            "description": _elimu_learning_text(
+                row.get("description") or metadata.get("description")
+            ),
+            "completed": material_id in completed_lessons,
+        })
+
+    courses = list(groups.values())
+    for course in courses:
+        course["lessons"].sort(key=lambda item: item["title"].casefold())
+        course["status"] = (
+            "completed"
+            if course["id"] in completed_courses
+            else (
+                "in_progress"
+                if course["id"] in started or any(item["completed"] for item in course["lessons"])
+                else "not started"
+            )
+        )
+    courses.sort(key=lambda item: item["title"].casefold())
+    lessons = [lesson for course in courses for lesson in course["lessons"]]
+    completed_count = sum(bool(item["completed"]) for item in lessons)
+    completed_course_count = sum(course["status"] == "completed" for course in courses)
+    return {
+        "id": _ELIMU_LEARNING_HUB_ID,
+        "name": "RevelaCode Education",
+        "description": "Published education materials stored by RevelaCode.",
+        "courses_count": len(courses),
+        "courses": courses,
+        "progress": {
+            "completed_lessons": completed_count,
+            "total_lessons": len(lessons),
+            "completed_courses": completed_course_count,
+            "total_courses": len(courses),
+            "progress_percent": round(completed_count * 100 / len(lessons)) if lessons else 0,
+            "hub_completed": bool(
+                courses
+                and lessons
+                and completed_count == len(lessons)
+                and completed_course_count == len(courses)
+            ),
+        },
+    }
+
+
+def _elimu_learning_key():
+    secret = _elimu_learning_text(os.getenv("REVELACODE_CERTIFICATE_SIGNING_KEY"))
+    if not secret:
+        secret = _elimu_learning_text(os.getenv("JWT_SECRET"))
+    if not secret:
+        raise RuntimeError("Certificate signing secret is not configured")
+    return hmac.new(
+        secret.encode("utf-8"),
+        b"revelacode-elimu-learning-certificate-v1",
+        hashlib.sha256,
+    ).digest()
+
+
+def _elimu_learning_signature(claims):
+    raw = json.dumps(
+        claims,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode("utf-8")
+    return hmac.new(_elimu_learning_key(), raw, hashlib.sha256).hexdigest()
+
+
+def _elimu_learning_pdf(record):
+    claims = record["claims"]
+    output = io.BytesIO()
+    document = SimpleDocTemplate(
+        output,
+        pagesize=A4,
+        rightMargin=22 * mm,
+        leftMargin=22 * mm,
+        topMargin=24 * mm,
+        bottomMargin=22 * mm,
+        title="RevelaCode Elimu Learning Certificate",
+        author="RevelaCode",
+    )
+    styles = getSampleStyleSheet()
+    styles.add(ParagraphStyle(
+        name="RevelaCodeElimuBrand",
+        parent=styles["Title"],
+        fontSize=25,
+        textColor=colors.HexColor("#0A74DA"),
+        spaceAfter=12,
+    ))
+    styles.add(ParagraphStyle(
+        name="RevelaCodeElimuCertificate",
+        parent=styles["Heading1"],
+        fontSize=18,
+        textColor=colors.HexColor("#2E8B57"),
+        spaceAfter=16,
+    ))
+    story = [
+        Paragraph("RevelaCode", styles["RevelaCodeElimuBrand"]),
+        Paragraph("Elimu Learning Certificate", styles["RevelaCodeElimuCertificate"]),
+    ]
+    for label, value in [
+        ("Issued to", claims.get("full_name")),
+        ("Account ID", claims.get("user_id")),
+        ("Learning hub", claims.get("hub_name")),
+        ("Completed lessons", f'{claims.get("completed_lessons", 0)} / {claims.get("total_lessons", 0)}'),
+        ("Roles recorded", ", ".join(claims.get("roles") or [])),
+        ("Certificate ID", record.get("certificate_id")),
+        ("Issued at (UTC)", claims.get("issued_at")),
+        ("Verification URL", claims.get("verification_url")),
+    ]:
+        story.append(Paragraph(
+            f"<b>{html_escape(str(label))}:</b> {html_escape(str(value or 'Not recorded'))}",
+            styles["BodyText"],
+        ))
+        story.append(Spacer(1, 4 * mm))
+    story.append(Spacer(1, 10 * mm))
+    story.append(Paragraph(
+        "Issuer: RevelaCode. This certificate confirms only the learning completion recorded in RevelaCode; it is not a government qualification or external accreditation.",
+        styles["Italic"],
+    ))
+    document.build(story)
+    return output.getvalue()
+
+
+def _elimu_learning_find_user(database, user_id):
+    query_parts = [{"id": user_id}, {"user_id": user_id}]
+    try:
+        from bson import ObjectId
+        if ObjectId.is_valid(user_id):
+            query_parts.insert(0, {"_id": ObjectId(user_id)})
+    except Exception:
+        pass
+    return database["users"].find_one({"$or": query_parts})
+
+
+@study_bp.get("/elimu/hubs")
+@require_authenticated
+def elimu_learning_list_hubs():
+    user_id = _elimu_learning_text(current_user_id())
+    hub = _elimu_learning_hub(user_id)
+    public_hubs = (
+        [{key: hub[key] for key in ("id", "name", "description", "courses_count")}]
+        if hub else []
+    )
+    return jsonify(success=True, hubs=public_hubs)
+
+
+@study_bp.get("/elimu/hubs/<hub_id>")
+@require_authenticated
+def elimu_learning_get_hub(hub_id):
+    if hub_id != _ELIMU_LEARNING_HUB_ID:
+        return jsonify(success=False, error={
+            "code": "hub_not_found",
+            "message": "Learning hub not found.",
+        }), 404
+    hub = _elimu_learning_hub(_elimu_learning_text(current_user_id()))
+    if not hub:
+        return jsonify(success=False, error={
+            "code": "learning_content_unavailable",
+            "message": "No published education materials are available yet.",
+        }), 404
+    return jsonify(success=True, hub=hub)
+
+
+@study_bp.get("/elimu/progress")
+@require_authenticated
+def elimu_learning_get_progress():
+    requested_hub = _elimu_learning_text(request.args.get("hub_id")) or _ELIMU_LEARNING_HUB_ID
+    if requested_hub != _ELIMU_LEARNING_HUB_ID:
+        return jsonify(success=False, error={
+            "code": "hub_not_found",
+            "message": "Learning hub not found.",
+        }), 404
+
+    hub = _elimu_learning_hub(_elimu_learning_text(current_user_id()))
+    if not hub:
+        return jsonify(success=False, error={
+            "code": "learning_content_unavailable",
+            "message": "No published education materials are available yet.",
+        }), 404
+    return jsonify(success=True, hub_id=_ELIMU_LEARNING_HUB_ID, progress=hub["progress"], hub=hub), 200
+
+
+@study_bp.post("/elimu/progress")
+@require_authenticated
+def elimu_learning_save_progress():
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return jsonify(success=False, error={
+            "code": "invalid_json",
+            "message": "A JSON object is required.",
+        }), 400
+
+    user_id = _elimu_learning_text(current_user_id())
+    hub_id, course_id, action, lesson_id = map(
+        _elimu_learning_text,
+        (payload.get("hub_id"), payload.get("course_id"), payload.get("action"), payload.get("lesson_id")),
+    )
+    if (
+        hub_id != _ELIMU_LEARNING_HUB_ID
+        or action not in {"start", "complete_lesson", "complete_course"}
+        or not course_id
+    ):
+        return jsonify(success=False, error={
+            "code": "invalid_progress_request",
+            "message": "Hub, course or action is invalid.",
+        }), 422
+
+    hub = _elimu_learning_hub(user_id)
+    if not hub:
+        return jsonify(success=False, error={
+            "code": "learning_content_unavailable",
+            "message": "No published education materials are available.",
+        }), 409
+
+    course = next((item for item in hub["courses"] if item["id"] == course_id), None)
+    if not course:
+        return jsonify(success=False, error={
+            "code": "course_not_found",
+            "message": "Course not found.",
+        }), 404
+    if action == "complete_lesson" and lesson_id not in {item["id"] for item in course["lessons"]}:
+        return jsonify(success=False, error={
+            "code": "lesson_not_found",
+            "message": "Lesson does not belong to this course.",
+        }), 404
+    if action == "complete_course" and (
+        not course["lessons"] or not all(item["completed"] for item in course["lessons"])
+    ):
+        return jsonify(success=False, error={
+            "code": "course_incomplete",
+            "message": "Complete every recorded lesson first.",
+        }), 409
+
+    now = _elimu_learning_now()
+    query = {
+        "user_id": user_id,
+        "hub_id": _ELIMU_LEARNING_HUB_ID,
+        "course_id": course_id,
+        "action": action,
+    }
+    if action == "complete_lesson":
+        query["lesson_id"] = lesson_id
+    get_db()[_ELIMU_LEARNING_PROGRESS].update_one(
+        query,
+        {
+            "$set": {
+                "user_id": user_id,
+                "hub_id": _ELIMU_LEARNING_HUB_ID,
+                "course_id": course_id,
+                "action": action,
+                "lesson_id": lesson_id or None,
+                "updated_at": now,
+            },
+            "$setOnInsert": {"created_at": now},
+        },
+        upsert=True,
+    )
+    updated = _elimu_learning_hub(user_id)
+    return jsonify(success=True, progress=updated["progress"], hub=updated)
+
+
+@study_bp.post("/elimu/certificates/generate")
+@require_authenticated
+def elimu_learning_generate_certificate():
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict) or _elimu_learning_text(payload.get("hub_id")) != _ELIMU_LEARNING_HUB_ID:
+        return jsonify(success=False, error={
+            "code": "hub_not_found",
+            "message": "Learning hub not found.",
+        }), 404
+
+    user_id = _elimu_learning_text(current_user_id())
+    hub = _elimu_learning_hub(user_id)
+    if not hub or not hub["progress"]["hub_completed"]:
+        return jsonify(success=False, error={
+            "code": "learning_incomplete",
+            "message": "Complete all recorded courses and lessons before requesting a certificate.",
+        }), 409
+
+    database = get_db()
+    certificates = database[_ELIMU_LEARNING_CERTIFICATES]
+    existing = certificates.find_one({
+        "user_id": user_id,
+        "hub_id": _ELIMU_LEARNING_HUB_ID,
+        "status": "active",
+    })
+    if existing:
+        claims = existing.get("claims") or {}
+        return jsonify(
+            success=True,
+            certificate_id=existing["certificate_id"],
+            cert_id=existing["certificate_id"],
+            already_issued=True,
+            verification_url=claims.get("verification_url"),
+            download_url=f"/api/study/elimu/certificates/{existing['certificate_id']}",
+        )
+
+    user = _elimu_learning_find_user(database, user_id)
+    if not user:
+        return jsonify(success=False, error={
+            "code": "account_not_found",
+            "message": "The authenticated account record could not be found.",
+        }), 404
+    raw_roles = user.get("roles") if isinstance(user.get("roles"), list) else []
+    if user.get("role"):
+        raw_roles = list(raw_roles) + [user["role"]]
+    roles = list(dict.fromkeys(
+        str(value).strip() for value in raw_roles if str(value).strip()
+    )) or ["user"]
+
+    certificate_id = "RC-EL-" + secrets.token_hex(8).upper()
+    root = _elimu_learning_text(os.getenv("REVELACODE_PUBLIC_URL")) or "https://revelacode.co.ke"
+    if not root.startswith(("https://", "http://localhost", "http://127.0.0.1")):
+        root = "https://revelacode.co.ke"
+    claims = {
+        "certificate_id": certificate_id,
+        "user_id": user_id,
+        "full_name": _elimu_learning_text(
+            user.get("full_name") or user.get("fullName") or user.get("name") or user.get("username")
+        ),
+        "roles": roles,
+        "hub_id": _ELIMU_LEARNING_HUB_ID,
+        "hub_name": hub["name"],
+        "completed_lessons": hub["progress"]["completed_lessons"],
+        "total_lessons": hub["progress"]["total_lessons"],
+        "issued_at": _elimu_learning_now().isoformat(),
+        "issuer": "RevelaCode",
+        "scope": "recorded_elimu_learning_completion",
+        "verification_url": f"{root.rstrip('/')}/verify/certificate/{certificate_id}",
+    }
+    record = {
+        "certificate_id": certificate_id,
+        "user_id": user_id,
+        "hub_id": _ELIMU_LEARNING_HUB_ID,
+        "status": "active",
+        "claims": claims,
+        "signature": _elimu_learning_signature(claims),
+        "signature_algorithm": "HMAC-SHA256",
+        "created_at": _elimu_learning_now(),
+    }
+    certificates.insert_one(record)
+    return jsonify(
+        success=True,
+        certificate_id=certificate_id,
+        cert_id=certificate_id,
+        already_issued=False,
+        verification_url=claims["verification_url"],
+        download_url=f"/api/study/elimu/certificates/{certificate_id}",
+    ), 201
+
+
+@study_bp.get("/elimu/certificates/<certificate_id>")
+@require_authenticated
+def elimu_learning_download_certificate(certificate_id):
+    user_id = _elimu_learning_text(current_user_id())
+    record = get_db()[_ELIMU_LEARNING_CERTIFICATES].find_one({
+        "certificate_id": certificate_id,
+        "user_id": user_id,
+        "status": "active",
+    })
+    if not record:
+        return jsonify(success=False, error={
+            "code": "certificate_not_found",
+            "message": "No active certificate belongs to this account.",
+        }), 404
+    if not hmac.compare_digest(
+        str(record.get("signature") or ""),
+        _elimu_learning_signature(record.get("claims") or {}),
+    ):
+        return jsonify(success=False, error={
+            "code": "certificate_signature_invalid",
+            "message": "Certificate integrity check failed.",
+        }), 409
+    response = send_file(
+        io.BytesIO(_elimu_learning_pdf(record)),
+        mimetype="application/pdf",
+        as_attachment=True,
+        download_name=f"{certificate_id}.pdf",
+        max_age=0,
+    )
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@study_bp.get("/elimu/certificates/verify/<certificate_id>")
+def elimu_learning_verify_certificate(certificate_id):
+    if not re.fullmatch(r"RC-EL-[A-F0-9]{16}", str(certificate_id or "")):
+        return jsonify(valid=False, certificate_id=certificate_id, reason="certificate_not_found"), 404
+    record = get_db()[_ELIMU_LEARNING_CERTIFICATES].find_one({"certificate_id": certificate_id})
+    if not record:
+        return jsonify(valid=False, certificate_id=certificate_id, reason="certificate_not_found"), 404
+    if record.get("status") != "active":
+        return jsonify(valid=False, certificate_id=certificate_id, reason="certificate_revoked"), 200
+    claims = record.get("claims") or {}
+    if not hmac.compare_digest(
+        str(record.get("signature") or ""),
+        _elimu_learning_signature(claims),
+    ):
+        return jsonify(valid=False, certificate_id=certificate_id, reason="signature_invalid"), 200
+    return jsonify(
+        valid=True,
+        certified_by="RevelaCode",
+        issuer_role="RevelaCode Certificate Issuer",
+        certificate_id=certificate_id,
+        user={"name": claims.get("full_name"), "roles": claims.get("roles") or []},
+        hub={
+            "name": claims.get("hub_name"),
+            "completed_lessons": claims.get("completed_lessons"),
+            "total_lessons": claims.get("total_lessons"),
+        },
+        roles=claims.get("roles") or [],
+        issued_at=claims.get("issued_at"),
+        verification_url=claims.get("verification_url"),
+        signature_algorithm="HMAC-SHA256",
+        certificate_scope="Recorded Elimu learning completion only; not a government qualification or external accreditation.",
+    )

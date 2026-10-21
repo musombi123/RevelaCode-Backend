@@ -481,6 +481,8 @@ def verify_account_certificate(certificate_id: str):
     return jsonify(
         valid=True,
         certified_by="RevelaCode",
+        issuer_role="RevelaCode Account Certificate Issuer",
+        certificate_category="Account Identity & Participation",
         certificate_id=certificate_id,
         user={"name": claims.get("full_name"), "roles": claims.get("roles") or []},
         hub={"name": "Recorded platform affiliations", "hubs": public_hubs},
