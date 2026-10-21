@@ -335,12 +335,27 @@ def issue_account_certificate():
         return jsonify(success=True, certificate_id=existing["certificate_id"], already_issued=True, verification_url=existing["claims"]["verification_url"], download_url=f"/api/accounts/certificates/{existing['certificate_id']}/download")
     issued_at = _now().isoformat()
     certificate_id = "RC-AC-" + secrets.token_hex(8).upper()
+    # Include account-level roles plus role responsibilities recorded by
+    # authoritative hub affiliations. Preserve the source role text and qualify
+    # hub roles so they cannot be mistaken for global platform privileges.
+    certificate_roles = list(profile["roles"])
+    seen_roles = {role.casefold() for role in certificate_roles}
+    for hub in profile["hubs"]:
+        hub_role = str(hub.get("role") or "").strip()
+        if not hub_role:
+            continue
+        context = str(hub.get("institution") or hub.get("name") or "Platform hub").strip()
+        qualified_role = f"{hub_role} ({context})"
+        if qualified_role.casefold() not in seen_roles:
+            seen_roles.add(qualified_role.casefold())
+            certificate_roles.append(qualified_role)
+
     claims = {
         "certificate_id": certificate_id,
         "user_id": user_id,
         "full_name": profile["full_name"],
         "verified": profile["verified"],
-        "roles": profile["roles"],
+        "roles": certificate_roles,
         "hubs": profile["hubs"],
         "issued_at": issued_at,
         "issuer": "RevelaCode",
