@@ -411,9 +411,14 @@ def authenticated_user_me():
     if not user:
         return jsonify(success=False, code="user_not_found"), 404
 
-    actual_id = str(user.get("_id") or user.get("id") or user.get("user_id") or "")
-    if not actual_id or actual_id != user_id:
+    account_ids = {
+        str(value).strip()
+        for value in (user.get("_id"), user.get("id"), user.get("user_id"))
+        if value is not None and str(value).strip()
+    }
+    if user_id not in account_ids:
         return jsonify(success=False, code="user_identity_mismatch"), 403
+    actual_id = str(user.get("_id") or user.get("id") or user.get("user_id") or user_id)
 
     account_status = str(user.get("status") or "active").strip().casefold()
     if user.get("is_active") is False or account_status in {"inactive", "disabled", "suspended", "blocked", "banned", "deleted", "revoked"}:
