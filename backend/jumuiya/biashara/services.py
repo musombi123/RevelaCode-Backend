@@ -157,13 +157,26 @@ def unique_slug(
 def get_business_for_user(
     user_id,
 ):
+    """
+    Resolve the user's selected business only when that business is
+    owned by the authenticated user. Fall back to the existing primary
+    owner business for accounts without a saved selection.
+    """
+    owner_id = str(user_id)
+    active = collection("jumuiya_biashara_active_business").find_one({
+        "user_id": owner_id
+    })
+    if active and active.get("business_id"):
+        selected = collection("jumuiya_businesses").find_one({
+            "_id": clean_id(active["business_id"]),
+            "owner_user_id": owner_id,
+        })
+        if selected:
+            return serialise(selected)
+
     return serialise(
-        collection(
-            "jumuiya_businesses"
-        ).find_one({
-            "owner_user_id": str(
-                user_id
-            )
+        collection("jumuiya_businesses").find_one({
+            "owner_user_id": owner_id
         })
     )
 
