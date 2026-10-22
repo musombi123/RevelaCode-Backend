@@ -588,16 +588,37 @@ def revenue_start_checkout():
             "checkout": _public_checkout(saved),
         }), 503
 
-    if str(response.get("ResponseCode", "")) != "0" or not response.get("CheckoutRequestID") or not response.get("MerchantRequestID"):
+    if str(response.get("ResponseCode", "")) != "0":
         rows.update_one(
             {"_id": document["_id"]},
             {"$set": {
                 "status": "initiation_failed",
-                "message": str(response.get("errorMessage") or response.get("ResponseDescription") or "Daraja did not return valid checkout identifiers.")[:300],
+                "message": str(response.get("errorMessage") or response.get("ResponseDescription") or "Daraja rejected the STK Push request.")[:300],
                 "updated_at": now_utc(),
             }, "$unset": {"active_checkout_slot": ""}},
         )
-        return _error("Daraja did not accept the STK Push request.", 502, "mpesa_request_rejected")
+        return _error("Daraja rejected the STK Push request. No checkout was accepted.", 502, "mpesa_request_rejected")
+
+    if not response.get("CheckoutRequestID") or not response.get("MerchantRequestID"):
+        # ResponseCode 0 means Daraja accepted the request. Missing correlation
+        # IDs make the outcome impossible to track safely, so retain the slot
+        # and require finance to reconcile the provider record before another try.
+        rows.update_one(
+            {"_id": document["_id"]},
+            {"$set": {
+                "status": "submission_unknown",
+                "message": "Daraja accepted the STK request but did not return both checkout identifiers. Do not retry until finance reconciles the provider record.",
+                "submission_error": "accepted_response_missing_checkout_identifiers",
+                "updated_at": now_utc(),
+            }},
+        )
+        saved = rows.find_one({"_id": document["_id"]}) or document
+        return jsonify({
+            "success": False,
+            "code": "mpesa_checkout_reference_missing",
+            "message": "Daraja accepted the request but its checkout identifiers are missing. Do not pay again; finance reconciliation is required.",
+            "checkout": _public_checkout(saved),
+        }), 503
 
     checkout_id = str(response["CheckoutRequestID"])
     merchant_id = str(response["MerchantRequestID"])
