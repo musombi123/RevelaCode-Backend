@@ -37,6 +37,7 @@ ROLE_PRINCIPAL = "principal"
 ROLE_BURSAR = "bursar"
 ROLE_REGISTRAR = "registrar"
 ROLE_TEACHER = "teacher"
+ROLE_STOREKEEPER = "storekeeper"
 
 ROLES = (
     ROLE_OWNER,
@@ -44,6 +45,7 @@ ROLES = (
     ROLE_BURSAR,
     ROLE_REGISTRAR,
     ROLE_TEACHER,
+    ROLE_STOREKEEPER,
 )
 
 
@@ -53,6 +55,7 @@ ROLE_LABELS = {
     ROLE_BURSAR: "Bursar",
     ROLE_REGISTRAR: "Registrar",
     ROLE_TEACHER: "Teacher",
+    ROLE_STOREKEEPER: "Storekeeper",
 }
 
 
@@ -81,6 +84,10 @@ ROLE_DESCRIPTIONS = {
     ROLE_TEACHER: (
         "Teaching, attendance, lessons, assignments, assessments, "
         "CBC work and assigned-class academic activities."
+    ),
+    ROLE_STOREKEEPER: (
+        "School inventory and store operations with read-only access to "
+        "the school identity and staff directory."
     ),
 }
 
@@ -208,6 +215,8 @@ PERMISSIONS = frozenset(
         # -----------------------------------------------------
         "automation.view",
         "automation.manage",
+        "inventory.view",
+        "inventory.manage",
     }
 )
 
@@ -360,6 +369,18 @@ ROLE_PERMISSIONS = {
         "reports.view",
         "reports.print",
     },
+    # ---------------------------------------------------------
+    # STOREKEEPER
+    # ---------------------------------------------------------
+
+    ROLE_STOREKEEPER: {
+        "school.view",
+        "staff.view",
+        "inventory.view",
+        "inventory.manage",
+        "calendar.view",
+    },
+
 }
 
 
