@@ -39,14 +39,14 @@ def _error_response(message, status_code, error_code=None):
 
 @revenue_bp.get("/health")
 def revenue_health():
-    from backend.revenue.mpesa import checkout_is_configured
+    from backend.revenue.mpesa import checkout_is_production_configured
 
     return jsonify({
         "success": True,
         "service": "jumuiya-revenue",
         "status": "operational",
         "billing_enabled": False,
-        "checkout_enabled": checkout_is_configured(),
+        "checkout_enabled": checkout_is_production_configured(),
         "payment_provider": "mpesa",
     }), 200
 
@@ -62,13 +62,13 @@ def revenue_list_plans():
             "unsupported_revenue_stream",
         )
 
-    from backend.revenue.mpesa import checkout_is_configured
+    from backend.revenue.mpesa import checkout_is_production_configured
 
     return jsonify({
         "success": True,
         "pricing_status": PRICING_STATUS,
         "billing_enabled": False,
-        "checkout_enabled": checkout_is_configured(),
+        "checkout_enabled": checkout_is_production_configured(),
         "plans": list_plans(hub=hub or None),
     }), 200
 
