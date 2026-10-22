@@ -167,31 +167,55 @@ def _validate_plan_values(data, *, creating, existing=None):
 def revenue_admin_overview():
     """Return cross-ecosystem intent metrics (not paid revenue)."""
     transactions = _all_intents()
-    total = transactions.count_documents({})
-    pending = transactions.count_documents({"status": "pending"})
+    intent_filter = {"payment_confirmed": {"$ne": True}}
+    total = transactions.count_documents(intent_filter)
+    pending = transactions.count_documents({"$and": [intent_filter, {"status": "pending"}]})
 
     stream_rows = transactions.aggregate([
+        {"$match": intent_filter},
         {"$group": {"_id": "$stream", "count": {"$sum": 1}}},
         {"$sort": {"_id": 1}},
     ])
     status_rows = transactions.aggregate([
+        {"$match": intent_filter},
         {"$group": {"_id": "$status", "count": {"$sum": 1}}},
         {"$sort": {"_id": 1}},
     ])
+    paid_filter = {"payment_confirmed": True, "status": "succeeded"}
+    paid_count = transactions.count_documents(paid_filter)
+    paid_rollup = list(transactions.aggregate([
+        {"$match": paid_filter},
+        {"$group": {
+            "_id": "$currency",
+            "amount": {"$sum": {"$convert": {
+                "input": "$amount", "to": "decimal", "onError": 0, "onNull": 0,
+            }}},
+            "count": {"$sum": 1},
+        }},
+        {"$sort": {"_id": 1}},
+    ]))
     plans = list_plans(include_retired=True)
-    latest = transactions.find_one({}, sort=[("created_at", DESCENDING)])
+    latest = transactions.find_one(intent_filter, sort=[("created_at", DESCENDING)])
+    latest_paid = transactions.find_one(paid_filter, sort=[("paid_at", DESCENDING)])
 
     return jsonify({
         "success": True,
         "billing_enabled": False,
+        "checkout_enabled": bool(transactions.find_one(paid_filter) is not None),
         "pricing_status": PRICING_STATUS,
         "metrics": {
             "total_intents": total,
             "pending_intents": pending,
+            "confirmed_payment_count": paid_count,
+            "latest_intent_at": _json_date(latest.get("created_at")) if latest else None,
+            "latest_payment_at": _json_date(latest_paid.get("paid_at")) if latest_paid else None,
             "plan_count": len(plans),
             "retired_plan_count": sum(1 for plan in plans if plan.get("status") == "retired"),
-            "latest_intent_at": _json_date(latest.get("created_at")) if latest else None,
         },
+        "confirmed_payment_totals": [
+            {"currency": row.get("_id") or "KES", "amount": str(row.get("amount", "0")), "count": row.get("count", 0)}
+            for row in paid_rollup
+        ],
         "stream_breakdown": [
             {"stream": row.get("_id") or "unknown", "count": row.get("count", 0)}
             for row in stream_rows
@@ -200,7 +224,70 @@ def revenue_admin_overview():
             {"status": row.get("_id") or "unknown", "count": row.get("count", 0)}
             for row in status_rows
         ],
-        "financial_note": "Transaction intents are not confirmed payments or recognized revenue.",
+        "financial_note": "Only verified provider-confirmed payment records are included in confirmed totals; payment intents are excluded.",
+    }), 200
+
+
+@revenue_bp.get("/admin/payments")
+@require_authenticated
+@require_roles(*PLATFORM_ADMIN_ROLES)
+def revenue_admin_payments():
+    """List provider-confirmed payments separately from unpaid intent records."""
+    try:
+        page = _parse_positive_int(request.args.get("page"), "page", 1)
+        per_page = _parse_positive_int(request.args.get("per_page"), "per_page", 25, 100)
+    except ValueError as exc:
+        return _error(str(exc), 400, "invalid_pagination")
+
+    query = {"payment_confirmed": True, "status": "succeeded"}
+    stream = request.args.get("stream", "").strip().lower()
+    if stream:
+        if stream not in SUPPORTED_REVENUE_STREAMS:
+            return _error("Unsupported revenue stream.", 400, "unsupported_revenue_stream")
+        query["stream"] = stream
+    provider = request.args.get("provider", "").strip().lower()
+    if provider:
+        if provider not in {"mpesa"}:
+            return _error("Unsupported payment provider.", 400, "unsupported_provider")
+        query["payment_provider"] = provider
+
+    transactions = _all_intents()
+    total = transactions.count_documents(query)
+    cursor = (
+        transactions.find(query)
+        .sort("paid_at", DESCENDING)
+        .skip((page - 1) * per_page)
+        .limit(per_page)
+    )
+    items = [_intent_for_admin(item) for item in cursor]
+    rollups = list(transactions.aggregate([
+        {"$match": query},
+        {"$group": {
+            "_id": {"currency": "$currency", "stream": "$stream"},
+            "amount": {"$sum": {"$convert": {
+                "input": "$amount", "to": "decimal", "onError": 0, "onNull": 0,
+            }}},
+            "count": {"$sum": 1},
+        }},
+        {"$sort": {"_id.stream": 1, "_id.currency": 1}},
+    ]))
+    return jsonify({
+        "success": True,
+        "items": items,
+        "totals": [
+            {
+                "currency": row.get("_id", {}).get("currency") or "KES",
+                "stream": row.get("_id", {}).get("stream") or "unknown",
+                "amount": str(row.get("amount", "0")),
+                "count": row.get("count", 0),
+            }
+            for row in rollups
+        ],
+        "pagination": {
+            "page": page, "per_page": per_page, "total": total,
+            "pages": (total + per_page - 1) // per_page,
+        },
+        "financial_note": "These records come only from verified provider payments; pending intents are not counted as revenue.",
     }), 200
 
 
