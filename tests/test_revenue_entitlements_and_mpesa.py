@@ -256,3 +256,77 @@ def test_sandbox_success_query_cannot_activate_subscription_or_revenue(monkeypat
     saved = rows.update_one.call_args.args[1]["$set"]
     assert saved["status"] == "sandbox_verified"
     assert "No subscription or revenue" in saved["result_description"]
+
+
+def test_success_callback_metadata_must_match_checkout_amount_phone_and_receipt():
+    checkout = {
+        "amount": "199.00",
+        "phone": "254712345678",
+    }
+    receipt = mpesa._validated_callback_receipt(checkout, {
+        "Amount": 199,
+        "PhoneNumber": 254712345678,
+        "MpesaReceiptNumber": "QWERTY1234",
+    })
+    assert receipt == "QWERTY1234"
+
+    with pytest.raises(ValueError):
+        mpesa._validated_callback_receipt(checkout, {
+            "Amount": 198,
+            "PhoneNumber": 254712345678,
+            "MpesaReceiptNumber": "QWERTY1234",
+        })
+
+    with pytest.raises(ValueError):
+        mpesa._validated_callback_receipt(checkout, {
+            "Amount": 199,
+            "PhoneNumber": 254700000000,
+            "MpesaReceiptNumber": "QWERTY1234",
+        })
+
+    with pytest.raises(ValueError):
+        mpesa._validated_callback_receipt(checkout, {
+            "Amount": 199,
+            "PhoneNumber": 254712345678,
+            "MpesaReceiptNumber": "",
+        })
+
+
+def test_provider_query_must_explicitly_correlate_checkout_and_merchant_ids(monkeypatch):
+    rows = Mock()
+    monkeypatch.setattr(mpesa, "_checkout_rows", lambda: rows)
+    monkeypatch.setattr(mpesa, "_environment", lambda: "production")
+    monkeypatch.setattr(
+        mpesa,
+        "activate_verified_payment",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("unmatched provider query must never activate")
+        ),
+    )
+    checkout = {
+        "_id": "checkout-row",
+        "checkout_request_id": "ws_CO_expected",
+        "merchant_request_id": "merchant-expected",
+        "user_id": "user-1",
+        "plan_code": "ai_plus",
+        "amount": "199.00",
+        "currency": "KES",
+    }
+
+    assert mpesa._apply_final_result(checkout, {
+        "ResultCode": "0",
+        "MerchantRequestID": "merchant-expected",
+    }) is False
+
+    rows.update_one.reset_mock()
+    assert mpesa._apply_final_result(checkout, {
+        "CheckoutRequestID": "ws_CO_expected",
+        "ResultCode": "0",
+    }) is False
+
+    rows.update_one.reset_mock()
+    assert mpesa._apply_final_result(checkout, {
+        "CheckoutRequestID": "ws_CO_expected",
+        "MerchantRequestID": "merchant-wrong",
+        "ResultCode": "0",
+    }) is False
