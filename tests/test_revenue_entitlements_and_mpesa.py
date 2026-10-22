@@ -11,6 +11,7 @@ from flask import Flask
 from backend.revenue import subscriptions
 from backend.revenue import mpesa
 from backend.revenue import trials
+from backend.revenue import admin_routes
 
 
 def _trial_row(ends_at, started_at=None):
@@ -592,3 +593,29 @@ def test_unknown_stk_submission_requires_admin_provider_reconciliation_before_re
     assert rows.row["status"] == "failed"
     assert "active_checkout_slot" not in rows.row
     assert rows.row["manual_resolution"]["resolution"] == "provider_checked_no_charge"
+
+
+def test_published_mpesa_subscription_must_have_whole_kes_price(monkeypatch):
+    monkeypatch.setattr(mpesa, "checkout_is_production_configured", lambda: True)
+
+    with pytest.raises(ValueError, match="whole-KES"):
+        admin_routes._validate_plan_values({
+            "code": "ai_plus",
+            "name": "Smart AI Plus",
+            "hub": "smart_ai",
+            "amount": "199.50",
+            "interval": "month",
+            "status": "available",
+            "features": [],
+        }, creating=True)
+
+    values = admin_routes._validate_plan_values({
+        "code": "ai_plus",
+        "name": "Smart AI Plus",
+        "hub": "smart_ai",
+        "amount": "199",
+        "interval": "month",
+        "status": "available",
+        "features": [],
+    }, creating=True)
+    assert values["amount"] == "199.00"
