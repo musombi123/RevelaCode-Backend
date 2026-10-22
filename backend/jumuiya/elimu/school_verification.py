@@ -989,6 +989,47 @@ def review_application(
         },
     )
 
+    # Notify the school owner after the decision is persisted. Notification
+    # delivery must never roll back or hide a successful verification decision.
+    owner_user_id = _text(document.get("owner_user_id"))
+    if owner_user_id:
+        try:
+            from backend.jumuiya.notifications.services import notify
+
+            decision_copy = {
+                "approve": (
+                    "School verification approved",
+                    f"{_text(document.get('name') or document.get('school_name'), 'Your school')} has been approved for Elimu school access.",
+                    "success",
+                ),
+                "needs_information": (
+                    "More school information required",
+                    f"Your school application is still pending. Reviewer notes: {notes or 'Additional resources or evidence are required. Open School Access to review the requirements.'}",
+                    "action_needed",
+                ),
+                "reject": (
+                    "School application rejected",
+                    f"Your school application was rejected. Reason: {notes or 'The reviewer did not provide additional notes. Contact support before resubmitting.'}",
+                    "warning",
+                ),
+            }
+            title, message, notice_type = decision_copy[decision]
+            notify(owner_user_id, {
+                "title": title,
+                "message": message,
+                "type": notice_type,
+                "data": {
+                    "school_id": str(document.get("_id") or document.get("school_id") or ""),
+                    "verification_status": new_verification_status,
+                    "review_notes": notes,
+                    "reviewed_at": now.isoformat(),
+                },
+            })
+        except Exception:
+            # Preserve the primary verification outcome if notifications are
+            # temporarily unavailable; the saved review_notes remain canonical.
+            pass
+
     return _serialize_school(
         reviewed,
         include_owner=True,
