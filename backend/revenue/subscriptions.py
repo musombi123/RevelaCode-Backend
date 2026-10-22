@@ -40,7 +40,7 @@ ADMIN_ROLES = ("admin", "platform_admin", "super_admin", "revelacode_admin")
 PREMIUM_FEATURES = {
     "premium", "advanced_ai", "image_generation", "document_analysis",
     "voice_generation", "long_memory", "advanced_analytics",
-    "advanced_reports", "automation", "expanded_history", "seller_tools",
+    "advanced_reports", "automation", "expanded_history", "seller_tools", "vision_analysis",
 }
 
 
