@@ -148,6 +148,22 @@ def start_hub_trial():
             "active_subscription_exists",
         )
 
+    from backend.revenue.mpesa import _checkout_rows
+    unresolved_checkout = _checkout_rows().find_one({
+        "user_id": user_id,
+        "hub": hub,
+        "status": {"$in": [
+            "initiating", "pending", "callback_received",
+            "awaiting_verification", "verified_activation_failed",
+        ]},
+    })
+    if unresolved_checkout:
+        return _error(
+            "A payment for this hub is still unresolved. Refresh its status before starting a trial.",
+            409,
+            "checkout_already_pending",
+        )
+
     rows = _trials()
     existing = rows.find_one({"user_id": user_id, "hub": hub})
     if existing:
