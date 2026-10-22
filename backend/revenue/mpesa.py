@@ -90,7 +90,7 @@ def checkout_is_production_configured() -> bool:
     """Only live Daraja configuration explicitly enabled by policy can charge."""
     providers = {
         item.strip().lower()
-        for item in _env("REVENUE_PAYMENT_PROVIDERS", "mpesa").split(",")
+        for item in _env("REVENUE_PAYMENT_PROVIDERS", "").split(",")
         if item.strip()
     }
     return (
