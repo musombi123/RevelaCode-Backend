@@ -28,6 +28,7 @@ from backend.jumuiya.core.permissions import (
     require_authenticated,
 )
 from backend.jumuiya.core.responses import ok
+from backend.revenue.subscriptions import require_revenue_entitlement
 
 from backend.jumuiya.biashara.intelligence.services import (
     economic_data_service,
@@ -233,6 +234,7 @@ def indicators():
     "/refresh"
 )
 @require_authenticated
+@require_revenue_entitlement("biashara", "advanced_analytics")
 def refresh():
     """
     Force an immediate refresh of economic data.
