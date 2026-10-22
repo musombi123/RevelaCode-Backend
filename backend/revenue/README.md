@@ -22,6 +22,8 @@ Use the exact values supplied by Safaricom for the registered Daraja application
 
 The backend reports checkout readiness at `GET /api/revenue/admin/billing/status` and in the public plans response. Readiness only means the required environment values are present; it does **not** prove a live Daraja payment has succeeded.
 
+A platform administrator can create a draft subscription plan with `POST /api/revenue/admin/plans` and update/publish it with `PUT /api/revenue/admin/plans/{plan_code}`. The Revenue Center includes the protected plan editor, active subscription/trial summaries, verified payment totals, and the M-Pesa checkout queue. Finance admins can reconcile one checkout with `POST /api/revenue/admin/checkouts/{checkoutRequestId}/refresh`. Pausing a plan remains possible when checkout is disabled; publishing requires production readiness.
+
 ## Checkout and confirmation
 
 1. An authenticated client calls `POST /api/revenue/checkout` with only `plan_code` and a Kenyan `phone`, plus an `Idempotency-Key` header. The amount is taken from the backend plan catalogue.
