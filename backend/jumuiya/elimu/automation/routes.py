@@ -7,6 +7,7 @@ from flask import Blueprint, request
 from backend.jumuiya.core.errors import APIError
 from backend.jumuiya.core.permissions import current_user_id
 from backend.jumuiya.core.responses import ok, created
+from backend.revenue.subscriptions import require_revenue_entitlement
 
 from . import services
 
@@ -134,6 +135,7 @@ def get_rule(rule_id: str):
 
 
 @automation_bp.post("/rules")
+@require_revenue_entitlement("elimu", "automation")
 def create_rule():
     """
     Create an automation rule.
@@ -179,6 +181,7 @@ def create_rule():
 
 
 @automation_bp.patch("/rules/<rule_id>")
+@require_revenue_entitlement("elimu", "automation")
 def update_rule(rule_id: str):
     """
     Update an automation rule.
@@ -202,6 +205,7 @@ def update_rule(rule_id: str):
 
 
 @automation_bp.post("/rules/<rule_id>/enable")
+@require_revenue_entitlement("elimu", "automation")
 def enable_rule(rule_id: str):
     """
     Enable an automation rule.
@@ -270,6 +274,7 @@ def delete_rule(rule_id: str):
 # ============================================================
 
 @automation_bp.post("/rules/<rule_id>/run")
+@require_revenue_entitlement("elimu", "automation")
 def run_rule(rule_id: str):
     """
     Manually queue one automation rule.
@@ -293,6 +298,7 @@ def run_rule(rule_id: str):
 
 
 @automation_bp.post("/run")
+@require_revenue_entitlement("elimu", "automation")
 def run():
     """
     Evaluate all enabled automation rules against the
@@ -402,6 +408,7 @@ def cancel_job(job_id: str):
 
 
 @automation_bp.post("/jobs/<job_id>/retry")
+@require_revenue_entitlement("elimu", "automation")
 def retry_job(job_id: str):
     """
     Manually retry a failed/cancelled automation job.
@@ -422,6 +429,7 @@ def retry_job(job_id: str):
 
 
 @automation_bp.post("/jobs/recover")
+@require_revenue_entitlement("elimu", "automation")
 def recover_jobs():
     """
     Recover stale jobs left by crashed/expired workers.
