@@ -6,6 +6,7 @@ from flask import Blueprint, request
 
 from backend.jumuiya.core.permissions import current_user_id
 from backend.jumuiya.core.responses import ok
+from backend.revenue.subscriptions import require_revenue_entitlement
 
 from . import schemas
 from . import services
@@ -227,6 +228,7 @@ def exam_reports():
 
 
 @reports_bp.post("/exam-reports/student")
+@require_revenue_entitlement("elimu", "advanced_reports")
 def generate_student_exam_report():
     """
     Generate a complete report card for one learner.
@@ -248,6 +250,7 @@ def generate_student_exam_report():
 
 
 @reports_bp.post("/exam-reports/class")
+@require_revenue_entitlement("elimu", "advanced_reports")
 def generate_class_exam_reports():
     """
     Generate report cards for an entire class or an explicit
@@ -329,6 +332,7 @@ def programmes():
 
 
 @reports_bp.post("/programmes")
+@require_revenue_entitlement("elimu", "advanced_reports")
 def generate_programme():
     """
     Generate a post-exam school programme.
