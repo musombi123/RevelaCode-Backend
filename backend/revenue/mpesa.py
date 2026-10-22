@@ -969,6 +969,24 @@ def revenue_admin_resolve_unknown_checkout(checkout_row_id):
             409,
             "checkout_not_manually_resolvable",
         )
+    if checkout.get("status") == "initiating":
+        last_updated = checkout.get("updated_at")
+        if not isinstance(last_updated, datetime):
+            return _error(
+                "The initiation timestamp is missing. Keep the checkout locked and ask support to reconcile it.",
+                409,
+                "checkout_initiation_timestamp_missing",
+            )
+        if last_updated.tzinfo is None:
+            last_updated = last_updated.replace(tzinfo=timezone.utc)
+        else:
+            last_updated = last_updated.astimezone(timezone.utc)
+        if now_utc() - last_updated < timedelta(minutes=5):
+            return _error(
+                "The STK request may still be in flight. Wait at least five minutes from the last initiation update and check Daraja before resolving it.",
+                409,
+                "checkout_initiation_still_fresh",
+            )
     if checkout.get("callback_received_at") or checkout.get("callback_metadata"):
         return _error(
             "Provider callback evidence exists. Use the Daraja reconciliation action instead of manually releasing this checkout.",
