@@ -578,11 +578,13 @@ def revenue_start_checkout():
                 "updated_at": now_utc(),
             }},
         )
-        return _error(
-            "M-Pesa submission could not be confirmed. Do not attempt another payment; this checkout requires reconciliation.",
-            503,
-            "mpesa_submission_unknown",
-        )
+        saved = rows.find_one({"_id": document["_id"]}) or document
+        return jsonify({
+            "success": False,
+            "code": "mpesa_submission_unknown",
+            "message": "M-Pesa submission could not be confirmed. Do not attempt another payment; this checkout requires reconciliation.",
+            "checkout": _public_checkout(saved),
+        }), 503
 
     if str(response.get("ResponseCode", "")) != "0" or not response.get("CheckoutRequestID") or not response.get("MerchantRequestID"):
         rows.update_one(
