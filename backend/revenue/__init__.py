@@ -13,4 +13,5 @@ revenue_bp = Blueprint(
 from backend.revenue import routes  # noqa: E402,F401
 from backend.revenue import trials  # noqa: E402,F401
 from backend.revenue import subscriptions  # noqa: E402,F401
+from backend.revenue import mpesa  # noqa: E402,F401
 from backend.revenue import admin_routes  # noqa: E402,F401
