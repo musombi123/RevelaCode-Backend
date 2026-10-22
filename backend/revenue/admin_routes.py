@@ -162,7 +162,7 @@ def _validate_plan_values(data, *, creating, existing=None):
     if values["status"] == "available":
         # "Available" means genuinely purchasable, not merely visible in the
         # catalogue. Only configured monthly/yearly hub subscriptions are enabled.
-        from backend.revenue.mpesa import checkout_is_configured
+        from backend.revenue.mpesa import checkout_is_production_configured
         from backend.revenue.subscriptions import HUBS
 
         hub = values.get("hub", existing.get("hub", ""))
@@ -172,8 +172,8 @@ def _validate_plan_values(data, *, creating, existing=None):
             raise ValueError("Only monthly and yearly subscription plans can be published for checkout.")
         if values["amount"] == "0.00":
             raise ValueError("A published subscription must have a positive price.")
-        if not checkout_is_configured():
-            raise ValueError("Configure M-Pesa Daraja credentials and a public HTTPS callback before publishing a plan.")
+        if not checkout_is_production_configured():
+            raise ValueError("Configure production M-Pesa Daraja credentials and a registered public HTTPS callback before publishing a plan.")
     return values
 
 
@@ -214,12 +214,12 @@ def revenue_admin_overview():
     latest = transactions.find_one(intent_filter, sort=[("created_at", DESCENDING)])
     latest_paid = transactions.find_one(paid_filter, sort=[("paid_at", DESCENDING)])
 
-    from backend.revenue.mpesa import checkout_is_configured
+    from backend.revenue.mpesa import checkout_is_production_configured
 
     return jsonify({
         "success": True,
         "billing_enabled": False,
-        "checkout_enabled": checkout_is_configured(),
+        "checkout_enabled": checkout_is_production_configured(),
         "pricing_status": PRICING_STATUS,
         "metrics": {
             "total_intents": total,
@@ -426,8 +426,8 @@ def revenue_admin_create_plan():
     )
 
     plan = get_plan(code)
-    from backend.revenue.mpesa import checkout_is_configured
-    published = values["status"] == "available" and checkout_is_configured()
+    from backend.revenue.mpesa import checkout_is_production_configured
+    published = values["status"] == "available" and checkout_is_production_configured()
     return jsonify({
         "success": True,
         "message": (
@@ -481,8 +481,8 @@ def revenue_admin_update_plan(plan_code):
         metadata={"changed_fields": sorted(data.keys()), "status": values["status"]},
     )
 
-    from backend.revenue.mpesa import checkout_is_configured
-    published = values["status"] == "available" and checkout_is_configured()
+    from backend.revenue.mpesa import checkout_is_production_configured
+    published = values["status"] == "available" and checkout_is_production_configured()
     return jsonify({
         "success": True,
         "message": (
