@@ -15,6 +15,7 @@ from backend.jumuiya.core.errors import APIError
 from backend.jumuiya.core.permissions import current_user_id, require_authenticated
 from backend.jumuiya.core.responses import created, ok
 from backend.jumuiya.elimu import school_verification
+from backend.jumuiya.elimu.permissions import authorize
 from backend.jumuiya.elimu.timetable.models import ENTRIES as TIMETABLE_ENTRIES, TIMETABLES as TIMETABLES_COLLECTION
 
 
@@ -865,6 +866,96 @@ def student_documents():
 # ============================================================================
 # SCHOOL OWNER REVIEW QUEUE
 # ============================================================================
+
+@portal_review_bp.get("/parents")
+@require_authenticated
+def school_parent_directory():
+    member = authorize(current_user_id(), "students.view")
+    school_id = str(member.get("school_id") or "")
+    if not school_id:
+        raise APIError("An active school membership is required.", 403, "elimu_membership_required")
+
+    links = list(collection(PORTAL_LINKS).find({
+        "school_id": school_id,
+        "requester_type": "parent",
+        "status": "verified",
+    }).sort("created_at", -1).limit(2000))
+    parents = {}
+    for link in links:
+        parent_id = _text(link.get("requester_user_id"), 160)
+        student_id = _text(link.get("student_id"), 80)
+        if not parent_id or not student_id:
+            continue
+        try:
+            student = collection(STUDENTS).find_one({
+                "_id": ObjectId(student_id),
+                "school_id": school_id,
+                "status": {"$in": ["active", "inactive", "graduated"]},
+            })
+        except (InvalidId, TypeError, ValueError):
+            student = None
+        if not student:
+            continue
+
+        row = parents.setdefault(parent_id, {
+            "id": parent_id,
+            "parent_id": parent_id,
+            "contact": "",
+            "students": [],
+            "portal_duration": [],
+            "portal_expires_at": None,
+            "relationships": [],
+        })
+        contact_parts = [
+            _text(student.get("guardian_email"), 254),
+            _text(student.get("guardian_phone"), 80),
+        ]
+        existing_contacts = [part for part in row["contact"].split(" · ") if part]
+        for contact in contact_parts:
+            if contact and contact not in existing_contacts:
+                existing_contacts.append(contact)
+        row["contact"] = " · ".join(existing_contacts) or "Contact not provided"
+
+        student_row = {
+            "id": student_id,
+            "name": _text(student.get("full_name"), 160),
+            "admission_number": _text(student.get("admission_number"), 80),
+            "class_name": _text(student.get("class_name"), 100),
+            "stream": _text(student.get("stream"), 60),
+            "status": _text(student.get("status"), 30),
+        }
+        if all(item["id"] != student_row["id"] for item in row["students"]):
+            row["students"].append(student_row)
+
+        duration = _text(student.get("student_duration") or student.get("duration_period"), 80)
+        expires = _ser(student.get("leaving_date") or student.get("course_completed_at"))
+        label = student_row["name"] or student_row["admission_number"] or "Student"
+        if duration:
+            row["portal_duration"].append(f"{label}: {duration}" + (f" (through {expires[:10]})" if isinstance(expires, str) and expires else ""))
+        elif expires:
+            row["portal_duration"].append(f"{label}: through {str(expires)[:10]}")
+        else:
+            row["portal_duration"].append(f"{label}: follows student enrolment duration")
+        if expires and (row["portal_expires_at"] is None or str(expires) < str(row["portal_expires_at"])):
+            row["portal_expires_at"] = expires
+        relationship = _text(link.get("relationship"), 40)
+        if relationship and relationship not in row["relationships"]:
+            row["relationships"].append(relationship)
+
+    results = []
+    for row in parents.values():
+        row["students"] = sorted(row["students"], key=lambda item: (item.get("class_name", ""), item.get("name", "")))
+        row["student_count"] = len(row["students"])
+        row["students_label"] = ", ".join(
+            f"{item['name'] or item['admission_number']} ({item['class_name'] or 'Class not set'}{f' / {item["stream"]}' if item['stream'] else ''})"
+            for item in row["students"]
+        )
+        row["portal_duration"] = "; ".join(row["portal_duration"])
+        row["relationships"] = ", ".join(row["relationships"])
+        results.append(row)
+    results.sort(key=lambda item: (item.get("id") or "").lower())
+    return ok({"parents": results, "count": len(results)})
+
 
 @portal_review_bp.get("/requests")
 @require_authenticated
