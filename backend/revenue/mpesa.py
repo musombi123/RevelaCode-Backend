@@ -83,8 +83,17 @@ def checkout_is_configured() -> bool:
 
 
 def checkout_is_production_configured() -> bool:
-    """Only live Daraja configuration may expose paid checkout/activation."""
-    return _environment() == "production" and checkout_is_configured()
+    """Only live Daraja configuration explicitly enabled by policy can charge."""
+    providers = {
+        item.strip().lower()
+        for item in _env("REVENUE_PAYMENT_PROVIDERS", "mpesa").split(",")
+        if item.strip()
+    }
+    return (
+        _environment() == "production"
+        and checkout_is_configured()
+        and "mpesa" in providers
+    )
 
 
 def _checkout_rows():
