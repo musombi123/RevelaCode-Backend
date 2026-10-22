@@ -425,6 +425,11 @@ def activate_verified_payment(event):
     now = now_utc()
     existing = events.find_one(query)
     if existing and existing.get("subscription_activated") is True:
+        # Repair a prior successful activation if an older release marked the
+        # event complete before writing the shared revenue history.
+        applied_subscription = _subscription_collection().find_one(query)
+        if applied_subscription:
+            _record_confirmed_revenue_transaction(event, plan, applied_subscription)
         return jsonify({
             "success": True,
             "replayed": True,
@@ -443,6 +448,9 @@ def activate_verified_payment(event):
         except DuplicateKeyError:
             existing = events.find_one(query)
             if existing and existing.get("subscription_activated") is True:
+                applied_subscription = _subscription_collection().find_one(query)
+                if applied_subscription:
+                    _record_confirmed_revenue_transaction(event, plan, applied_subscription)
                 return jsonify({"success": True, "replayed": True, "subscription": existing.get("subscription")}), 200
 
     subs = _subscription_collection()
