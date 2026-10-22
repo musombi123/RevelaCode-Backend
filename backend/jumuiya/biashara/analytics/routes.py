@@ -5,6 +5,7 @@ from flask import Blueprint, request
 from backend.jumuiya.core.permissions import current_user_id
 from backend.jumuiya.core.responses import ok
 from backend.jumuiya.biashara.analytics import service
+from backend.revenue.subscriptions import require_revenue_entitlement
 
 
 # =========================================================
@@ -57,6 +58,7 @@ def query_days():
 # =========================================================
 
 @analytics_bp.get("")
+@require_revenue_entitlement("biashara", "advanced_analytics")
 def analytics_overview():
     """
     GET /api/jumuiya/biashara/analytics
@@ -80,6 +82,7 @@ def analytics_overview():
 # =========================================================
 
 @analytics_bp.get("/sales")
+@require_revenue_entitlement("biashara", "advanced_analytics")
 def sales_analytics():
     """
     GET /api/jumuiya/biashara/analytics/sales
@@ -101,6 +104,7 @@ def sales_analytics():
 # =========================================================
 
 @analytics_bp.get("/revenue")
+@require_revenue_entitlement("biashara", "advanced_analytics")
 def revenue_analytics():
     """
     GET /api/jumuiya/biashara/analytics/revenue
@@ -122,6 +126,7 @@ def revenue_analytics():
 # =========================================================
 
 @analytics_bp.get("/orders")
+@require_revenue_entitlement("biashara", "advanced_analytics")
 def orders_analytics():
     """
     GET /api/jumuiya/biashara/analytics/orders
@@ -143,6 +148,7 @@ def orders_analytics():
 # =========================================================
 
 @analytics_bp.get("/customers")
+@require_revenue_entitlement("biashara", "advanced_analytics")
 def customers_analytics():
     """
     GET /api/jumuiya/biashara/analytics/customers
@@ -164,6 +170,7 @@ def customers_analytics():
 # =========================================================
 
 @analytics_bp.get("/products")
+@require_revenue_entitlement("biashara", "advanced_analytics")
 def products_analytics():
     """
     GET /api/jumuiya/biashara/analytics/products
@@ -185,6 +192,7 @@ def products_analytics():
 # =========================================================
 
 @analytics_bp.get("/expenses")
+@require_revenue_entitlement("biashara", "advanced_analytics")
 def expenses_analytics():
     """
     GET /api/jumuiya/biashara/analytics/expenses
@@ -206,6 +214,7 @@ def expenses_analytics():
 # =========================================================
 
 @analytics_bp.get("/profit")
+@require_revenue_entitlement("biashara", "advanced_analytics")
 def profit_analytics():
     """
     GET /api/jumuiya/biashara/analytics/profit
