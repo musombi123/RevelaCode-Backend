@@ -410,7 +410,7 @@ def _read_verified_payment():
     provider = str(payload["provider"]).strip().lower()
     allowed_providers = {
         item.strip().lower()
-        for item in os.getenv("REVENUE_PAYMENT_PROVIDERS", "mpesa").split(",")
+        for item in os.getenv("REVENUE_PAYMENT_PROVIDERS", "").split(",")
         if item.strip()
     }
     if provider not in allowed_providers:
