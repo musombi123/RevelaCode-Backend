@@ -238,7 +238,7 @@ def _public_checkout(row):
         "updated_at": row.get("updated_at").isoformat() if hasattr(row.get("updated_at"), "isoformat") else row.get("updated_at"),
         "message": row.get("message"),
         "subscription": row.get("subscription"),
-        "billing_enabled": checkout_is_configured(),
+        "billing_enabled": checkout_is_production_configured(),
     }
 
 
@@ -253,6 +253,19 @@ def _apply_final_result(checkout, result):
     stored_merchant_id = str(checkout.get("merchant_request_id") or "").strip()
     if query_merchant_id and stored_merchant_id and query_merchant_id != stored_merchant_id:
         logger.warning("Daraja query merchant request ID mismatch")
+        return False
+    if str(result_code) == "0" and _environment() != "production":
+        # Never let a historical sandbox transaction create a paid entitlement or
+        # revenue record, even if its provider query reports a success.
+        _checkout_rows().update_one(
+            {"_id": checkout["_id"]},
+            {"$set": {
+                "status": "sandbox_verified",
+                "result_code": "0",
+                "result_description": "Sandbox result received for test only. No subscription or revenue was created.",
+                "updated_at": now_utc(),
+            }},
+        )
         return False
     if result_code is None:
         # Query API may report only that a status query was accepted. That is not
