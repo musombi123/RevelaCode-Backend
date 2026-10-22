@@ -376,10 +376,13 @@ def revenue_admin_transactions():
 @require_authenticated
 @require_roles(*PLATFORM_ADMIN_ROLES)
 def revenue_admin_list_plans():
+    from backend.revenue.mpesa import checkout_is_production_configured
+    live_checkout = checkout_is_production_configured()
     return jsonify({
         "success": True,
-        "pricing_status": PRICING_STATUS,
-        "billing_enabled": False,
+        "pricing_status": get_pricing_status(),
+        "billing_enabled": live_checkout,
+        "checkout_enabled": live_checkout,
         "plans": list_plans(include_retired=True),
     }), 200
 
@@ -437,7 +440,7 @@ def revenue_admin_create_plan():
             "Plan saved to the proposed catalogue; it is not purchasable until published."
         ),
         "plan": plan,
-        "billing_enabled": False,
+        "billing_enabled": published,
         "checkout_enabled": published,
     }), 201
 
@@ -494,6 +497,6 @@ def revenue_admin_update_plan(plan_code):
             "Plan retired and is no longer purchasable."
         ),
         "plan": get_plan(existing["code"]),
-        "billing_enabled": False,
+        "billing_enabled": published,
         "checkout_enabled": published,
     }), 200
