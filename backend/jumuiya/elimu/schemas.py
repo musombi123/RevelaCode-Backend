@@ -913,6 +913,35 @@ def student_payload(data):
             False,
             30,
         ),
+        "student_duration": _text(
+            data,
+            "student_duration",
+            False,
+            80,
+        ),
+        "course_name": _text(
+            data,
+            "course_name",
+            False,
+            140,
+        ),
+        "course_completed": _bool(
+            data.get("course_completed"),
+            name="course_completed",
+            default=False,
+        ),
+        "course_completed_at": _text(
+            data,
+            "course_completed_at",
+            False,
+            30,
+        ),
+        "completion_status": _choice(
+            data,
+            "completion_status",
+            {"in_progress", "completed", "successful", "graduated"},
+            "in_progress",
+        ),
         "guardian_name": _text(
             data,
             "guardian_name",
