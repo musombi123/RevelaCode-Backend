@@ -12,6 +12,7 @@ from backend.jumuiya.core.responses import (
     ok,
     created,
 )
+from backend.revenue.subscriptions import require_revenue_entitlement
 from backend.jumuiya.core.errors import APIError
 from backend.jumuiya.marketplace import services
 
