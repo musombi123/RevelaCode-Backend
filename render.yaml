@@ -17,3 +17,17 @@ services:
     buildCommand: pip install -r requirements.txt
     startCommand: python -m backend.jumuiya.biashara.intelligence.jobs.update_market_data
     schedule: "0 */6 * * *"
+
+  - type: cron
+    name: revelacode-elimu-student-lifecycle
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python -m backend.jumuiya.elimu.lifecycle_worker
+    schedule: "17 2 * * *"
+
+  - type: cron
+    name: revelacode-elimu-teacher-reminders
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python -m backend.jumuiya.elimu.teacher_reminders
+    schedule: "*/5 * * * *"

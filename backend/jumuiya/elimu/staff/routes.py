@@ -350,6 +350,36 @@ def rebuild_teacher_scopes():
 
 
 # =========================================================
+# STAFF CHANGE REQUESTS
+# =========================================================
+
+@staff_bp.get("/change-requests")
+@require_authenticated
+def list_change_requests():
+    return ok(services.list_staff_change_requests(current_user_id()))
+
+
+@staff_bp.post("/<user_id>/change-requests")
+@require_authenticated
+def request_change(user_id: str):
+    payload = body()
+    return created(
+        services.request_staff_change(current_user_id(), user_id, payload),
+        "Staff change request submitted for owner approval.",
+    )
+
+
+@staff_bp.post("/change-requests/<request_id>/decision")
+@require_authenticated
+def decide_change_request(request_id: str):
+    payload = body()
+    return ok(
+        services.decide_staff_change_request(current_user_id(), request_id, payload),
+        "Staff change request decision recorded.",
+    )
+
+
+# =========================================================
 # STAFF MEMBER
 # =========================================================
 

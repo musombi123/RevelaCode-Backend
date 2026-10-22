@@ -15,6 +15,7 @@ from backend.jumuiya.elimu.permissions import (
     ROLE_PRINCIPAL,
     ROLE_REGISTRAR,
     ROLE_TEACHER,
+    ROLE_STOREKEEPER,
 )
 
 
@@ -44,6 +45,7 @@ ROLES = (
     ROLE_BURSAR,
     ROLE_REGISTRAR,
     ROLE_TEACHER,
+    ROLE_STOREKEEPER,
 )
 
 
@@ -677,6 +679,9 @@ def normalize_employment(
         ),
         "department": normalize_optional_text(
             source.get("department")
+        ),
+        "store": normalize_optional_text(
+            source.get("store") or source.get("store_name")
         ),
         "employment_type": normalize_employment_type(
             source.get("employment_type")

@@ -728,6 +728,24 @@ def student_document(
             data.get("leaving_date")
         ),
 
+        "student_duration": _text(
+            data.get("student_duration") or data.get("duration_period")
+        ),
+        "course_name": _text(
+            data.get("course_name") or data.get("programme_name")
+        ),
+        "course_completed": _safe_bool(
+            data.get("course_completed"),
+            False,
+        ),
+        "course_completed_at": _text(
+            data.get("course_completed_at") or data.get("completion_date")
+        ),
+        "completion_status": _text(
+            data.get("completion_status")
+        ),
+        "lifecycle": data.get("lifecycle") if isinstance(data.get("lifecycle"), dict) else {},
+
         "guardian_name": _text(
             data.get("guardian_name")
         ),

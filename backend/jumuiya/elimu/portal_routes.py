@@ -2,17 +2,20 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from io import BytesIO
 import re
+import math
 
 from bson import ObjectId
 from bson.errors import InvalidId
-from flask import Blueprint, request
+from flask import Blueprint, request, send_file
 
 from backend.jumuiya.core.database import collection
 from backend.jumuiya.core.errors import APIError
 from backend.jumuiya.core.permissions import current_user_id, require_authenticated
 from backend.jumuiya.core.responses import created, ok
 from backend.jumuiya.elimu import school_verification
+from backend.jumuiya.elimu.permissions import authorize
 from backend.jumuiya.elimu.timetable.models import ENTRIES as TIMETABLE_ENTRIES, TIMETABLES as TIMETABLES_COLLECTION
 
 
@@ -32,6 +35,8 @@ FEES = "jumuiya_fees"
 EVENTS = "jumuiya_school_events"
 PUBLIC_DOCUMENTS = "jumuiya_elimu_public_documents"
 PORTAL_LINKS = "jumuiya_elimu_portal_links"
+MEMBERS = "jumuiya_elimu_school_members"
+CERTIFICATES = "jumuiya_elimu_completion_certificates"
 MAX_NOTES = 500
 MAX_LIST = 100
 
@@ -128,6 +133,7 @@ def _find_student(school, identifier):
 
 
 def _project_student(student, school_name=""):
+    lifecycle = student.get("lifecycle") if isinstance(student.get("lifecycle"), dict) else {}
     return {
         "id": str(student["_id"]),
         "student_id": str(student["_id"]),
@@ -140,6 +146,22 @@ def _project_student(student, school_name=""):
         "status": _text(student.get("status"), 30),
         "school_id": str(student.get("school_id", "")),
         "school_name": school_name,
+        "enrollment_date": _ser(student.get("enrollment_date")),
+        "leaving_date": _ser(student.get("leaving_date")),
+        "student_duration": _text(student.get("student_duration") or student.get("duration_period"), 80),
+        "course_name": _text(student.get("course_name") or student.get("programme_name"), 140),
+        "completion_status": _text(student.get("completion_status"), 40),
+        "course_completed_at": _ser(student.get("course_completed_at")),
+        "portal_duration": _text(student.get("student_duration") or student.get("duration_period"), 80),
+        "portal_expires_at": _ser(student.get("leaving_date") or student.get("course_completed_at")),
+        "lifecycle_notice": {
+            "parent_reminder_sent_at": _ser(lifecycle.get("parent_reminder_sent_at")),
+            "parent_response_deadline": _ser(lifecycle.get("parent_response_deadline")),
+            "parent_response_at": _ser(lifecycle.get("parent_response_at")),
+            "parent_response_kind": _text(lifecycle.get("parent_response_kind"), 40),
+            "registrar_review_requested_at": _ser(lifecycle.get("registrar_review_requested_at")),
+            "review_status": _text(lifecycle.get("review_status"), 40),
+        },
     }
 
 
@@ -245,6 +267,32 @@ def _student_for_current_user():
     if len(matches) > 1:
         raise APIError("More than one student record is linked to this account. Contact the school to resolve the duplicate link.", 409, "multiple_student_links")
     return matches[0]
+
+
+def _school_record(school_id):
+    conditions = [{"_id": str(school_id)}, {"school_id": str(school_id)}]
+    try:
+        conditions.append({"_id": ObjectId(str(school_id))})
+    except (InvalidId, TypeError, ValueError):
+        pass
+    return collection(SCHOOLS).find_one({"$or": conditions})
+
+
+def _public_payment_accounts(school_id):
+    school = _school_record(school_id) or {}
+    settings = school.get("settings") if isinstance(school.get("settings"), dict) else {}
+    finance = settings.get("finance") if isinstance(settings.get("finance"), dict) else {}
+    accounts = finance.get("payment_accounts") if isinstance(finance.get("payment_accounts"), list) else []
+    fields = (
+        "id", "type", "label", "account_name", "account_number", "paybill",
+        "till", "bank_name", "branch", "account_reference", "instructions",
+        "currency", "active",
+    )
+    return [
+        {key: account.get(key) for key in fields if key in account}
+        for account in accounts
+        if isinstance(account, dict) and account.get("active") is not False
+    ]
 
 
 def _school_name(school_id):
@@ -384,7 +432,7 @@ def parent_children():
                 student = collection(STUDENTS).find_one({
                     "_id": ObjectId(str(link.get("student_id", ""))),
                     "school_id": str(link.get("school_id", "")),
-                    "status": "active",
+                    "status": {"$in": ["active", "inactive", "graduated"]},
                 })
             except (InvalidId, TypeError, ValueError):
                 student = None
@@ -425,7 +473,7 @@ def parent_child_profile(student_id):
     student = collection(STUDENTS).find_one({
         "_id": student_oid,
         "school_id": str(link.get("school_id", "")),
-        "status": "active",
+        "status": {"$in": ["active", "inactive", "graduated"]},
     })
     if not student:
         raise APIError("Student not found.", 404, "student_not_found")
@@ -437,39 +485,275 @@ def parent_child_profile(student_id):
 @require_authenticated
 def parent_child_documents(student_id):
     link = _verified_parent_link(student_id)
-    student = collection(STUDENTS).find_one({"_id": _object_id(student_id, "student ID"), "school_id": str(link.get("school_id", "")), "status": "active"})
+    student = collection(STUDENTS).find_one({
+        "_id": _object_id(student_id, "student ID"),
+        "school_id": str(link.get("school_id", "")),
+        "status": {"$in": ["active", "inactive", "graduated"]},
+    })
     if not student:
         raise APIError("Student not found.", 404, "student_not_found")
-    return ok({"documents": [_safe_document(item) for item in _student_documents(student, parent=True)]})
+    documents = [_safe_document(item) for item in _student_documents(student, parent=True)]
+    certificate = collection(CERTIFICATES).find_one({
+        "school_id": str(student.get("school_id", "")),
+        "student_id": str(student["_id"]),
+        "certificate_type": "course_completion",
+        "status": "issued",
+    })
+    if certificate:
+        documents.insert(0, {
+            "id": str(certificate.get("certificate_code") or certificate.get("_id") or ""),
+            "title": "Course completion certificate",
+            "description": f"Congratulations! Certificate for { _text(certificate.get('student_name'), 160) or 'the student' } · { _text(certificate.get('course_name'), 140) or 'completed course' }",
+            "document_type": "completion_certificate",
+            "certificate_code": _text(certificate.get("certificate_code"), 80),
+            "created_at": _ser(certificate.get("issued_at")),
+            "downloadable": True,
+        })
+    return ok({"documents": documents})
 
 
 @parent_bp.get("/children/<student_id>/finance")
 @require_authenticated
 def parent_child_finance(student_id):
     link = _verified_parent_link(student_id)
-    student = collection(STUDENTS).find_one({"_id": _object_id(student_id, "student ID"), "school_id": str(link.get("school_id", "")), "status": "active"})
+    student = collection(STUDENTS).find_one({
+        "_id": _object_id(student_id, "student ID"),
+        "school_id": str(link.get("school_id", "")),
+        "status": "active",
+    })
     if not student:
         raise APIError("Student not found.", 404, "student_not_found")
-    fees = list(collection(FEES).find({"school_id": str(student.get("school_id", "")), "student_id": str(student["_id"])}).sort("created_at", -1).limit(500))
+    school_id = str(student.get("school_id", ""))
+    fees = list(collection(FEES).find({
+        "school_id": school_id,
+        "student_id": str(student["_id"]),
+    }).sort("created_at", -1).limit(500))
     total_due = 0.0
     total_paid = 0.0
     result = []
     for fee in fees:
         amount = _number(fee.get("amount"))
         paid = _number(fee.get("amount_paid") if fee.get("amount_paid") is not None else fee.get("paid_amount"))
-        total_due += max(amount - paid, 0)
+        balance = max(amount - paid, 0)
+        total_due += balance
         total_paid += max(paid, 0)
         result.append({
             "id": str(fee.get("_id", "")),
             "title": _text(fee.get("title") or fee.get("description") or fee.get("fee_type"), 180),
             "description": _text(fee.get("description") or fee.get("title"), 180),
+            "fee_type": _text(fee.get("fee_type") or fee.get("category") or fee.get("title"), 80),
+            "term": _text(fee.get("term"), 50),
+            "academic_year": _text(fee.get("academic_year"), 30),
             "amount": amount,
             "paid_amount": paid,
-            "balance": max(amount - paid, 0),
+            "balance": balance,
             "status": _text(fee.get("status"), 40),
+            "due_date": _ser(fee.get("due_date")),
             "date": _ser(fee.get("created_at") or fee.get("date")),
+            "currency": _text(fee.get("currency") or "KES", 8),
         })
-    return ok({"student": _project_student(student, _text(link.get("school_name"), 180)), "fees": result, "total_due": round(total_due, 2), "total_paid": round(total_paid, 2)})
+    return ok({
+        "student": _project_student(student, _text(link.get("school_name"), 180)),
+        "fees": result,
+        "total_due": round(total_due, 2),
+        "total_paid": round(total_paid, 2),
+        "payment_accounts": _public_payment_accounts(school_id),
+        "payment_mode": "manual_receipt_review",
+        "payment_notice": "Use the school's listed instructions and submit proof for review. The portal does not claim a provider-confirmed online payment until a payment gateway is connected.",
+    })
+
+
+@parent_bp.post("/children/<student_id>/finance/receipts")
+@require_authenticated
+def parent_submit_fee_receipt(student_id):
+    link = _verified_parent_link(student_id)
+    student = collection(STUDENTS).find_one({
+        "_id": _object_id(student_id, "student ID"),
+        "school_id": str(link.get("school_id", "")),
+        "status": "active",
+    })
+    if not student:
+        raise APIError("Student not found.", 404, "student_not_found")
+
+    payload = _json_body()
+    fee_id = _text(payload.get("fee_id"), 160)
+    if not fee_id:
+        raise APIError("Choose a fee statement line before submitting a receipt.", 422, "fee_required")
+    method = _text(payload.get("payment_method"), 20).lower()
+    if method not in {"mpesa", "bank"}:
+        raise APIError("payment_method must be mpesa or bank.", 422, "validation_error")
+    try:
+        amount = float(payload.get("amount"))
+    except (TypeError, ValueError):
+        amount = 0.0
+    if not math.isfinite(amount) or amount <= 0 or amount > 1000000000:
+        raise APIError("Enter a valid positive receipt amount.", 422, "validation_error")
+    reference = _text(payload.get("payment_reference"), 120)
+    receipt_url = _text(payload.get("receipt_url"), 500)
+    notes = _text(payload.get("notes"), 800)
+    if not reference and not receipt_url:
+        raise APIError("Enter the M-Pesa/bank reference or attach a receipt URL.", 422, "receipt_evidence_required")
+    if receipt_url:
+        parsed = urlparse(receipt_url)
+        if parsed.scheme != "https" or not parsed.netloc:
+            raise APIError("Receipt URL must use HTTPS.", 422, "invalid_receipt_url")
+
+    school_id = str(student.get("school_id", ""))
+    conditions = [{"_id": candidate} for candidate in ([fee_id, _object_id(fee_id, "fee ID")] if ObjectId.is_valid(fee_id) else [fee_id])]
+    fee = collection(FEES).find_one({
+        "school_id": school_id,
+        "student_id": str(student["_id"]),
+        "$or": conditions,
+    })
+    if not fee:
+        raise APIError("The selected fee record does not belong to this student.", 404, "fee_not_found")
+    total = _number(fee.get("amount"))
+    paid = _number(fee.get("amount_paid") if fee.get("amount_paid") is not None else fee.get("paid_amount"))
+    balance = max(total - paid, 0)
+    if amount > balance + 0.0001:
+        raise APIError("Receipt amount exceeds the outstanding balance.", 422, "receipt_exceeds_balance")
+
+    receipts_collection = collection("jumuiya_elimu_fee_receipts")
+    duplicate = None
+    if reference:
+        duplicate = receipts_collection.find_one({
+            "school_id": school_id,
+            "payment_reference": reference,
+            "status": {"$in": ["pending", "approved"]},
+        })
+    if duplicate:
+        raise APIError("This payment reference has already been submitted to the school.", 409, "duplicate_payment_reference")
+
+    now = _now()
+    receipt = {
+        "school_id": school_id,
+        "student_id": str(student["_id"]),
+        "student_name": _text(student.get("full_name"), 160),
+        "admission_number": _text(student.get("admission_number"), 80),
+        "fee_id": str(fee.get("_id") or fee_id),
+        "fee_type": _text(fee.get("fee_type") or fee.get("title") or fee.get("description"), 80),
+        "parent_user_id": str(current_user_id()),
+        "payment_method": method,
+        "amount": round(amount, 2),
+        "currency": _text(fee.get("currency") or "KES", 8),
+        "payment_reference": reference,
+        "receipt_url": receipt_url,
+        "notes": notes,
+        "status": "pending",
+        "submitted_at": now,
+        "created_at": now,
+        "updated_at": now,
+    }
+    result = receipts_collection.insert_one(receipt)
+    receipt["_id"] = result.inserted_id
+
+    try:
+        school = _school_record(school_id) or {}
+        owner_id = str(school.get("owner_user_id") or school.get("owner_id") or "")
+        if owner_id:
+            from backend.jumuiya.notifications.services import notify
+            notify(owner_id, {
+                "title": "School fee receipt awaiting review",
+                "message": f"A parent submitted a {method.upper()} receipt for {receipt['student_name'] or 'a student'} ({receipt['admission_number'] or 'no admission number'}).",
+                "type": "action_needed",
+                "data": {"school_id": school_id, "student_id": str(student["_id"]), "receipt_id": str(result.inserted_id)},
+            })
+    except Exception:
+        pass
+
+    return created({
+        "receipt": _ser(receipt),
+        "status": "pending",
+        "payment_notice": "Receipt submitted for school review; this is not confirmation that the external payment has settled.",
+    }, "Fee receipt submitted for school review.")
+
+
+
+
+@parent_bp.get("/children/<student_id>/completion-certificate")
+@require_authenticated
+def parent_download_completion_certificate(student_id):
+    link = _verified_parent_link(student_id)
+    student = collection(STUDENTS).find_one({
+        "_id": _object_id(student_id, "student ID"),
+        "school_id": str(link.get("school_id", "")),
+    })
+    if not student:
+        raise APIError("Student not found.", 404, "student_not_found")
+    certificate = collection(CERTIFICATES).find_one({
+        "school_id": str(student.get("school_id", "")),
+        "student_id": str(student["_id"]),
+        "certificate_type": "course_completion",
+        "status": "issued",
+    })
+    if not certificate or not certificate.get("pdf_bytes"):
+        raise APIError("No completion certificate has been issued for this student yet.", 404, "certificate_not_found")
+    content = bytes(certificate["pdf_bytes"])
+    admission = re.sub(r"[^A-Za-z0-9_-]+", "-", _text(student.get("admission_number"), 60)) or str(student["_id"])
+    return send_file(
+        BytesIO(content),
+        mimetype="application/pdf",
+        as_attachment=True,
+        download_name=f"{admission}-completion-certificate.pdf",
+        max_age=0,
+    )
+
+
+@parent_bp.post("/children/<student_id>/inactivity-response")
+@require_authenticated
+def parent_respond_to_inactivity_reminder(student_id):
+    link = _verified_parent_link(student_id)
+    student = collection(STUDENTS).find_one({
+        "_id": _object_id(student_id, "student ID"),
+        "school_id": str(link.get("school_id", "")),
+        "status": "inactive",
+    })
+    if not student:
+        raise APIError("This student is no longer marked inactive or the record was not found.", 409, "inactive_student_not_found")
+    lifecycle = student.get("lifecycle") if isinstance(student.get("lifecycle"), dict) else {}
+    if not lifecycle.get("parent_reminder_sent_at"):
+        raise APIError("No inactivity reminder is awaiting a response.", 409, "inactivity_response_not_expected")
+    if lifecycle.get("parent_response_at"):
+        raise APIError("A response has already been recorded for this reminder.", 409, "inactivity_already_responded")
+    payload = _json_body()
+    response_kind = _text(payload.get("response"), 40).lower()
+    if response_kind not in {"still_enrolled", "withdrawn", "please_contact_me"}:
+        raise APIError("response must be still_enrolled, withdrawn, or please_contact_me.", 422, "invalid_inactivity_response")
+    notes = _text(payload.get("notes"), 800)
+    now = _now()
+    collection(STUDENTS).update_one(
+        {"_id": student["_id"], "school_id": str(student.get("school_id", "")), "status": "inactive", "lifecycle.parent_response_at": {"$exists": False}},
+        {"$set": {
+            "lifecycle.parent_response_at": now,
+            "lifecycle.parent_response_kind": response_kind,
+            "lifecycle.parent_response_notes": notes,
+            "lifecycle.review_status": "parent_responded",
+            "updated_at": now,
+        }},
+    )
+    school_id = str(student.get("school_id", ""))
+    notify_message = {
+        "still_enrolled": "The parent/guardian confirms the learner is still enrolled and requests a status review.",
+        "withdrawn": "The parent/guardian reports the learner has withdrawn. The registrar should verify details before closing the enrolment record.",
+        "please_contact_me": "The parent/guardian responded to the inactivity reminder and requests contact from the school.",
+    }[response_kind]
+    for member in collection(MEMBERS).find({
+        "school_id": school_id,
+        "status": "active",
+        "role": {"$in": ["registrar", "owner", "principal"]},
+    }).limit(200):
+        try:
+            from backend.jumuiya.notifications.services import notify
+            notify(str(member.get("user_id") or ""), {
+                "title": "Parent responded to student inactivity reminder",
+                "message": f"{_text(student.get('full_name'), 160) or 'A student'}: {notify_message}" + (f" Parent notes: {notes}" if notes else ""),
+                "type": "action_needed",
+                "data": {"school_id": school_id, "student_id": str(student["_id"]), "parent_response": response_kind},
+            })
+        except Exception:
+            pass
+    return ok({"recorded": True, "response": response_kind, "responded_at": now.isoformat()}, "Your response has been sent to the school for review.")
+
 
 
 # ============================================================================
@@ -582,6 +866,99 @@ def student_documents():
 # ============================================================================
 # SCHOOL OWNER REVIEW QUEUE
 # ============================================================================
+
+@portal_review_bp.get("/parents")
+@require_authenticated
+def school_parent_directory():
+    member = authorize(current_user_id(), "students.view")
+    school_id = str(member.get("school_id") or "")
+    if not school_id:
+        raise APIError("An active school membership is required.", 403, "elimu_membership_required")
+
+    links = list(collection(PORTAL_LINKS).find({
+        "school_id": school_id,
+        "requester_type": "parent",
+        "status": "verified",
+    }).sort("created_at", -1).limit(2000))
+    parents = {}
+    for link in links:
+        parent_id = _text(link.get("requester_user_id"), 160)
+        student_id = _text(link.get("student_id"), 80)
+        if not parent_id or not student_id:
+            continue
+        try:
+            student = collection(STUDENTS).find_one({
+                "_id": ObjectId(student_id),
+                "school_id": school_id,
+                "status": {"$in": ["active", "inactive", "graduated"]},
+            })
+        except (InvalidId, TypeError, ValueError):
+            student = None
+        if not student:
+            continue
+
+        row = parents.setdefault(parent_id, {
+            "id": parent_id,
+            "parent_id": parent_id,
+            "contact": "",
+            "students": [],
+            "portal_duration": [],
+            "portal_expires_at": None,
+            "relationships": [],
+        })
+        contact_parts = [
+            _text(student.get("guardian_email"), 254),
+            _text(student.get("guardian_phone"), 80),
+        ]
+        existing_contacts = [part for part in row["contact"].split(" · ") if part]
+        for contact in contact_parts:
+            if contact and contact not in existing_contacts:
+                existing_contacts.append(contact)
+        row["contact"] = " · ".join(existing_contacts) or "Contact not provided"
+
+        student_row = {
+            "id": student_id,
+            "name": _text(student.get("full_name"), 160),
+            "admission_number": _text(student.get("admission_number"), 80),
+            "class_name": _text(student.get("class_name"), 100),
+            "stream": _text(student.get("stream"), 60),
+            "status": _text(student.get("status"), 30),
+        }
+        if all(item["id"] != student_row["id"] for item in row["students"]):
+            row["students"].append(student_row)
+
+        duration = _text(student.get("student_duration") or student.get("duration_period"), 80)
+        expires = _ser(student.get("leaving_date") or student.get("course_completed_at"))
+        label = student_row["name"] or student_row["admission_number"] or "Student"
+        if duration:
+            row["portal_duration"].append(f"{label}: {duration}" + (f" (through {expires[:10]})" if isinstance(expires, str) and expires else ""))
+        elif expires:
+            row["portal_duration"].append(f"{label}: through {str(expires)[:10]}")
+        else:
+            row["portal_duration"].append(f"{label}: follows student enrolment duration")
+        if expires and (row["portal_expires_at"] is None or str(expires) < str(row["portal_expires_at"])):
+            row["portal_expires_at"] = expires
+        relationship = _text(link.get("relationship"), 40)
+        if relationship and relationship not in row["relationships"]:
+            row["relationships"].append(relationship)
+
+    results = []
+    for row in parents.values():
+        row["students"] = sorted(row["students"], key=lambda item: (item.get("class_name", ""), item.get("name", "")))
+        row["student_count"] = len(row["students"])
+        student_labels = []
+        for student_item in row["students"]:
+            display_name = student_item.get("name") or student_item.get("admission_number") or "Student"
+            class_label = student_item.get("class_name") or "Class not set"
+            stream_label = f" / {student_item.get('stream')}" if student_item.get("stream") else ""
+            student_labels.append(f"{display_name} ({class_label}{stream_label})")
+        row["students_label"] = ", ".join(student_labels)
+        row["portal_duration"] = "; ".join(row["portal_duration"])
+        row["relationships"] = ", ".join(row["relationships"])
+        results.append(row)
+    results.sort(key=lambda item: (item.get("id") or "").lower())
+    return ok({"parents": results, "count": len(results)})
+
 
 @portal_review_bp.get("/requests")
 @require_authenticated

@@ -41,6 +41,9 @@ from .models import (
 from .invitation_email import send_staff_invitation_email
 
 
+CHANGE_REQUESTS = "jumuiya_elimu_staff_change_requests"
+
+
 # =========================================================
 # COLLECTIONS
 # =========================================================
@@ -106,6 +109,8 @@ def _ser(
         "removed_at",
         "cancelled_at",
         "email_sent_at",
+        "requested_at",
+        "decided_at",
     ):
         value = data.get(
             key
@@ -215,6 +220,29 @@ def _require_school(
             404,
             "school_not_found",
         )
+
+
+def _notify_user(user_id: Any, *, title: str, message: str, kind: str, data: dict | None = None) -> None:
+    """Best-effort in-app notification using the shared Jumuiya notification store."""
+    if not _uid(user_id):
+        return
+    try:
+        from backend.jumuiya.notifications.services import notify
+
+        notify(_uid(user_id), {
+            "title": title,
+            "message": message,
+            "type": kind,
+            "data": data or {},
+        })
+    except Exception:
+        # A notification outage must not undo a committed staff change/request.
+        logging.exception("Elimu staff notification failed for user %s", _uid(user_id))
+
+
+def _owner_for_school(school_id: str) -> str:
+    school = _school_document(school_id) or {}
+    return _uid(school.get("owner_user_id") or school.get("owner_id"))
 
 
 # =========================================================
@@ -1443,6 +1471,194 @@ def revoke_invitation(user_id: Any, invitation_id: Any) -> dict:
     return {"invitation": _invitation_snapshot(document), "revoked": True}
 
 # =========================================================
+# OWNER-APPROVED STAFF CHANGE REQUESTS
+# =========================================================
+
+def list_staff_change_requests(user_id: Any) -> dict:
+    member = authorize(user_id, "staff.view")
+    school_id = _school_id(member)
+    documents = list(
+        collection(CHANGE_REQUESTS)
+        .find({"school_id": school_id})
+        .sort("requested_at", -1)
+        .limit(200)
+    )
+    return {
+        "school_id": school_id,
+        "count": len(documents),
+        "requests": [_ser(document) for document in documents],
+    }
+
+
+def request_staff_change(user_id: Any, staff_user_id: Any, payload: dict) -> dict:
+    requester = authorize(user_id, "staff.update")
+    requester_role = normalize_text(requester.get("role")).lower()
+    if requester_role != ROLE_PRINCIPAL:
+        raise APIError(
+            "Only the Principal/Headteacher may submit a staff transfer for owner approval.",
+            403,
+            "principal_change_request_required",
+        )
+
+    school_id = _school_id(requester)
+    target_user_id = _uid(staff_user_id)
+    target = _require_staff(school_id, target_user_id)
+    _protect_owner(target)
+
+    if not isinstance(payload, dict):
+        raise APIError("A JSON object is required.", 422, "validation_error")
+
+    change_type = normalize_text(payload.get("change_type") or "transfer").lower()
+    notes = normalize_text(payload.get("notes"))
+    if len(notes) > 1000:
+        raise APIError("notes must not exceed 1000 characters.", 422, "validation_error")
+
+    requested_changes = {}
+    if change_type == "transfer":
+        raw_employment = payload.get("employment") or {}
+        if not isinstance(raw_employment, dict):
+            raise APIError("employment must be an object.", 422, "validation_error")
+        employment = {}
+        for key in ("department", "store"):
+            if key in raw_employment:
+                value = normalize_text(raw_employment.get(key))
+                if len(value) > 160:
+                    raise APIError(f"{key} must not exceed 160 characters.", 422, "validation_error")
+                employment[key] = value or None
+        if employment:
+            requested_changes["employment"] = employment
+
+        if "assigned_class_ids" in payload:
+            class_ids = normalize_class_ids(payload.get("assigned_class_ids"))
+            if class_ids and normalize_text(target.get("role")).lower() != ROLE_TEACHER:
+                raise APIError("Only a teacher can be assigned to classes.", 422, "teacher_class_scope_invalid")
+            for class_id in class_ids:
+                _require_school_class(school_id, class_id)
+            requested_changes["assigned_class_ids"] = class_ids
+        if not requested_changes:
+            raise APIError("Specify a new department, store, or teacher class assignment.", 422, "empty_staff_change")
+    elif change_type == "remove":
+        requested_changes = {}
+    else:
+        raise APIError("change_type must be transfer or remove.", 422, "invalid_staff_change_type")
+
+    now = now_utc()
+    document = {
+        "school_id": school_id,
+        "staff_user_id": target_user_id,
+        "staff_name": _display_name(target),
+        "staff_role": normalize_text(target.get("role")).lower(),
+        "change_type": change_type,
+        "requested_changes": requested_changes,
+        "notes": notes,
+        "requested_by_user_id": _uid(user_id),
+        "requester_role": requester_role,
+        "status": "pending",
+        "requested_at": now,
+        "created_at": now,
+        "updated_at": now,
+    }
+    result = collection(CHANGE_REQUESTS).insert_one(document)
+    document["_id"] = result.inserted_id
+
+    owner_id = _owner_for_school(school_id)
+    label = "removal" if change_type == "remove" else "transfer"
+    _notify_user(
+        owner_id,
+        title=f"Staff {label} awaiting approval",
+        message=f"{_display_name(target) or target_user_id} has a pending staff {label} request from the Principal/Headteacher.",
+        kind="action_needed",
+        data={"school_id": school_id, "request_id": str(result.inserted_id), "staff_user_id": target_user_id},
+    )
+    return {"approval_required": True, "request": _ser(document)}
+
+
+def decide_staff_change_request(user_id: Any, request_id: Any, payload: dict) -> dict:
+    member = authorize(user_id, "staff.update")
+    if normalize_text(member.get("role")).lower() != ROLE_OWNER:
+        raise APIError("Only the School Owner/Director can approve or reject staff change requests.", 403, "owner_approval_required")
+
+    school_id = _school_id(member)
+    try:
+        request_oid = ObjectId(str(request_id))
+    except Exception:
+        request_oid = str(request_id)
+
+    request_doc = collection(CHANGE_REQUESTS).find_one({
+        "_id": request_oid,
+        "school_id": school_id,
+    })
+    if not request_doc or request_doc.get("status") != "pending":
+        raise APIError("Pending staff change request not found.", 404, "staff_change_request_not_found")
+
+    decision = normalize_text((payload or {}).get("decision")).lower()
+    notes = normalize_text((payload or {}).get("notes"))
+    if decision not in {"approve", "reject"}:
+        raise APIError("decision must be approve or reject.", 422, "invalid_staff_change_decision")
+    if len(notes) > 1000:
+        raise APIError("notes must not exceed 1000 characters.", 422, "validation_error")
+
+    now = now_utc()
+    # Claim the request before applying it so two owners/tabs cannot execute
+    # the same transfer or removal concurrently.
+    claim = collection(CHANGE_REQUESTS).update_one(
+        {"_id": request_doc["_id"], "school_id": school_id, "status": "pending"},
+        {"$set": {
+            "status": "processing",
+            "decision": decision,
+            "decision_notes": notes,
+            "decided_by_user_id": _uid(user_id),
+            "decision_started_at": now,
+            "updated_at": now,
+        }},
+    )
+    if not claim.matched_count:
+        raise APIError("This staff request is already being reviewed. Refresh and try again.", 409, "staff_change_request_changed")
+
+    target_id = _uid(request_doc.get("staff_user_id"))
+    try:
+        if decision == "approve":
+            if request_doc.get("change_type") == "remove":
+                remove_staff(user_id, target_id)
+            elif request_doc.get("change_type") == "transfer":
+                update_staff(user_id, target_id, request_doc.get("requested_changes") or {})
+            else:
+                raise APIError("Unsupported staff change request type.", 422, "invalid_staff_change_type")
+    except Exception:
+        # Do not leave a request permanently locked if validation or the
+        # underlying staff operation fails. No approval is recorded.
+        collection(CHANGE_REQUESTS).update_one(
+            {"_id": request_doc["_id"], "school_id": school_id, "status": "processing"},
+            {"$set": {"status": "pending", "updated_at": now_utc()},
+             "$unset": {"decision": "", "decision_notes": "", "decided_by_user_id": "", "decision_started_at": ""}},
+        )
+        raise
+
+    status = "approved" if decision == "approve" else "rejected"
+    updated = collection(CHANGE_REQUESTS).find_one_and_update(
+        {"_id": request_doc["_id"], "school_id": school_id, "status": "processing", "decision": decision},
+        {"$set": {
+            "status": status,
+            "decided_at": now_utc(),
+            "updated_at": now_utc(),
+        }},
+        return_document=__import__("pymongo").ReturnDocument.AFTER,
+    )
+    if not updated:
+        raise APIError("Request action was applied but its audit status could not be finalized. Contact support.", 500, "staff_change_request_finalize_failed")
+
+    requester_id = _uid(request_doc.get("requested_by_user_id"))
+    _notify_user(
+        requester_id,
+        title=f"Staff {request_doc.get('change_type', 'change')} request {status}",
+        message=f"The School Owner has {status} your request for {request_doc.get('staff_name') or target_id}." + (f" Notes: {notes}" if notes else ""),
+        kind="success" if decision == "approve" else "warning",
+        data={"school_id": school_id, "request_id": str(request_doc["_id"]), "decision": decision},
+    )
+    return {"request": _ser(updated), "applied": decision == "approve"}
+
+
+# =========================================================
 # UPDATE STAFF
 # =========================================================
 
@@ -1490,6 +1706,15 @@ def update_staff(
     updates = dict(
         payload
     )
+
+    requester_role = normalize_text(member.get("role")).lower()
+    approval_fields = {"employment", "assigned_class_ids", "role", "status"}
+    if requester_role == ROLE_PRINCIPAL and approval_fields.intersection(updates):
+        raise APIError(
+            "Staff department, store, class assignment, role, and status changes must be submitted as a request and approved by the School Owner/Director.",
+            403,
+            "owner_approval_required",
+        )
 
     current_role = normalize_text(
         document.get(
@@ -1869,6 +2094,23 @@ def remove_staff(
     _protect_owner(
         document
     )
+
+    requester_role = normalize_text(member.get("role")).lower()
+    if requester_role == ROLE_PRINCIPAL:
+        return request_staff_change(
+            user_id,
+            target_user_id,
+            {
+                "change_type": "remove",
+                "notes": "Removal requested by the Principal/Headteacher.",
+            },
+        )
+    if requester_role != ROLE_OWNER:
+        raise APIError(
+            "Only the Principal/Headteacher may request removal; only the School Owner may execute it.",
+            403,
+            "staff_removal_role_denied",
+        )
 
     timestamp = now_utc()
 

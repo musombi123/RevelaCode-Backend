@@ -15,6 +15,7 @@ ROLE_LABELS = {
     "teacher": "Teacher",
     "bursar": "Bursar",
     "registrar": "Registrar",
+    "storekeeper": "Storekeeper",
 }
 
 
@@ -64,7 +65,7 @@ def send_staff_invitation_email(
     if not token or len(str(token)) < 20:
         raise ValueError("A valid invitation token is required.")
 
-    invite_url = f"{frontend_url}/elimu-invitation?{urlencode({'token': str(token)})}"
+    invite_url = f"{frontend_url}/elimu-invitation?{urlencode({'token': str(token), 'email': clean_recipient})}"
     expiry_text = "within the next 7 days"
     if isinstance(expires_at, datetime):
         expiry_text = expires_at.strftime("%d %B %Y at %H:%M UTC")
