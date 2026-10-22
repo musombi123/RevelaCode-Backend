@@ -215,3 +215,44 @@ def test_confirmed_provider_payment_is_recorded_once_in_existing_ledger(monkeypa
     assert rows[0]["provider_transaction_id"] == "ws_CO_payment123"
     assert rows[0]["amount"] == "199.00"
     assert rows[0]["receipt"] == "QAA123XYZ"
+
+
+
+def test_sandbox_configuration_never_enables_live_checkout(monkeypatch):
+    monkeypatch.setattr(mpesa, "checkout_is_configured", lambda: True)
+    monkeypatch.setattr(mpesa, "_environment", lambda: "sandbox")
+    assert mpesa.checkout_is_production_configured() is False
+
+    monkeypatch.setattr(mpesa, "_environment", lambda: "production")
+    assert mpesa.checkout_is_production_configured() is True
+
+
+def test_sandbox_success_query_cannot_activate_subscription_or_revenue(monkeypatch):
+    rows = Mock()
+    monkeypatch.setattr(mpesa, "_checkout_rows", lambda: rows)
+    monkeypatch.setattr(mpesa, "_environment", lambda: "sandbox")
+    monkeypatch.setattr(
+        mpesa,
+        "activate_verified_payment",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("sandbox result must never call subscription activation")
+        ),
+    )
+    checkout = {
+        "_id": "checkout-row",
+        "checkout_request_id": "ws_CO_sandbox123",
+        "merchant_request_id": "merchant-1",
+    }
+
+    result = mpesa._apply_final_result(checkout, {
+        "CheckoutRequestID": "ws_CO_sandbox123",
+        "MerchantRequestID": "merchant-1",
+        "ResultCode": "0",
+        "ResultDesc": "The service request is processed successfully.",
+    })
+
+    assert result is False
+    rows.update_one.assert_called_once()
+    saved = rows.update_one.call_args.args[1]["$set"]
+    assert saved["status"] == "sandbox_verified"
+    assert "No subscription or revenue" in saved["result_description"]
