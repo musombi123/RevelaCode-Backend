@@ -241,6 +241,19 @@ def list_plans(hub=None, *, include_retired=False):
     return output
 
 
+def get_pricing_status():
+    """Report whether any payable hub subscription is published."""
+    for plan in list_plans():
+        if (
+            plan.get("hub") in {"shamba", "biashara", "elimu", "community", "smart_ai", "marketplace", "faith"}
+            and plan.get("status") == "available"
+            and str(plan.get("interval", "")).lower() in {"month", "year"}
+            and str(plan.get("amount", "0")) not in {"0", "0.0", "0.00"}
+        ):
+            return "published"
+    return PRICING_STATUS
+
+
 def get_plan(plan_code):
     """Find a plan by stable code, including plans marked retired."""
     normalized_code = str(plan_code or "").strip().lower()
