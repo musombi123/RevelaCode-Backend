@@ -109,12 +109,15 @@ def list_my_hub_trials():
                 "access": "start_trial",
             }
         )
+    from backend.revenue.mpesa import checkout_is_production_configured
+    checkout_enabled = checkout_is_production_configured()
     return jsonify({
         "success": True,
         "trial_days": TRIAL_DAYS,
         "trials": result,
-        "billing_enabled": False,
-        "note": "Trials are tracked centrally. Paid checkout activates only after a verified payment-provider integration is configured.",
+        "billing_enabled": checkout_enabled,
+        "checkout_enabled": checkout_enabled,
+        "note": "Trials are tracked centrally. Paid access is activated only after the provider confirms payment.",
     }), 200
 
 
