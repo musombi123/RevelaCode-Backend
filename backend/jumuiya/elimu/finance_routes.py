@@ -208,6 +208,9 @@ def review_fee_receipt(receipt_id: str):
     notes = _text(payload.get("notes"), 1000)
     if decision not in {"approve", "reject"}:
         raise APIError("decision must be approve or reject.", 422, "validation_error")
+
+    from pymongo import ReturnDocument
+
     school_id = _uid(member.get("school_id"))
     receipt_candidates = _id_candidates(receipt_id)
     receipt = collection(RECEIPTS).find_one({
@@ -219,21 +222,44 @@ def review_fee_receipt(receipt_id: str):
         raise APIError("Pending fee receipt was not found. Refresh the queue.", 404, "fee_receipt_not_found")
 
     now = _now()
-    new_status = "approved" if decision == "approve" else "rejected"
+    # Claim the receipt first. Only one reviewer can take a pending receipt,
+    # so retries or double-clicks cannot apply the same payment twice.
+    claimed = collection(RECEIPTS).find_one_and_update(
+        {"_id": receipt["_id"], "school_id": school_id, "status": "pending"},
+        {"$set": {
+            "status": "processing",
+            "decision": decision,
+            "review_notes": notes,
+            "reviewed_by": _uid(uid),
+            "review_started_at": now,
+            "updated_at": now,
+        }},
+        return_document=ReturnDocument.AFTER,
+    )
+    if not claimed:
+        raise APIError("Receipt is already being reviewed. Refresh the queue.", 409, "fee_receipt_already_reviewed")
+
+    def release_claim():
+        collection(RECEIPTS).update_one(
+            {"_id": receipt["_id"], "school_id": school_id, "status": "processing"},
+            {"$set": {"status": "pending", "updated_at": _now()},
+             "$unset": {"decision": "", "reviewed_by": "", "review_started_at": ""}},
+        )
+
+    new_status = "rejected"
     if decision == "approve":
         fee_id = _text(receipt.get("fee_id"), 160)
         fee = collection(FEES).find_one(_fee_query(school_id, fee_id))
         if not fee or _text(fee.get("student_id"), 160) != _text(receipt.get("student_id"), 160):
+            release_claim()
             raise APIError("The linked fee record is no longer available for this student.", 409, "fee_receipt_scope_conflict")
-        total = float(fee.get("amount") or 0)
-        paid = float(fee.get("amount_paid") if fee.get("amount_paid") is not None else fee.get("paid_amount") or 0)
         amount = float(receipt.get("amount") or 0)
-        balance = max(total - paid, 0.0)
-        if amount <= 0 or amount > balance + 0.0001:
-            raise APIError("The receipt amount now exceeds the outstanding balance. Reconcile the fee record before approving this receipt.", 409, "fee_balance_changed")
-        status = "paid" if paid + amount >= total - 0.0001 else "partially_paid"
+        if not isfinite(amount) or amount <= 0:
+            release_claim()
+            raise APIError("The receipt amount is invalid.", 409, "invalid_receipt_amount")
         fee_candidates = _id_candidates(str(fee.get("_id") or fee.get("id") or fee_id))
-        from pymongo import ReturnDocument
+        # Conditional atomic pipeline update guards the outstanding balance
+        # and computes the cumulative paid amount and status on the server.
         updated_fee = collection(FEES).find_one_and_update(
             {
                 "school_id": school_id,
@@ -248,31 +274,42 @@ def review_fee_receipt(receipt_id: str):
                     ]
                 },
             },
-            {"$set": {
-                "amount_paid": round(paid + amount, 2),
-                "paid_amount": round(paid + amount, 2),
-                "status": status,
-                "last_receipt_reviewed_at": now,
-                "updated_at": now,
-            }},
+            [
+                {"$set": {
+                    "amount_paid": {"$add": [{"$ifNull": ["$amount_paid", {"$ifNull": ["$paid_amount", 0]}]}, amount]},
+                    "paid_amount": {"$add": [{"$ifNull": ["$amount_paid", {"$ifNull": ["$paid_amount", 0]}]}, amount]},
+                    "status": {"$cond": [
+                        {"$gte": [
+                            {"$add": [{"$ifNull": ["$amount_paid", {"$ifNull": ["$paid_amount", 0]}]}, amount]},
+                            {"$ifNull": ["$amount", 0]},
+                        ]},
+                        "paid",
+                        "partial",
+                    ]},
+                    "last_receipt_reviewed_at": now,
+                    "updated_at": now,
+                }},
+            ],
             return_document=ReturnDocument.AFTER,
         )
         if not updated_fee:
-            raise APIError("The outstanding balance changed while this receipt was reviewed. Refresh and retry.", 409, "fee_balance_changed")
+            release_claim()
+            raise APIError("The outstanding balance changed or the receipt amount exceeds the balance. Refresh and retry.", 409, "fee_balance_changed")
+        new_status = "approved"
 
     updated_receipt = collection(RECEIPTS).find_one_and_update(
-        {"_id": receipt["_id"], "school_id": school_id, "status": "pending"},
+        {"_id": receipt["_id"], "school_id": school_id, "status": "processing", "decision": decision},
         {"$set": {
             "status": new_status,
             "review_notes": notes,
             "reviewed_by": _uid(uid),
-            "reviewed_at": now,
-            "updated_at": now,
+            "reviewed_at": _now(),
+            "updated_at": _now(),
         }},
-        return_document=__import__("pymongo").ReturnDocument.AFTER,
+        return_document=ReturnDocument.AFTER,
     )
     if not updated_receipt:
-        raise APIError("Receipt was reviewed by another staff member. Refresh the queue.", 409, "fee_receipt_already_reviewed")
+        raise APIError("Receipt review did not complete. Contact support before reprocessing this receipt.", 500, "fee_receipt_finalize_failed")
 
     try:
         from backend.jumuiya.notifications.services import notify
