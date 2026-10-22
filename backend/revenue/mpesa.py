@@ -23,11 +23,11 @@ from pymongo.errors import DuplicateKeyError
 
 from backend.jumuiya.core.audit import log_action, now_utc
 from backend.jumuiya.core.database import collection
-from backend.jumuiya.core.permissions import current_user_id, require_authenticated
+from backend.jumuiya.core.permissions import current_user_id, require_authenticated, require_roles
 from backend.revenue import revenue_bp
 from backend.revenue.money import MoneyValidationError, to_money
 from backend.revenue.plans import get_plan
-from backend.revenue.subscriptions import activate_verified_payment
+from backend.revenue.subscriptions import ADMIN_ROLES, activate_verified_payment
 
 logger = logging.getLogger("jumuiya.revenue.mpesa")
 CHECKOUTS_COLLECTION = "jumuiya_revenue_mpesa_checkouts"
@@ -711,6 +711,44 @@ def revenue_mpesa_callback():
         # Return 200 so the callback is not retried indefinitely; checkout stays
         # pending for the authenticated status/reconciliation endpoint.
         return jsonify({"ResultCode": 0, "ResultDesc": "Callback acknowledged for reconciliation"}), 200
+
+
+@revenue_bp.post("/admin/checkouts/<checkout_id>/refresh")
+@require_authenticated
+@require_roles(*ADMIN_ROLES)
+def revenue_admin_refresh_checkout(checkout_id):
+    """Reconcile a pending checkout against Daraja for approved finance admins."""
+    rows = _checkout_rows()
+    checkout = rows.find_one({"checkout_request_id": checkout_id})
+    if not checkout:
+        return _error("Checkout not found.", 404, "checkout_not_found")
+    if checkout.get("status") == "succeeded":
+        return jsonify({"success": True, "verified": True, "replayed": True, "checkout": _public_checkout(checkout)}), 200
+    if not checkout.get("checkout_request_id"):
+        return _error("Daraja did not provide a checkout reference; support reconciliation is required.", 409, "checkout_not_submitted")
+    try:
+        result = _query_checkout(checkout)
+    except RuntimeError as exc:
+        return _error(str(exc), 503, "mpesa_query_failed")
+    if str(result.get("CheckoutRequestID") or "").strip() != checkout_id:
+        return _error("Daraja did not return a matching checkout reference.", 502, "mpesa_checkout_mismatch")
+    success = _apply_final_result(checkout, result)
+    fresh = rows.find_one({"_id": checkout["_id"]}) or checkout
+    try:
+        log_action(
+            user_id=current_user_id(),
+            action="revenue.mpesa.checkout_reconciled",
+            resource="revenue_mpesa_checkout",
+            resource_id=checkout_id,
+            metadata={"status": fresh.get("status"), "verified": success},
+        )
+    except Exception:
+        current_app.logger.exception("M-Pesa checkout reconciliation succeeded but audit logging failed")
+    return jsonify({
+        "success": True,
+        "verified": success,
+        "checkout": _public_checkout(fresh),
+    }), 200
 
 
 @revenue_bp.get("/checkout/<checkout_id>")
