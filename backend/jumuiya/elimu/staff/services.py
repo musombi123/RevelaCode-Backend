@@ -1598,31 +1598,54 @@ def decide_staff_change_request(user_id: Any, request_id: Any, payload: dict) ->
     if len(notes) > 1000:
         raise APIError("notes must not exceed 1000 characters.", 422, "validation_error")
 
-    target_id = _uid(request_doc.get("staff_user_id"))
-    if decision == "approve":
-        if request_doc.get("change_type") == "remove":
-            remove_staff(user_id, target_id)
-        elif request_doc.get("change_type") == "transfer":
-            update_staff(user_id, target_id, request_doc.get("requested_changes") or {})
-        else:
-            raise APIError("Unsupported staff change request type.", 422, "invalid_staff_change_type")
-
     now = now_utc()
-    status = "approved" if decision == "approve" else "rejected"
-    updated = collection(CHANGE_REQUESTS).find_one_and_update(
+    # Claim the request before applying it so two owners/tabs cannot execute
+    # the same transfer or removal concurrently.
+    claim = collection(CHANGE_REQUESTS).update_one(
         {"_id": request_doc["_id"], "school_id": school_id, "status": "pending"},
         {"$set": {
-            "status": status,
+            "status": "processing",
             "decision": decision,
             "decision_notes": notes,
             "decided_by_user_id": _uid(user_id),
-            "decided_at": now,
+            "decision_started_at": now,
             "updated_at": now,
+        }},
+    )
+    if not claim.matched_count:
+        raise APIError("This staff request is already being reviewed. Refresh and try again.", 409, "staff_change_request_changed")
+
+    target_id = _uid(request_doc.get("staff_user_id"))
+    try:
+        if decision == "approve":
+            if request_doc.get("change_type") == "remove":
+                remove_staff(user_id, target_id)
+            elif request_doc.get("change_type") == "transfer":
+                update_staff(user_id, target_id, request_doc.get("requested_changes") or {})
+            else:
+                raise APIError("Unsupported staff change request type.", 422, "invalid_staff_change_type")
+    except Exception:
+        # Do not leave a request permanently locked if validation or the
+        # underlying staff operation fails. No approval is recorded.
+        collection(CHANGE_REQUESTS).update_one(
+            {"_id": request_doc["_id"], "school_id": school_id, "status": "processing"},
+            {"$set": {"status": "pending", "updated_at": now_utc()},
+             "$unset": {"decision": "", "decision_notes": "", "decided_by_user_id": "", "decision_started_at": ""}},
+        )
+        raise
+
+    status = "approved" if decision == "approve" else "rejected"
+    updated = collection(CHANGE_REQUESTS).find_one_and_update(
+        {"_id": request_doc["_id"], "school_id": school_id, "status": "processing", "decision": decision},
+        {"$set": {
+            "status": status,
+            "decided_at": now_utc(),
+            "updated_at": now_utc(),
         }},
         return_document=__import__("pymongo").ReturnDocument.AFTER,
     )
     if not updated:
-        raise APIError("Request was changed by another reviewer. Refresh and retry.", 409, "staff_change_request_changed")
+        raise APIError("Request action was applied but its audit status could not be finalized. Contact support.", 500, "staff_change_request_finalize_failed")
 
     requester_id = _uid(request_doc.get("requested_by_user_id"))
     _notify_user(
@@ -1683,6 +1706,15 @@ def update_staff(
     updates = dict(
         payload
     )
+
+    requester_role = normalize_text(member.get("role")).lower()
+    approval_fields = {"employment", "assigned_class_ids", "role", "status"}
+    if requester_role == ROLE_PRINCIPAL and approval_fields.intersection(updates):
+        raise APIError(
+            "Staff department, store, class assignment, role, and status changes must be submitted as a request and approved by the School Owner/Director.",
+            403,
+            "owner_approval_required",
+        )
 
     current_role = normalize_text(
         document.get(
