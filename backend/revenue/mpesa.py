@@ -294,7 +294,7 @@ def _apply_final_result(checkout, result):
                 "result_code": "0",
                 "result_description": "Sandbox result received for test only. No subscription or revenue was created.",
                 "updated_at": now_utc(),
-            }},
+            }, "$unset": {"active_checkout_slot": ""}},
         )
         return False
     if result_code is None:
@@ -317,7 +317,7 @@ def _apply_final_result(checkout, result):
                 "result_code": str(result_code)[:30],
                 "result_description": str(result.get("ResultDesc") or result.get("ResponseDescription") or "Payment was not completed.")[:300],
                 "updated_at": now_utc(),
-            }},
+            }, "$unset": {"active_checkout_slot": ""}},
         )
         return False
 
@@ -365,7 +365,7 @@ def _apply_final_result(checkout, result):
             "subscription": subscription,
             "updated_at": now_utc(),
             "verified_at": now_utc(),
-        }},
+        }, "$unset": {"active_checkout_slot": ""}},
     )
     return True
 
@@ -461,6 +461,15 @@ def revenue_start_checkout():
             "checkout": _public_checkout(unresolved),
         }), 409
 
+    try:
+        _access_token()
+    except RuntimeError as exc:
+        return _error(
+            "Daraja authentication is not ready. No checkout was submitted; check the provider configuration.",
+            503,
+            "mpesa_auth_unavailable",
+        )
+
     shortcode = _env("MPESA_SHORTCODE")
     timestamp = _timestamp()
     transaction_type = _env("MPESA_TRANSACTION_TYPE", "CustomerPayBillOnline")
@@ -494,10 +503,27 @@ def revenue_start_checkout():
     }
     if retry_failed_initiation:
         document = existing
-        rows.update_one(
-            {"_id": existing["_id"]},
-            {"$set": {"status": "initiating", "message": None, "updated_at": now_utc()}},
-        )
+        try:
+            claimed = rows.update_one(
+                {
+                    "_id": existing["_id"],
+                    "status": "initiation_failed",
+                    "checkout_request_id": {"$exists": False},
+                },
+                {"$set": {
+                    "status": "initiating",
+                    "message": None,
+                    "updated_at": now_utc(),
+                    "active_checkout_slot": f"{user_id}:{hub}",
+                }},
+            )
+        except DuplicateKeyError:
+            claimed = None
+        if not claimed or claimed.modified_count != 1:
+            current = rows.find_one({"_id": existing["_id"]}) or existing
+            if current.get("status") == "initiating" or current.get("active_checkout_slot"):
+                return jsonify({"success": True, "replayed": True, "checkout": _public_checkout(current)}), 200
+            return _error("The previous checkout state changed. Refresh before retrying.", 409, "checkout_state_conflict")
     else:
         try:
             inserted = rows.insert_one(document)
@@ -508,7 +534,19 @@ def revenue_start_checkout():
                 if existing.get("plan_code") != plan_code or existing.get("phone") != phone:
                     return _error("This Idempotency-Key was already used for a different checkout.", 409, "idempotency_conflict")
                 return jsonify({"success": True, "replayed": True, "checkout": _public_checkout(existing)}), 200
-            return _error("The checkout could not be safely started. Retry with a new Idempotency-Key.", 409, "checkout_conflict")
+            blocking = rows.find_one({
+                "user_id": user_id,
+                "hub": hub,
+                "active_checkout_slot": f"{user_id}:{hub}",
+            })
+            if blocking:
+                return jsonify({
+                    "success": False,
+                    "code": "checkout_already_pending",
+                    "message": "A payment for this hub is already being submitted or remains unresolved. Refresh its status before retrying.",
+                    "checkout": _public_checkout(blocking),
+                }), 409
+            return _error("The checkout could not be safely started. Refresh and retry only after checking payment status.", 409, "checkout_conflict")
 
     try:
         response = _daraja_post(
