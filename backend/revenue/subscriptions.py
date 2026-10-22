@@ -176,6 +176,24 @@ def _record_confirmed_revenue_transaction(event, plan, subscription):
             and existing.get("payment_provider") == provider
             and existing.get("provider_transaction_id") == provider_transaction_id
         ):
+            received_receipt = str(event.get("receipt") or "").strip()
+            stored_receipt = str(existing.get("receipt") or "").strip()
+            if received_receipt and (
+                not stored_receipt
+                or stored_receipt == provider_transaction_id
+                or stored_receipt == "PENDING_PROVIDER_RECEIPT"
+            ):
+                rows.update_one(
+                    {"_id": existing["_id"]},
+                    {"$set": {
+                        "receipt": received_receipt[:128],
+                        "receipt_updated_at": now_utc(),
+                        "updated_at": now_utc(),
+                    }},
+                )
+                existing["receipt"] = received_receipt[:128]
+            elif received_receipt and stored_receipt and stored_receipt != received_receipt:
+                raise RuntimeError("A different receipt is already attached to this verified provider payment.")
             return existing
         raise RuntimeError("The verified payment could not be safely appended to the revenue ledger.") from None
 
