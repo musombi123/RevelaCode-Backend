@@ -167,6 +167,7 @@ def get_listings():
     "/listings"
 )
 @require_authenticated
+@require_revenue_entitlement("marketplace", "seller_tools")
 def add_listing():
 
     data = body()
@@ -276,6 +277,7 @@ def add_listing():
     "/listings/<listing_id>"
 )
 @require_authenticated
+@require_revenue_entitlement("marketplace", "seller_tools")
 def remove_listing(
     listing_id,
 ):
