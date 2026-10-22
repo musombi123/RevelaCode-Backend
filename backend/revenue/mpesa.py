@@ -302,7 +302,7 @@ def _apply_final_result(checkout, result):
         "plan_code": str(checkout["plan_code"]),
         "amount": str(checkout["amount"]),
         "currency": str(checkout.get("currency") or "KES"),
-        "receipt": str(checkout.get("receipt") or checkout["checkout_request_id"])[:128],
+        "receipt": (str(checkout.get("receipt") or "").strip()[:128] or None),
         "metadata": {
             "checkout_request_id": checkout["checkout_request_id"],
             "merchant_request_id": checkout.get("merchant_request_id"),
