@@ -11,8 +11,8 @@ from backend.jumuiya.core.database import collection
 PRICING_STATUS = "draft"
 PLANS_COLLECTION = "jumuiya_revenue_plans"
 
-# These are draft/proposed catalogue values, not proof that a plan can be paid
-# for. Paid checkout remains disabled until payment verification is implemented.
+# These are proposed catalogue values, not approved live pricing. A plan must be
+# explicitly published by a platform administrator before checkout can charge.
 PLANS = [
     {
         "code": "free",
