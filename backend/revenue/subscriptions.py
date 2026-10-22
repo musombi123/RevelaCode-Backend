@@ -463,7 +463,11 @@ def activate_verified_payment(event):
             if existing and existing.get("subscription_activated") is True:
                 applied_subscription = _subscription_collection().find_one(query)
                 if applied_subscription:
-                    _record_confirmed_revenue_transaction(event, plan, applied_subscription)
+                    try:
+                        _record_confirmed_revenue_transaction(event, plan, applied_subscription)
+                    except Exception:
+                        current_app.logger.exception("Verified payment could not be reconciled into the revenue ledger")
+                        return _error("Payment was verified but the transaction history needs reconciliation. Retry status refresh; do not pay again.", 503, "revenue_ledger_reconciliation_pending")
                 return jsonify({"success": True, "replayed": True, "subscription": existing.get("subscription")}), 200
 
     subs = _subscription_collection()
