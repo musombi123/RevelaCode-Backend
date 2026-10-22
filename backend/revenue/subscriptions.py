@@ -13,6 +13,7 @@ import json
 import os
 import re
 from functools import wraps
+from threading import Lock
 from datetime import datetime, timedelta, timezone
 
 from flask import current_app, jsonify, request
@@ -31,6 +32,9 @@ from backend.revenue.plans import get_plan
 SUBSCRIPTIONS_COLLECTION = "jumuiya_revenue_subscriptions"
 PAYMENT_EVENTS_COLLECTION = "jumuiya_revenue_payment_events"
 TRIALS_COLLECTION = "jumuiya_revenue_trials"
+
+_SUBSCRIPTION_INDEX_LOCK = Lock()
+_SUBSCRIPTION_INDEXES_READY = False
 
 HUBS = {
     "shamba", "biashara", "elimu", "community", "smart_ai",
@@ -58,16 +62,21 @@ def _iso(value):
 
 
 def _subscription_collection():
+    global _SUBSCRIPTION_INDEXES_READY
     rows = collection(SUBSCRIPTIONS_COLLECTION)
-    rows.create_index(
-        [("provider", ASCENDING), ("provider_transaction_id", ASCENDING)],
-        unique=True,
-        name="uq_revenue_subscription_provider_transaction",
-    )
-    rows.create_index(
-        [("user_id", ASCENDING), ("hub", ASCENDING), ("ends_at", DESCENDING)],
-        name="ix_revenue_subscription_user_hub_end",
-    )
+    if not _SUBSCRIPTION_INDEXES_READY:
+        with _SUBSCRIPTION_INDEX_LOCK:
+            if not _SUBSCRIPTION_INDEXES_READY:
+                rows.create_index(
+                    [("provider", ASCENDING), ("provider_transaction_id", ASCENDING)],
+                    unique=True,
+                    name="uq_revenue_subscription_provider_transaction",
+                )
+                rows.create_index(
+                    [("user_id", ASCENDING), ("hub", ASCENDING), ("ends_at", DESCENDING)],
+                    name="ix_revenue_subscription_user_hub_end",
+                )
+                _SUBSCRIPTION_INDEXES_READY = True
     return rows
 
 
@@ -429,7 +438,11 @@ def activate_verified_payment(event):
         # event complete before writing the shared revenue history.
         applied_subscription = _subscription_collection().find_one(query)
         if applied_subscription:
-            _record_confirmed_revenue_transaction(event, plan, applied_subscription)
+            try:
+                _record_confirmed_revenue_transaction(event, plan, applied_subscription)
+            except Exception:
+                current_app.logger.exception("Verified payment could not be reconciled into the revenue ledger")
+                return _error("Payment was verified but the transaction history needs reconciliation. Retry status refresh; do not pay again.", 503, "revenue_ledger_reconciliation_pending")
         return jsonify({
             "success": True,
             "replayed": True,
@@ -459,7 +472,11 @@ def activate_verified_payment(event):
         "provider_transaction_id": event["provider_transaction_id"],
     })
     if already_applied:
-        _record_confirmed_revenue_transaction(event, plan, already_applied)
+        try:
+            _record_confirmed_revenue_transaction(event, plan, already_applied)
+        except Exception:
+            current_app.logger.exception("Verified payment could not be reconciled into the revenue ledger")
+            return _error("Payment was verified but the transaction history needs reconciliation. Retry status refresh; do not pay again.", 503, "revenue_ledger_reconciliation_pending")
         public = _public_subscription(already_applied)
         events.update_one(query, {"$set": {
             "subscription_activated": True,
@@ -507,7 +524,11 @@ def activate_verified_payment(event):
 
     # Do not call the payment event applied until the confirmed payment is
     # durably present in the same transaction history the Revenue Center reads.
-    _record_confirmed_revenue_transaction(event, plan, subscription)
+    try:
+        _record_confirmed_revenue_transaction(event, plan, subscription)
+    except Exception:
+        current_app.logger.exception("Subscription exists but verified payment ledger reconciliation failed")
+        return _error("Payment was verified but the transaction history needs reconciliation. Retry status refresh; do not pay again.", 503, "revenue_ledger_reconciliation_pending")
     public = _public_subscription(subscription)
     events.update_one(query, {"$set": {
         "subscription_activated": True,
