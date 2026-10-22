@@ -15,6 +15,7 @@ ROLE_LABELS = {
     "teacher": "Teacher",
     "bursar": "Bursar",
     "registrar": "Registrar",
+    "storekeeper": "Storekeeper",
 }
 
 
