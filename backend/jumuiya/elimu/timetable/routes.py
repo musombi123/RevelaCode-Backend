@@ -15,6 +15,7 @@ from backend.jumuiya.core.responses import (
     created,
     ok,
 )
+from backend.revenue.subscriptions import require_revenue_entitlement
 
 from . import schemas, services
 
@@ -177,6 +178,7 @@ def get_one(
 
 @timetable_bp.post("/<timetable_id>/generate")
 @authenticated
+@require_revenue_entitlement("elimu", "automation")
 def generate(
     timetable_id: str,
 ):
@@ -204,6 +206,7 @@ def generate(
 
 @timetable_bp.post("/<timetable_id>/optimize")
 @authenticated
+@require_revenue_entitlement("elimu", "automation")
 def optimize(
     timetable_id: str,
 ):
