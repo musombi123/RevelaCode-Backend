@@ -244,6 +244,11 @@ def _apply_final_result(checkout, result):
     if query_checkout_id != str(checkout.get("checkout_request_id") or ""):
         logger.warning("Daraja query checkout ID mismatch")
         return False
+    query_merchant_id = str(result.get("MerchantRequestID") or "").strip()
+    stored_merchant_id = str(checkout.get("merchant_request_id") or "").strip()
+    if query_merchant_id and stored_merchant_id and query_merchant_id != stored_merchant_id:
+        logger.warning("Daraja query merchant request ID mismatch")
+        return False
     if result_code is None:
         # Query API may report only that a status query was accepted. That is not
         # the transaction result; leave it pending and retry later.
@@ -496,19 +501,8 @@ def revenue_mpesa_callback():
                 if key in {"MpesaReceiptNumber", "Amount", "TransactionDate", "PhoneNumber"} and isinstance(value, (str, int, float)):
                     callback_meta[key] = value
 
-        if result_code is not None and result_code != 0:
-            rows.update_one(
-                {"_id": checkout["_id"]},
-                {"$set": {
-                    "status": "failed",
-                    "result_code": str(result_code),
-                    "result_description": str(callback.get("ResultDesc") or "Payment was not completed.")[:300],
-                    "callback_received_at": now_utc(),
-                    "updated_at": now_utc(),
-                }},
-            )
-            return jsonify({"ResultCode": 0, "ResultDesc": "Failure callback recorded"}), 200
-
+        # A callback is an untrusted notification. Even a failure result is
+        # reconciled against Daraja's query before we change a final status.
         rows.update_one(
             {"_id": checkout["_id"]},
             {"$set": {
