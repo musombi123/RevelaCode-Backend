@@ -64,6 +64,7 @@ def checkout_is_configured() -> bool:
         callback_ok = (
             parsed.scheme == "https"
             and bool(parsed.hostname)
+            and parsed.path.rstrip("/") == "/api/revenue/providers/mpesa/callback"
             and parsed.username is None
             and parsed.password is None
             and not parsed.query
