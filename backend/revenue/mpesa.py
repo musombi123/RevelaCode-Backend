@@ -548,13 +548,17 @@ def revenue_mpesa_callback():
         if not checkout:
             logger.warning("Received M-Pesa callback for unknown checkout request")
             return jsonify({"ResultCode": 0, "ResultDesc": "Callback acknowledged"}), 200
-        if checkout.get("status") == "succeeded":
-            return jsonify({"ResultCode": 0, "ResultDesc": "Callback already applied"}), 200
+        already_succeeded = checkout.get("status") == "succeeded"
 
         try:
             result_code = int(callback.get("ResultCode"))
         except (TypeError, ValueError):
             result_code = None
+        if already_succeeded and result_code != 0:
+            # Do not let a late/duplicate failure notification downgrade a
+            # checkout that was already confirmed by a server-side Daraja query.
+            return jsonify({"ResultCode": 0, "ResultDesc": "Callback already applied"}), 200
+
         callback_meta = {}
         raw_items = (callback.get("CallbackMetadata") or {}).get("Item", [])
         if isinstance(raw_items, list):
@@ -579,7 +583,7 @@ def revenue_mpesa_callback():
             rows.update_one(
                 {"_id": checkout["_id"]},
                 {"$set": {
-                    "status": "awaiting_verification",
+                    "status": "succeeded" if already_succeeded else "awaiting_verification",
                     "callback_received_at": now_utc(),
                     "message": "Callback identifier mismatch; payment requires provider reconciliation.",
                     "updated_at": now_utc(),
@@ -601,7 +605,7 @@ def revenue_mpesa_callback():
                         "callback_result_code": "0",
                         "callback_result_description": str(callback.get("ResultDesc") or "")[:300],
                         "callback_metadata": callback_meta,
-                        "status": "awaiting_verification",
+                        "status": "succeeded" if already_succeeded else "awaiting_verification",
                         "callback_received_at": now_utc(),
                         "message": "Successful callback metadata failed correlation checks; no subscription was activated.",
                         "updated_at": now_utc(),
@@ -609,6 +613,58 @@ def revenue_mpesa_callback():
                 )
                 logger.warning("M-Pesa success callback failed amount/payer/receipt validation")
                 return jsonify({"ResultCode": 0, "ResultDesc": "Callback acknowledged for reconciliation"}), 200
+
+        if already_succeeded:
+            # This checkout was already confirmed by Daraja. A late callback may
+            # now supply the official receipt; correlate amount, payer and both
+            # request IDs, then enrich the existing subscription and ledger.
+            receipt_event = {
+                "provider": "mpesa",
+                "provider_transaction_id": str(checkout["checkout_request_id"]),
+                "user_id": str(checkout["user_id"]),
+                "plan_code": str(checkout["plan_code"]),
+                "amount": str(checkout["amount"]),
+                "currency": str(checkout.get("currency") or "KES"),
+                "receipt": validated_receipt,
+                "metadata": {
+                    "checkout_request_id": checkout_id,
+                    "merchant_request_id": checkout.get("merchant_request_id"),
+                    "verification_source": "daraja_verified_checkout_late_callback",
+                },
+            }
+            response, status_code = activate_verified_payment(
+                receipt_event,
+                plan_override=checkout.get("plan_snapshot"),
+            )
+            body = response.get_json(silent=True) if hasattr(response, "get_json") else {}
+            if status_code in {200, 201} and isinstance(body, dict) and body.get("success") is True:
+                rows.update_one(
+                    {"_id": checkout["_id"]},
+                    {"$set": {
+                        "receipt": validated_receipt,
+                        "callback_result_code": "0",
+                        "callback_result_description": str(callback.get("ResultDesc") or "")[:300],
+                        "callback_metadata": callback_meta,
+                        "callback_received_at": now_utc(),
+                        "receipt_updated_at": now_utc(),
+                        "status": "succeeded",
+                        "message": "M-Pesa receipt reconciled into the existing subscription and revenue ledger.",
+                        "updated_at": now_utc(),
+                    }},
+                )
+            else:
+                logger.error("Late M-Pesa receipt could not be reconciled | checkout_id=%s", checkout_id)
+                rows.update_one(
+                    {"_id": checkout["_id"]},
+                    {"$set": {
+                        "callback_metadata": callback_meta,
+                        "callback_received_at": now_utc(),
+                        "status": "succeeded",
+                        "message": "Payment remains verified; its M-Pesa receipt needs finance reconciliation.",
+                        "updated_at": now_utc(),
+                    }},
+                )
+            return jsonify({"ResultCode": 0, "ResultDesc": "Callback acknowledged"}), 200
 
         # A callback is still reconciled against Daraja's query before changing
         # final state. Save its receipt only after the amount/payer checks above.
