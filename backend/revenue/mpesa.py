@@ -460,7 +460,7 @@ def revenue_start_checkout():
                 "PhoneNumber": phone,
                 "CallBackURL": callback_url,
                 "AccountReference": plan_code[:12],
-                "TransactionDesc": f"RevelaCode {plan_code}"[:100],
+                "TransactionDesc": "RevelaCode"[:13],
             },
         )
     except RuntimeError as exc:
