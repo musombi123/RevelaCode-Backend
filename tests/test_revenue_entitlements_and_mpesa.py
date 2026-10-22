@@ -416,3 +416,18 @@ def test_trial_is_not_consumed_when_hub_has_active_paid_subscription(monkeypatch
     assert response.get_json()["code"] == "active_subscription_exists"
     trial_collection.find_one.assert_not_called()
     trial_collection.insert_one.assert_not_called()
+
+
+def test_premium_entitlement_denies_cancelled_trial_even_before_end_date(monkeypatch):
+    now = datetime(2026, 10, 22, tzinfo=timezone.utc)
+    trial = _trial_row(now + timedelta(days=8), now - timedelta(days=22))
+    trial["status"] = "cancelled"
+    monkeypatch.setattr(subscriptions, "now_utc", lambda: now)
+    monkeypatch.setattr(subscriptions, "_active_subscription", lambda *args, **kwargs: None)
+    monkeypatch.setattr(subscriptions, "collection", lambda name: Mock(find_one=lambda query: trial))
+
+    result = subscriptions.resolve_entitlement("user-1", "smart_ai", "document_analysis")
+
+    assert result["allowed"] is False
+    assert result["premium_access"] is False
+    assert result["trial_status"] == "expired"
