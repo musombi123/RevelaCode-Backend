@@ -158,6 +158,22 @@ def _validate_plan_values(data, *, creating, existing=None):
     features = data.get("features", existing.get("features", []))
     values["features"] = _validate_features(features)
     values["currency"] = "KES"
+
+    if values["status"] == "available":
+        # "Available" means genuinely purchasable, not merely visible in the
+        # catalogue. Only configured monthly/yearly hub subscriptions are enabled.
+        from backend.revenue.mpesa import checkout_is_configured
+        from backend.revenue.subscriptions import HUBS
+
+        hub = values.get("hub", existing.get("hub", ""))
+        if hub not in HUBS:
+            raise ValueError("Only individual hub subscriptions can be published for checkout.")
+        if values["interval"] not in {"month", "year"}:
+            raise ValueError("Only monthly and yearly subscription plans can be published for checkout.")
+        if values["amount"] == "0.00":
+            raise ValueError("A published subscription must have a positive price.")
+        if not checkout_is_configured():
+            raise ValueError("Configure M-Pesa Daraja credentials and a public HTTPS callback before publishing a plan.")
     return values
 
 
@@ -410,11 +426,18 @@ def revenue_admin_create_plan():
     )
 
     plan = get_plan(code)
+    from backend.revenue.mpesa import checkout_is_configured
+    published = values["status"] == "available" and checkout_is_configured()
     return jsonify({
         "success": True,
-        "message": "Plan saved to the draft catalogue. Billing remains disabled.",
+        "message": (
+            "Plan published for M-Pesa subscription checkout."
+            if published else
+            "Plan saved to the proposed catalogue; it is not purchasable until published."
+        ),
         "plan": plan,
         "billing_enabled": False,
+        "checkout_enabled": published,
     }), 201
 
 
@@ -458,9 +481,18 @@ def revenue_admin_update_plan(plan_code):
         metadata={"changed_fields": sorted(data.keys()), "status": values["status"]},
     )
 
+    from backend.revenue.mpesa import checkout_is_configured
+    published = values["status"] == "available" and checkout_is_configured()
     return jsonify({
         "success": True,
-        "message": "Plan updated in the draft catalogue. Billing remains disabled.",
+        "message": (
+            "Plan published for M-Pesa subscription checkout."
+            if published else
+            "Plan moved to proposed status and is no longer purchasable."
+            if values["status"] == "proposed" else
+            "Plan retired and is no longer purchasable."
+        ),
         "plan": get_plan(existing["code"]),
         "billing_enabled": False,
+        "checkout_enabled": published,
     }), 200
