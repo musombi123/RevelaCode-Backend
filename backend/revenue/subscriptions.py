@@ -511,27 +511,45 @@ def activate_verified_payment(event, plan_override=None):
             if key in existing and str(existing.get(key)) != str(event.get(key)):
                 return _error("The provider transaction reference conflicts with an existing payment event.", 409, "payment_event_conflict")
         canonical_event = dict(existing)
-        canonical_event["receipt"] = str(event.get("receipt") or existing.get("receipt") or event["provider_transaction_id"])[:128]
+        canonical_event["receipt"] = (str(event.get("receipt") or existing.get("receipt") or "").strip()[:128] or None)
         canonical_event["metadata"] = existing.get("metadata") if isinstance(existing.get("metadata"), dict) else event.get("metadata", {})
     else:
         canonical_event = dict(event)
-        canonical_event["receipt"] = str(event.get("receipt") or event["provider_transaction_id"])[:128]
+        canonical_event["receipt"] = (str(event.get("receipt") or "").strip()[:128] or None)
         canonical_event["plan_snapshot"] = plan
 
     if existing and existing.get("subscription_activated") is True:
         applied_subscription = subs.find_one(query)
         if not applied_subscription:
             return _error("The payment event is marked applied but its subscription record is missing. Support reconciliation is required.", 503, "subscription_record_missing")
+        received_receipt = str(canonical_event.get("receipt") or "").strip()
+        stored_receipt = str(applied_subscription.get("receipt") or "").strip()
+        if received_receipt and (
+            not stored_receipt
+            or stored_receipt == str(canonical_event.get("provider_transaction_id") or "")
+            or stored_receipt == "PENDING_PROVIDER_RECEIPT"
+        ):
+            subs.update_one(
+                {"_id": applied_subscription["_id"]},
+                {"$set": {"receipt": received_receipt[:128], "receipt_updated_at": now_utc()}},
+            )
+            applied_subscription["receipt"] = received_receipt[:128]
         try:
             _record_confirmed_revenue_transaction(canonical_event, plan, applied_subscription)
         except Exception:
             current_app.logger.exception("Verified payment could not be reconciled into the revenue ledger")
             return _error("Payment was verified but the transaction history needs reconciliation. Retry status refresh; do not pay again.", 503, "revenue_ledger_reconciliation_pending")
+        public_replay = _public_subscription(applied_subscription)
+        events.update_one(query, {"$set": {
+            "receipt": received_receipt[:128] if received_receipt else existing.get("receipt"),
+            "subscription": public_replay,
+            "updated_at": now_utc(),
+        }})
         return jsonify({
             "success": True,
             "replayed": True,
-            "subscription": existing.get("subscription") or _public_subscription(applied_subscription),
-            "message": "This verified payment was already applied.",
+            "subscription": public_replay,
+            "message": "Verified payment already applied; any newly available receipt was reconciled.",
         }), 200
 
     if not existing:
@@ -585,7 +603,7 @@ def activate_verified_payment(event, plan_override=None):
         "plan_code": plan["code"],
         "provider": str(canonical_event["provider"]).lower(),
         "provider_transaction_id": str(canonical_event["provider_transaction_id"]),
-        "receipt": str(canonical_event.get("receipt") or canonical_event["provider_transaction_id"])[:128],
+        "receipt": (str(canonical_event.get("receipt") or "").strip()[:128] or None),
         "amount": f"{expected:.2f}",
         "currency": plan["currency"],
         "interval": interval,
