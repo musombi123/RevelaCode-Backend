@@ -224,10 +224,13 @@ def test_confirmed_provider_payment_is_recorded_once_in_existing_ledger(monkeypa
 def test_sandbox_configuration_never_enables_live_checkout(monkeypatch):
     monkeypatch.setattr(mpesa, "checkout_is_configured", lambda: True)
     monkeypatch.setattr(mpesa, "_environment", lambda: "sandbox")
-    monkeypatch.setenv("REVENUE_PAYMENT_PROVIDERS", "mpesa")
+    monkeypatch.delenv("REVENUE_PAYMENT_PROVIDERS", raising=False)
     assert mpesa.checkout_is_production_configured() is False
 
     monkeypatch.setattr(mpesa, "_environment", lambda: "production")
+    assert mpesa.checkout_is_production_configured() is False
+
+    monkeypatch.setenv("REVENUE_PAYMENT_PROVIDERS", "mpesa")
     assert mpesa.checkout_is_production_configured() is True
 
     monkeypatch.setenv("REVENUE_PAYMENT_PROVIDERS", "stripe")
