@@ -572,8 +572,9 @@ def revenue_mpesa_callback():
             )
         else:
             success = _apply_final_result(checkout, query_result)
-            if success:
-                rows.update_one({"_id": checkout["_id"]}, {"$set": {"receipt": callback_meta.get("MpesaReceiptNumber")}})
+            # The receipt was persisted before activation so the subscription
+            # and shared revenue ledger can store it. Do not overwrite it with
+            # None when the callback omits optional metadata.
         return jsonify({"ResultCode": 0, "ResultDesc": "Callback acknowledged"}), 200
     except Exception:
         logger.exception("M-Pesa callback processing failed")
