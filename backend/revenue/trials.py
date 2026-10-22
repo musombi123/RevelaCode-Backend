@@ -139,9 +139,17 @@ def start_hub_trial():
         return _error("Unsupported hub. Choose a hub from the published trial catalogue.", 400, "unsupported_hub")
 
     user_id = current_user_id()
+    now = now_utc()
+    from backend.revenue.subscriptions import _active_subscription
+    if _active_subscription(user_id, hub, now):
+        return _error(
+            "An active paid subscription already covers this hub. The free trial was not started or consumed.",
+            409,
+            "active_subscription_exists",
+        )
+
     rows = _trials()
     existing = rows.find_one({"user_id": user_id, "hub": hub})
-    now = now_utc()
     if existing:
         trial = _public_trial(existing, now)
         if trial["status"] == "active":
