@@ -279,6 +279,7 @@ def get_exam_report(report_id: str):
 
 
 @reports_bp.post("/exam-reports/<report_id>/publish")
+@require_revenue_entitlement("elimu", "advanced_reports")
 def publish_exam_report(report_id: str):
     """
     Publish a generated report card so downstream clients
@@ -364,6 +365,7 @@ def get_programme(programme_id: str):
 
 
 @reports_bp.post("/programmes/<programme_id>/publish")
+@require_revenue_entitlement("elimu", "advanced_reports")
 def publish_programme(programme_id: str):
     """
     Publish a generated school programme.
