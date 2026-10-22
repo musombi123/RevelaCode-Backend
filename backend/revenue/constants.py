@@ -14,6 +14,7 @@ SUPPORTED_REVENUE_STREAMS = frozenset({
     "community",
     "marketplace",
     "smart_ai",
+    "faith",
     "advertising",
     "transaction_fees",
 })
