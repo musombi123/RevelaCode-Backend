@@ -681,3 +681,48 @@ def test_daraja_acceptance_without_checkout_ids_keeps_slot_locked(monkeypatch, r
     assert response.get_json()["code"] == "mpesa_checkout_reference_missing"
     assert rows.row["status"] == "submission_unknown"
     assert rows.row["active_checkout_slot"] == "user-1:smart_ai"
+
+
+def test_recent_initiating_checkout_cannot_be_manually_released(monkeypatch, revenue_app):
+    from types import SimpleNamespace
+
+    row_id = ObjectId("64a1b2c3d4e5f67890123456")
+    row = {
+        "_id": row_id,
+        "user_id": "user-1",
+        "hub": "smart_ai",
+        "status": "initiating",
+        "active_checkout_slot": "user-1:smart_ai",
+        "updated_at": datetime.now(timezone.utc),
+        "created_at": datetime.now(timezone.utc),
+    }
+
+    class FakeRows:
+        def find_one(self, query):
+            return row if query.get("_id") == row_id else None
+
+        def update_one(self, query, update):
+            row.update(update.get("$set", {}))
+            for key in update.get("$unset", {}):
+                row.pop(key, None)
+            return SimpleNamespace(modified_count=1)
+
+    rows = FakeRows()
+    monkeypatch.setattr(mpesa, "_checkout_rows", lambda: rows)
+    monkeypatch.setattr(mpesa, "current_user_id", lambda: "admin-1")
+
+    with revenue_app.test_request_context(
+        f"/api/revenue/admin/checkouts/by-id/{row_id}/resolve-no-payment",
+        method="POST",
+        json={
+            "resolution": "provider_checked_no_charge",
+            "evidence_reference": "DAR AJA REVIEW-20261023",
+            "notes": "Checked provider transaction history and confirmed no matching debit.",
+        },
+    ):
+        response, status = mpesa.revenue_admin_resolve_unknown_checkout.__wrapped__.__wrapped__()
+
+    assert status == 409
+    assert response.get_json()["code"] == "checkout_initiation_still_fresh"
+    assert row["status"] == "initiating"
+    assert row["active_checkout_slot"] == "user-1:smart_ai"
