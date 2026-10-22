@@ -168,3 +168,50 @@ def test_mpesa_query_rejects_merchant_id_mismatch(monkeypatch):
         "ResultCode": "0",
     }) is False
     rows.update_one.assert_not_called()
+
+
+def test_confirmed_provider_payment_is_recorded_once_in_existing_ledger(monkeypatch, revenue_app):
+    from types import SimpleNamespace
+
+    rows = []
+
+    class FakeTransactions:
+        def find_one(self, query):
+            return next((row for row in rows if all(row.get(k) == v for k, v in query.items())), None)
+
+        def insert_one(self, document):
+            saved = dict(document)
+            saved["_id"] = "paid-ledger-id"
+            rows.append(saved)
+            return SimpleNamespace(inserted_id="paid-ledger-id")
+
+    transactions = FakeTransactions()
+    monkeypatch.setattr(subscriptions, "_ensure_revenue_ledger_indexes", lambda: None)
+    monkeypatch.setattr(subscriptions, "collection", lambda name: transactions)
+    monkeypatch.setattr(subscriptions, "log_action", lambda *args, **kwargs: None)
+
+    event = {
+        "provider": "mpesa",
+        "provider_transaction_id": "ws_CO_payment123",
+        "user_id": "user-1",
+        "plan_code": "ai_plus",
+        "amount": "199.00",
+        "currency": "KES",
+        "receipt": "QAA123XYZ",
+    }
+    plan = {"hub": "smart_ai", "interval": "month"}
+    subscription = {"_id": "subscription-id", "hub": "smart_ai"}
+
+    with revenue_app.app_context():
+        first = subscriptions._record_confirmed_revenue_transaction(event, plan, subscription)
+        second = subscriptions._record_confirmed_revenue_transaction(event, plan, subscription)
+
+    assert first["_id"] == "paid-ledger-id"
+    assert second["_id"] == "paid-ledger-id"
+    assert len(rows) == 1
+    assert rows[0]["payment_confirmed"] is True
+    assert rows[0]["status"] == "succeeded"
+    assert rows[0]["payment_provider"] == "mpesa"
+    assert rows[0]["provider_transaction_id"] == "ws_CO_payment123"
+    assert rows[0]["amount"] == "199.00"
+    assert rows[0]["receipt"] == "QAA123XYZ"
