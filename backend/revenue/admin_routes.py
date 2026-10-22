@@ -198,10 +198,12 @@ def revenue_admin_overview():
     latest = transactions.find_one(intent_filter, sort=[("created_at", DESCENDING)])
     latest_paid = transactions.find_one(paid_filter, sort=[("paid_at", DESCENDING)])
 
+    from backend.revenue.mpesa import checkout_is_configured
+
     return jsonify({
         "success": True,
         "billing_enabled": False,
-        "checkout_enabled": bool(transactions.find_one(paid_filter) is not None),
+        "checkout_enabled": checkout_is_configured(),
         "pricing_status": PRICING_STATUS,
         "metrics": {
             "total_intents": total,
