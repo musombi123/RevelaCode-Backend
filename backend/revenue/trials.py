@@ -203,27 +203,18 @@ def start_hub_trial():
 @revenue_bp.get("/entitlements")
 @require_authenticated
 def get_my_hub_entitlements():
-    """Return central trial status for the requested hub (not a payment claim)."""
+    """Resolve free, trial, or paid access using the central entitlement service."""
     hub = request.args.get("hub", "").strip().lower()
     if hub not in TRIAL_HUBS:
         return _error("A supported hub query parameter is required.", 400, "invalid_hub")
-    row = _trials().find_one({"user_id": current_user_id(), "hub": hub})
-    if not row:
-        return jsonify({
-            "success": True,
-            "hub": hub,
-            "hub_name": TRIAL_HUBS[hub],
-            "access": "start_trial",
-            "trial_status": "not_started",
-            "paid_subscription": False,
-        }), 200
-    trial = _public_trial(row)
+    feature = request.args.get("feature", "essential").strip().lower()
+    from backend.revenue.subscriptions import resolve_entitlement
+    try:
+        entitlement = resolve_entitlement(current_user_id(), hub, feature)
+    except ValueError as exc:
+        return _error(str(exc), 400, "invalid_entitlement_request")
     return jsonify({
-        "success": True,
-        "hub": hub,
+        **entitlement,
         "hub_name": TRIAL_HUBS[hub],
-        "access": trial["access"],
-        "trial_status": trial["status"],
-        "trial": trial,
-        "paid_subscription": False,
+        "trial_days": TRIAL_DAYS,
     }), 200
