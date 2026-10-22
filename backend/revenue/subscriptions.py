@@ -109,6 +109,27 @@ def _record_confirmed_revenue_transaction(event, plan, subscription):
             and existing.get("payment_provider") == provider
             and existing.get("provider_transaction_id") == provider_transaction_id
         ):
+            received_receipt = str(event.get("receipt") or "").strip()
+            stored_receipt = str(existing.get("receipt") or "").strip()
+            # A server-side status query may confirm payment before the callback
+            # carries its receipt. Allow only a missing/placeholder receipt to be
+            # enriched later; never overwrite an already-recorded real receipt.
+            if received_receipt and (
+                not stored_receipt
+                or stored_receipt == provider_transaction_id
+                or stored_receipt == "PENDING_PROVIDER_RECEIPT"
+            ):
+                rows.update_one(
+                    {"_id": existing["_id"]},
+                    {"$set": {
+                        "receipt": received_receipt[:128],
+                        "receipt_updated_at": now_utc(),
+                        "updated_at": now_utc(),
+                    }},
+                )
+                existing["receipt"] = received_receipt[:128]
+            elif received_receipt and stored_receipt and stored_receipt != received_receipt:
+                raise RuntimeError("A different receipt is already attached to this verified provider payment.")
             return existing
         raise RuntimeError("The verified provider payment conflicts with an existing revenue ledger key.")
 
@@ -138,7 +159,7 @@ def _record_confirmed_revenue_transaction(event, plan, subscription):
         "payment_confirmed": True,
         "payment_provider": provider,
         "provider_transaction_id": provider_transaction_id,
-        "receipt": str(event.get("receipt") or provider_transaction_id)[:128],
+        "receipt": (str(event.get("receipt") or "").strip()[:128] or None),
         "paid_at": now,
         "subscription_id": str(subscription.get("_id", "")),
         "created_at": now,
@@ -373,7 +394,7 @@ def _read_verified_payment():
         "plan_code": plan_code,
         "amount": f"{amount:.2f}",
         "currency": currency,
-        "receipt": str(payload.get("receipt") or transaction_id)[:128],
+        "receipt": (str(payload.get("receipt") or "").strip()[:128] or None),
         "metadata": payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {},
     }
 
