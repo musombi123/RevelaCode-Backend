@@ -11,6 +11,7 @@ from backend.jumuiya.elimu.permissions import (
     ROLE_PRINCIPAL,
     ROLE_REGISTRAR,
     ROLE_TEACHER,
+    ROLE_STOREKEEPER,
     ROLE_PERMISSIONS,
 )
 
@@ -30,6 +31,7 @@ ROLES = {
     ROLE_PRINCIPAL,
     ROLE_REGISTRAR,
     ROLE_TEACHER,
+    ROLE_STOREKEEPER,
 }
 
 ALL_ROLES = {
@@ -38,6 +40,7 @@ ALL_ROLES = {
     ROLE_PRINCIPAL,
     ROLE_REGISTRAR,
     ROLE_TEACHER,
+    ROLE_STOREKEEPER,
 }
 
 
@@ -881,6 +884,14 @@ def employment_payload(
             _text(
                 data.get("department"),
                 name="department",
+                max_len=MAX_DEPARTMENT_LENGTH,
+            )
+            or None
+        ),
+        "store": (
+            _text(
+                data.get("store") or data.get("store_name"),
+                name="store",
                 max_len=MAX_DEPARTMENT_LENGTH,
             )
             or None
