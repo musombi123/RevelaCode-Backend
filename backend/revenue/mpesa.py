@@ -156,39 +156,7 @@ def _timestamp():
 
 
 def _password(timestamp):
-    # A new idempotency key must not bypass an existing unresolved payment.
-    from backend.revenue.subscriptions import _active_subscription
-    if _active_subscription(user_id, hub):
-        return _error(
-            "This hub already has an active paid subscription. No new payment was started.",
-            409,
-            "active_subscription_exists",
-        )
-
-    unresolved = rows.find_one(
-        {
-            "user_id": user_id,
-            "hub": hub,
-            "status": {
-                "$in": [
-                    "initiating",
-                    "pending",
-                    "callback_received",
-                    "awaiting_verification",
-                    "verified_activation_failed",
-                ]
-            },
-        },
-        sort=[("created_at", DESCENDING)],
-    )
-    if unresolved:
-        return jsonify({
-            "success": False,
-            "code": "checkout_already_pending",
-            "message": "A payment for this hub is still unresolved. Refresh its status before attempting another payment.",
-            "checkout": _public_checkout(unresolved),
-        }), 409
-
+    """Build the Daraja STK password from configured credentials and timestamp."""
     shortcode = _env("MPESA_SHORTCODE")
     raw = f"{shortcode}{_env('MPESA_PASSKEY')}{timestamp}"
     return base64.b64encode(raw.encode("utf-8")).decode("ascii")
@@ -449,6 +417,41 @@ def revenue_start_checkout():
             return _error("This Idempotency-Key was already used for a different checkout.", 409, "idempotency_conflict")
         if not retry_failed_initiation:
             return jsonify({"success": True, "replayed": True, "checkout": _public_checkout(existing)}), 200
+
+    # Replays of the same idempotency key were returned above. A new key
+    # must not create another charge while a subscription is already active
+    # or the user's previous checkout has not reached a terminal result.
+    from backend.revenue.subscriptions import _active_subscription
+    if _active_subscription(user_id, hub):
+        return _error(
+            "This hub already has an active paid subscription. No new payment was started.",
+            409,
+            "active_subscription_exists",
+        )
+    unresolved = rows.find_one(
+        {
+            "user_id": user_id,
+            "hub": hub,
+            "status": {
+                "$in": [
+                    "initiating",
+                    "pending",
+                    "callback_received",
+                    "awaiting_verification",
+                    "verified_activation_failed",
+                    "submission_unknown",
+                ]
+            },
+        },
+        sort=[("created_at", DESCENDING)],
+    )
+    if unresolved:
+        return jsonify({
+            "success": False,
+            "code": "checkout_already_pending",
+            "message": "A payment for this hub is still unresolved. Refresh its status before attempting another payment.",
+            "checkout": _public_checkout(unresolved),
+        }), 409
 
     shortcode = _env("MPESA_SHORTCODE")
     timestamp = _timestamp()
