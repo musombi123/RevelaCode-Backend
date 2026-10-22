@@ -39,11 +39,15 @@ def _error_response(message, status_code, error_code=None):
 
 @revenue_bp.get("/health")
 def revenue_health():
+    from backend.revenue.mpesa import checkout_is_configured
+
     return jsonify({
         "success": True,
         "service": "jumuiya-revenue",
         "status": "operational",
         "billing_enabled": False,
+        "checkout_enabled": checkout_is_configured(),
+        "payment_provider": "mpesa",
     }), 200
 
 
