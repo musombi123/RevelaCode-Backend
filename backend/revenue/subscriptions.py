@@ -25,6 +25,7 @@ from backend.jumuiya.core.permissions import current_user_id, require_authentica
 from backend.revenue import revenue_bp
 from backend.revenue.constants import CURRENCY_DEFAULT
 from backend.revenue.money import MoneyValidationError, to_money
+from backend.revenue.ledger import COLLECTION_NAME as REVENUE_TRANSACTIONS_COLLECTION, _ensure_indexes as _ensure_revenue_ledger_indexes
 from backend.revenue.plans import get_plan
 
 SUBSCRIPTIONS_COLLECTION = "jumuiya_revenue_subscriptions"
@@ -79,6 +80,93 @@ def _events_collection():
     )
     rows.create_index([("created_at", DESCENDING)], name="ix_revenue_payment_event_created")
     return rows
+
+
+def _record_confirmed_revenue_transaction(event, plan, subscription):
+    """Idempotently append a successful provider-confirmed payment to the shared ledger."""
+    _ensure_revenue_ledger_indexes()
+    rows = collection(REVENUE_TRANSACTIONS_COLLECTION)
+    provider = str(event["provider"]).strip().lower()
+    provider_transaction_id = str(event["provider_transaction_id"]).strip()
+    user_id = str(event["user_id"]).strip()
+    idempotency_key = "paid:" + hashlib.sha256(
+        f"{provider}:{provider_transaction_id}".encode("utf-8")
+    ).hexdigest()
+    key_query = {"user_id": user_id, "idempotency_key": idempotency_key}
+    existing = rows.find_one(key_query)
+    if existing:
+        if (
+            existing.get("payment_confirmed") is True
+            and existing.get("payment_provider") == provider
+            and existing.get("provider_transaction_id") == provider_transaction_id
+        ):
+            return existing
+        raise RuntimeError("The verified provider payment conflicts with an existing revenue ledger key.")
+
+    now = now_utc()
+    hub = str(plan.get("hub") or subscription.get("hub") or "").strip().lower()
+    document = {
+        "user_id": user_id,
+        "stream": hub,
+        "plan_code": str(event["plan_code"]),
+        "amount": str(event["amount"]),
+        "currency": str(event["currency"]),
+        "description": f"Verified subscription payment: {event['plan_code']}",
+        "idempotency_key": idempotency_key,
+        "request_fingerprint": hashlib.sha256(
+            json.dumps({
+                "provider": provider,
+                "provider_transaction_id": provider_transaction_id,
+                "user_id": user_id,
+                "plan_code": str(event["plan_code"]),
+                "amount": str(event["amount"]),
+                "currency": str(event["currency"]),
+            }, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest(),
+        "status": "succeeded",
+        "billing_enabled": True,
+        "charge_attempted": True,
+        "payment_confirmed": True,
+        "payment_provider": provider,
+        "provider_transaction_id": provider_transaction_id,
+        "receipt": str(event.get("receipt") or provider_transaction_id)[:128],
+        "paid_at": now,
+        "subscription_id": str(subscription.get("_id", "")),
+        "created_at": now,
+        "updated_at": now,
+        "source": "verified_provider_payment",
+    }
+    try:
+        result = rows.insert_one(document)
+        document["_id"] = result.inserted_id
+    except DuplicateKeyError:
+        existing = rows.find_one(key_query)
+        if existing and (
+            existing.get("payment_confirmed") is True
+            and existing.get("payment_provider") == provider
+            and existing.get("provider_transaction_id") == provider_transaction_id
+        ):
+            return existing
+        raise RuntimeError("The verified payment could not be safely appended to the revenue ledger.") from None
+
+    try:
+        log_action(
+            user_id=user_id,
+            action="revenue.payment.verified",
+            resource="revenue_transaction",
+            resource_id=str(document["_id"]),
+            metadata={
+                "hub": hub,
+                "plan_code": event["plan_code"],
+                "provider": provider,
+                "amount": event["amount"],
+                "currency": event["currency"],
+                "provider_transaction_id": provider_transaction_id,
+            },
+        )
+    except Exception:
+        current_app.logger.exception("Verified payment was recorded but the audit record could not be written")
+    return document
 
 
 def _public_subscription(row):
@@ -363,6 +451,7 @@ def activate_verified_payment(event):
         "provider_transaction_id": event["provider_transaction_id"],
     })
     if already_applied:
+        _record_confirmed_revenue_transaction(event, plan, already_applied)
         public = _public_subscription(already_applied)
         events.update_one(query, {"$set": {
             "subscription_activated": True,
