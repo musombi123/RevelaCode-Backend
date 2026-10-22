@@ -6,7 +6,7 @@ RevelaCode MongoDB database and the jumuiya_ collection namespace.
 
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import timedelta, timezone
 
 from flask import jsonify, request
 from pymongo import ASCENDING, DESCENDING
@@ -52,14 +52,22 @@ def _trials():
     return rows
 
 
+def _as_utc(value):
+    if value is None:
+        return None
+    # PyMongo commonly returns naive datetimes in UTC unless tz_aware is set.
+    return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)
+
+
 def _iso(value):
-    return value.isoformat() if value else None
+    normalized = _as_utc(value)
+    return normalized.isoformat() if normalized else None
 
 
 def _public_trial(row, now=None):
-    now = now or now_utc()
-    ends_at = row.get("ends_at")
-    started_at = row.get("started_at")
+    now = _as_utc(now or now_utc())
+    ends_at = _as_utc(row.get("ends_at"))
+    started_at = _as_utc(row.get("started_at"))
     active = bool(ends_at and ends_at > now)
     return {
         "id": str(row.get("_id", "")),
