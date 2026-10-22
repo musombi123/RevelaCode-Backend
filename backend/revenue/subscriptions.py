@@ -301,9 +301,11 @@ def revenue_billing_status():
         "providers_allowed": providers,
         "activation_mode": "verified_provider_adapter_only",
         "message": (
-            "Configure the payment-provider adapter to initiate checkout and send signed events only after provider-side payment verification."
-            if not secret_ready else
-            "Signed payment activation endpoint is configured; checkout initiation still depends on the provider adapter."
+            "Daraja checkout is configured. Keep plan prices in proposed status until the published price and live callback have been verified."
+            if mpesa_ready else
+            "A signed provider activation endpoint is configured; checkout still requires an enabled payment adapter."
+            if secret_ready else
+            "Configure Daraja credentials and a public HTTPS callback URL before checkout can start."
         ),
     }), 200
 
