@@ -56,7 +56,7 @@ def _base_url() -> str:
 
 
 def checkout_is_configured() -> bool:
-    """Return readiness without exposing credentials; callback must be public HTTPS."""
+    """Return Daraja configuration readiness without exposing credentials."""
     callback = _env("MPESA_CALLBACK_URL")
     try:
         from urllib.parse import urlsplit
@@ -79,6 +79,11 @@ def checkout_is_configured() -> bool:
         and _env("MPESA_PASSKEY")
         and callback_ok
     )
+
+
+def checkout_is_production_configured() -> bool:
+    """Only live Daraja configuration may expose paid checkout/activation."""
+    return _environment() == "production" and checkout_is_configured()
 
 
 def _checkout_rows():
@@ -323,11 +328,11 @@ def _apply_final_result(checkout, result):
 @require_authenticated
 def revenue_start_checkout():
     """Initiate an STK prompt using server-managed approved plan pricing."""
-    if not checkout_is_configured():
+    if not checkout_is_production_configured():
         return _error(
-            "M-Pesa checkout is not configured. Set the Daraja credentials and public HTTPS callback URL.",
+            "Live M-Pesa checkout is not enabled. Configure production Daraja credentials and the registered public HTTPS callback URL.",
             503,
-            "mpesa_not_configured",
+            "mpesa_live_checkout_not_configured",
         )
     payload = request.get_json(silent=True)
     if not isinstance(payload, dict):
@@ -467,13 +472,16 @@ def revenue_start_checkout():
         current_app.logger.exception("STK request was accepted but its IDs could not be persisted")
         return _error("M-Pesa accepted the request but checkout tracking needs administrator reconciliation.", 503, "checkout_tracking_failed")
 
-    log_action(
-        user_id=user_id,
-        action="revenue.mpesa.checkout_started",
-        resource="revenue_mpesa_checkout",
-        resource_id=checkout_id,
-        metadata={"hub": hub, "plan_code": plan_code, "amount": f"{amount:.2f}", "currency": document["currency"]},
-    )
+    try:
+        log_action(
+            user_id=user_id,
+            action="revenue.mpesa.checkout_started",
+            resource="revenue_mpesa_checkout",
+            resource_id=checkout_id,
+            metadata={"hub": hub, "plan_code": plan_code, "amount": f"{amount:.2f}", "currency": document["currency"]},
+        )
+    except Exception:
+        current_app.logger.exception("M-Pesa checkout started but its audit event could not be written")
     saved = rows.find_one({"_id": document["_id"]})
     return jsonify({
         "success": True,
