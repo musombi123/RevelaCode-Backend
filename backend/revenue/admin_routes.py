@@ -27,7 +27,7 @@ from backend.revenue.ledger import COLLECTION_NAME as TRANSACTIONS_COLLECTION
 from backend.revenue.money import MoneyValidationError, to_money
 from backend.revenue.plans import (
     PLANS_COLLECTION,
-    PRICING_STATUS,
+    get_pricing_status,
     get_plan,
     list_plans,
 )
@@ -220,7 +220,7 @@ def revenue_admin_overview():
         "success": True,
         "billing_enabled": False,
         "checkout_enabled": checkout_is_production_configured(),
-        "pricing_status": PRICING_STATUS,
+        "pricing_status": get_pricing_status(),
         "metrics": {
             "total_intents": total,
             "pending_intents": pending,
