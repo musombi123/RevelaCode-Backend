@@ -364,10 +364,16 @@ def revenue_start_checkout():
     user_id = current_user_id()
     rows = _checkout_rows()
     existing = rows.find_one({"user_id": user_id, "idempotency_key": idempotency_key})
+    retry_failed_initiation = bool(
+        existing
+        and existing.get("status") == "initiation_failed"
+        and not existing.get("checkout_request_id")
+    )
     if existing:
         if existing.get("plan_code") != plan_code or existing.get("phone") != phone:
             return _error("This Idempotency-Key was already used for a different checkout.", 409, "idempotency_conflict")
-        return jsonify({"success": True, "replayed": True, "checkout": _public_checkout(existing)}), 200
+        if not retry_failed_initiation:
+            return jsonify({"success": True, "replayed": True, "checkout": _public_checkout(existing)}), 200
 
     shortcode = _env("MPESA_SHORTCODE")
     timestamp = _timestamp()
@@ -390,16 +396,23 @@ def revenue_start_checkout():
         "created_at": now_utc(),
         "updated_at": now_utc(),
     }
-    try:
-        inserted = rows.insert_one(document)
-        document["_id"] = inserted.inserted_id
-    except DuplicateKeyError:
-        existing = rows.find_one({"user_id": user_id, "idempotency_key": idempotency_key})
-        if existing:
-            if existing.get("plan_code") != plan_code or existing.get("phone") != phone:
-                return _error("This Idempotency-Key was already used for a different checkout.", 409, "idempotency_conflict")
-            return jsonify({"success": True, "replayed": True, "checkout": _public_checkout(existing)}), 200
-        return _error("The checkout could not be safely started. Retry with a new Idempotency-Key.", 409, "checkout_conflict")
+    if retry_failed_initiation:
+        document = existing
+        rows.update_one(
+            {"_id": existing["_id"]},
+            {"$set": {"status": "initiating", "message": None, "updated_at": now_utc()}},
+        )
+    else:
+        try:
+            inserted = rows.insert_one(document)
+            document["_id"] = inserted.inserted_id
+        except DuplicateKeyError:
+            existing = rows.find_one({"user_id": user_id, "idempotency_key": idempotency_key})
+            if existing:
+                if existing.get("plan_code") != plan_code or existing.get("phone") != phone:
+                    return _error("This Idempotency-Key was already used for a different checkout.", 409, "idempotency_conflict")
+                return jsonify({"success": True, "replayed": True, "checkout": _public_checkout(existing)}), 200
+            return _error("The checkout could not be safely started. Retry with a new Idempotency-Key.", 409, "checkout_conflict")
 
     try:
         response = _daraja_post(
@@ -509,8 +522,10 @@ def revenue_mpesa_callback():
                 "callback_result_code": str(result_code) if result_code is not None else None,
                 "callback_result_description": str(callback.get("ResultDesc") or "")[:300],
                 "callback_metadata": callback_meta,
-                "callback_received_at": now_utc(),
+                # Persist the real receipt before subscription/ledger activation.
+                "receipt": callback_meta.get("MpesaReceiptNumber") or checkout.get("receipt"),
                 "status": "callback_received",
+                "callback_received_at": now_utc(),
                 "updated_at": now_utc(),
             }},
         )
