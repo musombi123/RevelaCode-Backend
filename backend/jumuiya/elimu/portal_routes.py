@@ -431,7 +431,7 @@ def parent_children():
                 student = collection(STUDENTS).find_one({
                     "_id": ObjectId(str(link.get("student_id", ""))),
                     "school_id": str(link.get("school_id", "")),
-                    "status": "active",
+                    "status": {"$in": ["active", "inactive", "graduated"]},
                 })
             except (InvalidId, TypeError, ValueError):
                 student = None
@@ -472,7 +472,7 @@ def parent_child_profile(student_id):
     student = collection(STUDENTS).find_one({
         "_id": student_oid,
         "school_id": str(link.get("school_id", "")),
-        "status": "active",
+        "status": {"$in": ["active", "inactive", "graduated"]},
     })
     if not student:
         raise APIError("Student not found.", 404, "student_not_found")
@@ -487,7 +487,7 @@ def parent_child_documents(student_id):
     student = collection(STUDENTS).find_one({
         "_id": _object_id(student_id, "student ID"),
         "school_id": str(link.get("school_id", "")),
-        "status": "active",
+        "status": {"$in": ["active", "inactive", "graduated"]},
     })
     if not student:
         raise APIError("Student not found.", 404, "student_not_found")
