@@ -281,7 +281,13 @@ def resolve_entitlement(user_id, hub, feature="essential"):
     trial = collection(TRIALS_COLLECTION).find_one({"user_id": str(user_id), "hub": hub})
     trial_ends = _as_utc(trial.get("ends_at")) if trial else None
     trial_starts = _as_utc(trial.get("started_at")) if trial else None
-    trial_active = bool(trial_ends and trial_starts and trial_starts <= now < trial_ends)
+    trial_active = bool(
+        trial
+        and str(trial.get("status") or "active").strip().lower() == "active"
+        and trial_ends
+        and trial_starts
+        and trial_starts <= now < trial_ends
+    )
     paid = bool(subscription)
     premium_access = paid or trial_active
     premium_feature = feature in PREMIUM_FEATURES
