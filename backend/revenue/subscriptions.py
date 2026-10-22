@@ -35,6 +35,8 @@ TRIALS_COLLECTION = "jumuiya_revenue_trials"
 
 _SUBSCRIPTION_INDEX_LOCK = Lock()
 _SUBSCRIPTION_INDEXES_READY = False
+_PAYMENT_EVENT_INDEX_LOCK = Lock()
+_PAYMENT_EVENT_INDEXES_READY = False
 
 HUBS = {
     "shamba", "biashara", "elimu", "community", "smart_ai",
@@ -81,13 +83,21 @@ def _subscription_collection():
 
 
 def _events_collection():
+    global _PAYMENT_EVENT_INDEXES_READY
     rows = collection(PAYMENT_EVENTS_COLLECTION)
-    rows.create_index(
-        [("provider", ASCENDING), ("provider_transaction_id", ASCENDING)],
-        unique=True,
-        name="uq_revenue_payment_event_provider_transaction",
-    )
-    rows.create_index([("created_at", DESCENDING)], name="ix_revenue_payment_event_created")
+    if not _PAYMENT_EVENT_INDEXES_READY:
+        with _PAYMENT_EVENT_INDEX_LOCK:
+            if not _PAYMENT_EVENT_INDEXES_READY:
+                rows.create_index(
+                    [("provider", ASCENDING), ("provider_transaction_id", ASCENDING)],
+                    unique=True,
+                    name="uq_revenue_payment_event_provider_transaction",
+                )
+                rows.create_index(
+                    [("created_at", DESCENDING)],
+                    name="ix_revenue_payment_event_created",
+                )
+                _PAYMENT_EVENT_INDEXES_READY = True
     return rows
 
 
