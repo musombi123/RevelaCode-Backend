@@ -155,6 +155,7 @@ def start_hub_trial():
         "status": {"$in": [
             "initiating", "pending", "callback_received",
             "awaiting_verification", "verified_activation_failed",
+            "submission_unknown",
         ]},
     })
     if unresolved_checkout:
