@@ -5,6 +5,7 @@ from decimal import Decimal
 from unittest.mock import Mock
 
 import pytest
+from bson import ObjectId
 from flask import Flask
 
 from backend.revenue import subscriptions
@@ -491,3 +492,100 @@ def test_start_checkout_returns_existing_unresolved_checkout_for_new_idempotency
     assert response.get_json()["code"] == "checkout_already_pending"
     assert response.get_json()["checkout"]["checkout_request_id"] == "ws_CO_pending"
     assert rows.insert_one.call_count == 0
+
+
+def test_mpesa_password_builder_is_pure_and_uses_configured_credentials(monkeypatch):
+    import base64
+
+    monkeypatch.setenv("MPESA_SHORTCODE", "123456")
+    monkeypatch.setenv("MPESA_PASSKEY", "test-passkey")
+    timestamp = "20261023003900"
+
+    assert mpesa._password(timestamp) == base64.b64encode(
+        f"123456test-passkey{timestamp}".encode("utf-8")
+    ).decode("ascii")
+
+
+def test_new_checkout_is_blocked_when_paid_subscription_is_active(monkeypatch, revenue_app):
+    plan = {
+        "code": "ai_plus",
+        "hub": "smart_ai",
+        "status": "available",
+        "interval": "month",
+        "amount": "199.00",
+        "currency": "KES",
+    }
+    rows = Mock()
+    rows.find_one.return_value = None
+    monkeypatch.setattr(mpesa, "checkout_is_production_configured", lambda: True)
+    monkeypatch.setattr(mpesa, "get_plan", lambda _code: plan)
+    monkeypatch.setattr(mpesa, "_checkout_rows", lambda: rows)
+    monkeypatch.setattr(mpesa, "current_user_id", lambda: "user-1")
+    monkeypatch.setattr(subscriptions, "_active_subscription", lambda *args, **kwargs: {"status": "active"})
+    monkeypatch.setattr(mpesa, "_access_token", lambda: (_ for _ in ()).throw(
+        AssertionError("must reject before making a provider request")
+    ))
+
+    with revenue_app.test_request_context(
+        "/api/revenue/checkout",
+        method="POST",
+        headers={"Idempotency-Key": "attempt-001"},
+        json={"plan_code": "ai_plus", "phone": "0712345678"},
+    ):
+        response, status = mpesa.revenue_start_checkout.__wrapped__()
+
+    assert status == 409
+    assert response.get_json()["code"] == "active_subscription_exists"
+    rows.insert_one.assert_not_called()
+
+
+def test_unknown_stk_submission_requires_admin_provider_reconciliation_before_release(monkeypatch, revenue_app):
+    from types import SimpleNamespace
+
+    row_id = "64a1b2c3d4e5f67890123456"
+    row = {
+        "_id": ObjectId(row_id),
+        "user_id": "user-1",
+        "hub": "smart_ai",
+        "status": "submission_unknown",
+        "active_checkout_slot": "user-1:smart_ai",
+        "created_at": datetime(2026, 10, 23, tzinfo=timezone.utc),
+    }
+
+    class FakeRows:
+        def __init__(self):
+            self.row = dict(row)
+            self.updated = None
+
+        def find_one(self, query):
+            return self.row if query.get("_id") == self.row["_id"] else None
+
+        def update_one(self, query, update):
+            assert query["status"] == "submission_unknown"
+            self.row.update(update["$set"])
+            for key in update.get("$unset", {}):
+                self.row.pop(key, None)
+            self.updated = update
+            return SimpleNamespace(modified_count=1)
+
+    rows = FakeRows()
+    monkeypatch.setattr(mpesa, "_checkout_rows", lambda: rows)
+    monkeypatch.setattr(mpesa, "current_user_id", lambda: "admin-1")
+    monkeypatch.setattr(mpesa, "log_action", lambda *args, **kwargs: None)
+
+    with revenue_app.test_request_context(
+        f"/api/revenue/admin/checkouts/by-id/{row_id}/resolve-no-payment",
+        method="POST",
+        json={
+            "resolution": "provider_checked_no_charge",
+            "evidence_reference": "DAR AJA REVIEW-20261023",
+            "notes": "Checked the provider transaction history; no matching debit or receipt was found.",
+        },
+    ):
+        response, status = mpesa.revenue_admin_resolve_unknown_checkout.__wrapped__.__wrapped__()
+
+    assert status == 200
+    assert response.get_json()["success"] is True
+    assert rows.row["status"] == "failed"
+    assert "active_checkout_slot" not in rows.row
+    assert rows.row["manual_resolution"]["resolution"] == "provider_checked_no_charge"
