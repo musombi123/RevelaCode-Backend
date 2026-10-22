@@ -753,8 +753,8 @@ def revenue_admin_checkouts():
     status = request.args.get("status", "").strip().lower()
     supported_statuses = {
         "initiating", "pending", "callback_received", "awaiting_verification",
-        "succeeded", "failed", "initiation_failed", "verified_activation_failed",
-        "sandbox_verified",
+        "submission_unknown", "succeeded", "failed", "initiation_failed",
+        "verified_activation_failed", "sandbox_verified",
     }
     if hub:
         if hub not in HUBS:
