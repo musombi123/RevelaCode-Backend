@@ -172,6 +172,8 @@ def _validate_plan_values(data, *, creating, existing=None):
             raise ValueError("Only monthly and yearly subscription plans can be published for checkout.")
         if values["amount"] == "0.00":
             raise ValueError("A published subscription must have a positive price.")
+        if amount != amount.to_integral_value():
+            raise ValueError("M-Pesa STK Push requires a whole-KES subscription price.")
         if not checkout_is_production_configured():
             raise ValueError("Configure production M-Pesa Daraja credentials and a registered public HTTPS callback before publishing a plan.")
     return values
