@@ -14,6 +14,7 @@ from backend.jumuiya.core.responses import (
 )
 
 from backend.jumuiya.core.errors import APIError
+from backend.revenue.subscriptions import require_revenue_entitlement
 
 from backend.jumuiya.shamba import (
     schemas,
@@ -523,6 +524,7 @@ def add_harvest(farm_id):
 )
 @require_authenticated
 @require_farm_rights_review
+@require_revenue_entitlement("shamba", "advanced_analytics")
 def get_farm_insights(farm_id):
     """
     Return the current farm intelligence snapshot.
@@ -544,6 +546,7 @@ def get_farm_insights(farm_id):
 )
 @require_authenticated
 @require_farm_rights_review
+@require_revenue_entitlement("shamba", "advanced_analytics")
 def refresh_farm_insights(farm_id):
     """
     Explicitly refresh farm intelligence.
@@ -575,6 +578,7 @@ def refresh_farm_insights(farm_id):
 )
 @require_authenticated
 @require_farm_rights_review
+@require_revenue_entitlement("shamba", "advanced_analytics")
 def get_recommendations(farm_id):
     """
     Return active recommendations.
@@ -773,6 +777,7 @@ def get_farm_weather(farm_id):
 )
 @require_authenticated
 @require_farm_rights_review
+@require_revenue_entitlement("shamba", "advanced_analytics")
 def get_farm_market(farm_id):
     """
     Return market intelligence associated with the farm.
@@ -795,6 +800,7 @@ def get_farm_market(farm_id):
 )
 @require_authenticated
 @require_farm_rights_review
+@require_revenue_entitlement("shamba", "advanced_analytics")
 def get_crop_analysis(
     farm_id,
     crop_id,
