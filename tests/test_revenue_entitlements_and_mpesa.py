@@ -619,3 +619,65 @@ def test_published_mpesa_subscription_must_have_whole_kes_price(monkeypatch):
         "features": [],
     }, creating=True)
     assert values["amount"] == "199.00"
+
+
+def test_daraja_acceptance_without_checkout_ids_keeps_slot_locked(monkeypatch, revenue_app):
+    from types import SimpleNamespace
+
+    class FakeRows:
+        def __init__(self):
+            self.row = None
+
+        def find_one(self, query, sort=None):
+            if self.row is None:
+                return None
+            if all(self.row.get(key) == value for key, value in query.items()):
+                return self.row
+            return None
+
+        def insert_one(self, document):
+            self.row = dict(document)
+            self.row["_id"] = "checkout-row"
+            return SimpleNamespace(inserted_id="checkout-row")
+
+        def update_one(self, query, update):
+            if self.row is None or self.row.get("_id") != query.get("_id"):
+                return SimpleNamespace(modified_count=0)
+            self.row.update(update.get("$set", {}))
+            for key in update.get("$unset", {}):
+                self.row.pop(key, None)
+            return SimpleNamespace(modified_count=1)
+
+    rows = FakeRows()
+    plan = {
+        "code": "ai_plus",
+        "hub": "smart_ai",
+        "status": "available",
+        "interval": "month",
+        "amount": "199.00",
+        "currency": "KES",
+    }
+    monkeypatch.setattr(mpesa, "checkout_is_production_configured", lambda: True)
+    monkeypatch.setattr(mpesa, "get_plan", lambda _code: plan)
+    monkeypatch.setattr(mpesa, "_checkout_rows", lambda: rows)
+    monkeypatch.setattr(mpesa, "current_user_id", lambda: "user-1")
+    monkeypatch.setattr(mpesa, "_access_token", lambda: "test-access-token")
+    monkeypatch.setattr(mpesa, "_daraja_post", lambda *args, **kwargs: {
+        "ResponseCode": "0",
+        "ResponseDescription": "The service request is accepted successfully",
+        # Intentionally omit CheckoutRequestID and MerchantRequestID.
+    })
+    monkeypatch.setattr(subscriptions, "_active_subscription", lambda *args, **kwargs: None)
+
+    with revenue_app.test_request_context(
+        "/api/revenue/checkout",
+        method="POST",
+        headers={"Idempotency-Key": "accepted-missing-ids-001"},
+        json={"plan_code": "ai_plus", "phone": "0712345678"},
+    ):
+        response, status = mpesa.revenue_start_checkout.__wrapped__()
+
+    assert status == 503
+    assert response.get_json()["code"] == "mpesa_checkout_reference_missing"
+    assert rows.row["status"] == "submission_unknown"
+    assert rows.row["active_checkout_slot"] == "user-1:smart_ai"
