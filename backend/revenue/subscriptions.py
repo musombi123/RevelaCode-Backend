@@ -305,22 +305,8 @@ def revenue_billing_status():
     }), 200
 
 
-@revenue_bp.post("/providers/verified-payment")
-def revenue_verified_payment():
-    """Activate a subscription only from a trusted, signed, provider-verified event.
-
-    Provider adapters must verify the actual payment against the provider before
-    signing and forwarding this canonical event. The endpoint does not accept a
-    browser redirect as proof of payment.
-    """
-    try:
-        event = _read_verified_payment()
-    except PermissionError:
-        return _error("The provider signature could not be verified.", 401, "invalid_provider_signature")
-    except ValueError as exc:
-        status = 503 if "not configured" in str(exc).lower() else 400
-        return _error(str(exc), status, "payment_activation_not_configured" if status == 503 else "invalid_payment_event")
-
+def activate_verified_payment(event):
+    """Activate a subscription after a provider-specific adapter verified payment."""
     plan = get_plan(event["plan_code"])
     if not plan:
         return _error("The purchased plan does not exist.", 404, "plan_not_found")
@@ -448,6 +434,24 @@ def revenue_verified_payment():
         "message": "Verified payment applied and subscription activated.",
     }), 201
 
+
+@revenue_bp.post("/providers/verified-payment")
+def revenue_verified_payment():
+    """Activate a subscription only from a trusted, signed, provider-verified event.
+
+    Provider adapters must verify the actual payment against the provider before
+    signing and forwarding this canonical event. The endpoint does not accept a
+    browser redirect as proof of payment.
+    """
+    try:
+        event = _read_verified_payment()
+    except PermissionError:
+        return _error("The provider signature could not be verified.", 401, "invalid_provider_signature")
+    except ValueError as exc:
+        status = 503 if "not configured" in str(exc).lower() else 400
+        return _error(str(exc), status, "payment_activation_not_configured" if status == 503 else "invalid_payment_event")
+
+    return activate_verified_payment(event)
 
 @revenue_bp.get("/admin/subscriptions")
 @require_authenticated
