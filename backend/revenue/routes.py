@@ -22,7 +22,7 @@ from backend.revenue.money import (
     MoneyValidationError,
     calculate_percentage_fee,
 )
-from backend.revenue.plans import PRICING_STATUS, list_plans
+from backend.revenue.plans import get_pricing_status, list_plans
 
 
 def _error_response(message, status_code, error_code=None):
@@ -66,7 +66,7 @@ def revenue_list_plans():
 
     return jsonify({
         "success": True,
-        "pricing_status": PRICING_STATUS,
+        "pricing_status": get_pricing_status(),
         "billing_enabled": False,
         "checkout_enabled": checkout_is_production_configured(),
         "plans": list_plans(hub=hub or None),
