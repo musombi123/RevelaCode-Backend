@@ -11,4 +11,5 @@ revenue_bp = Blueprint(
 # Import modules to attach public/user routes and platform-admin routes to the
 # same blueprint before main.py registers it.
 from backend.revenue import routes  # noqa: E402,F401
+from backend.revenue import trials  # noqa: E402,F401
 from backend.revenue import admin_routes  # noqa: E402,F401
