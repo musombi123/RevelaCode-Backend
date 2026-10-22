@@ -926,9 +926,9 @@ def student_payload(data):
             140,
         ),
         "course_completed": _bool(
-            data.get("course_completed"),
-            name="course_completed",
-            default=False,
+            data,
+            "course_completed",
+            False,
         ),
         "course_completed_at": _text(
             data,
