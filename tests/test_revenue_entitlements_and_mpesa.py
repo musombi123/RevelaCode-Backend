@@ -431,3 +431,63 @@ def test_premium_entitlement_denies_cancelled_trial_even_before_end_date(monkeyp
     assert result["allowed"] is False
     assert result["premium_access"] is False
     assert result["trial_status"] == "expired"
+
+
+def test_trial_start_is_blocked_while_checkout_is_unresolved(monkeypatch, revenue_app):
+    now = datetime(2026, 10, 22, tzinfo=timezone.utc)
+    monkeypatch.setattr(trials, "current_user_id", lambda: "user-1")
+    monkeypatch.setattr(trials, "now_utc", lambda: now)
+    monkeypatch.setattr(subscriptions, "_active_subscription", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        mpesa,
+        "_checkout_rows",
+        lambda: Mock(find_one=lambda query: {"checkout_request_id": "ws_CO_pending"}),
+    )
+    trial_rows = Mock()
+    monkeypatch.setattr(trials, "_trials", lambda: trial_rows)
+
+    with revenue_app.test_request_context(
+        "/api/revenue/trials/start", method="POST", json={"hub": "smart_ai"}
+    ):
+        response, status = trials.start_hub_trial.__wrapped__()
+
+    assert status == 409
+    assert response.get_json()["code"] == "checkout_already_pending"
+    trial_rows.find_one.assert_not_called()
+    trial_rows.insert_one.assert_not_called()
+
+
+def test_start_checkout_returns_existing_unresolved_checkout_for_new_idempotency_key(monkeypatch, revenue_app):
+    existing_checkout = {
+        "_id": "checkout-row",
+        "user_id": "user-1",
+        "hub": "smart_ai",
+        "plan_code": "ai_plus",
+        "phone": "254712345678",
+        "status": "pending",
+        "checkout_request_id": "ws_CO_pending",
+    }
+    rows = Mock()
+    rows.find_one.side_effect = [None, existing_checkout]
+    monkeypatch.setattr(mpesa, "checkout_is_production_configured", lambda: True)
+    monkeypatch.setattr(mpesa, "current_user_id", lambda: "user-1")
+    monkeypatch.setattr(mpesa, "get_plan", lambda code: {
+        "code": "ai_plus", "hub": "smart_ai", "status": "available",
+        "interval": "month", "amount": "199.00", "currency": "KES",
+    })
+    monkeypatch.setattr(mpesa, "_checkout_rows", lambda: rows)
+    monkeypatch.setattr(mpesa, "_phone", lambda value: "254712345678")
+    monkeypatch.setattr(subscriptions, "_active_subscription", lambda *args, **kwargs: None)
+
+    with revenue_app.test_request_context(
+        "/api/revenue/checkout",
+        method="POST",
+        json={"plan_code": "ai_plus", "phone": "0712345678"},
+        headers={"Idempotency-Key": "fresh-attempt-2"},
+    ):
+        response, status = mpesa.revenue_start_checkout.__wrapped__()
+
+    assert status == 409
+    assert response.get_json()["code"] == "checkout_already_pending"
+    assert response.get_json()["checkout"]["checkout_request_id"] == "ws_CO_pending"
+    assert rows.insert_one.call_count == 0
