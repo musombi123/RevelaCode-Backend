@@ -946,10 +946,13 @@ def school_parent_directory():
     for row in parents.values():
         row["students"] = sorted(row["students"], key=lambda item: (item.get("class_name", ""), item.get("name", "")))
         row["student_count"] = len(row["students"])
-        row["students_label"] = ", ".join(
-            f"{item['name'] or item['admission_number']} ({item['class_name'] or 'Class not set'}{f' / {item["stream"]}' if item['stream'] else ''})"
-            for item in row["students"]
-        )
+        student_labels = []
+        for student_item in row["students"]:
+            display_name = student_item.get("name") or student_item.get("admission_number") or "Student"
+            class_label = student_item.get("class_name") or "Class not set"
+            stream_label = f" / {student_item.get('stream')}" if student_item.get("stream") else ""
+            student_labels.append(f"{display_name} ({class_label}{stream_label})")
+        row["students_label"] = ", ".join(student_labels)
         row["portal_duration"] = "; ".join(row["portal_duration"])
         row["relationships"] = ", ".join(row["relationships"])
         results.append(row)
