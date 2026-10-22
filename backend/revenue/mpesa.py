@@ -518,6 +518,22 @@ def revenue_start_checkout():
     }), 201
 
 
+def _validated_callback_receipt(checkout, callback_meta):
+    """Validate callback receipt fields against the exact server-side checkout."""
+    callback_amount = to_money(callback_meta.get("Amount"), allow_zero=False)
+    expected_amount = to_money(checkout.get("amount"), allow_zero=False)
+    callback_phone = _phone(str(callback_meta.get("PhoneNumber") or ""))
+    expected_phone = _phone(str(checkout.get("phone") or ""))
+    receipt = str(callback_meta.get("MpesaReceiptNumber") or "").strip().upper()
+    if callback_amount != expected_amount:
+        raise ValueError("Callback amount does not match the checkout amount.")
+    if callback_phone != expected_phone:
+        raise ValueError("Callback payer does not match the checkout phone number.")
+    if not re.fullmatch(r"[A-Z0-9]{6,20}", receipt):
+        raise ValueError("Callback receipt number is missing or malformed.")
+    return receipt
+
+
 @revenue_bp.post("/providers/mpesa/callback")
 def revenue_mpesa_callback():
     """Receive Daraja's asynchronous callback; callback data alone never activates access."""
@@ -577,19 +593,7 @@ def revenue_mpesa_callback():
             # receipt. Only use callback metadata after its amount and payer match
             # this exact server-created checkout.
             try:
-                callback_amount = to_money(callback_meta.get("Amount"), allow_zero=False)
-                expected_amount = to_money(checkout.get("amount"), allow_zero=False)
-                callback_phone = _phone(str(callback_meta.get("PhoneNumber") or ""))
-                expected_phone = _phone(str(checkout.get("phone") or ""))
-                receipt_candidate = str(callback_meta.get("MpesaReceiptNumber") or "").strip().upper()
-                receipt_valid = bool(re.fullmatch(r"[A-Z0-9]{6,20}", receipt_candidate))
-                if (
-                    callback_amount != expected_amount
-                    or callback_phone != expected_phone
-                    or not receipt_valid
-                ):
-                    raise ValueError("Callback metadata does not match the checkout amount, payer or receipt format.")
-                validated_receipt = receipt_candidate
+                validated_receipt = _validated_callback_receipt(checkout, callback_meta)
             except (MoneyValidationError, ValueError, TypeError):
                 rows.update_one(
                     {"_id": checkout["_id"]},
