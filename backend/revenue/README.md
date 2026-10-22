@@ -9,6 +9,7 @@ Set these in the **RevelaCode-Backend** deployment environment, never in the fro
 | Variable | Purpose |
 |---|---|
 | `MPESA_ENV` | `sandbox` for tests or `production` for live payments |
+| `REVENUE_PAYMENT_PROVIDERS` | Must include `mpesa` to enable production checkout (for example `mpesa`) |
 | `MPESA_CONSUMER_KEY` | Daraja app consumer key |
 | `MPESA_CONSUMER_SECRET` | Daraja app consumer secret |
 | `MPESA_SHORTCODE` | Registered PayBill/Till shortcode |
@@ -35,7 +36,7 @@ A browser redirect, an unsigned callback body, an STK initiation response, or a 
 
 Each authenticated user can start one 30-day trial for each supported hub: Shamba, Biashara, Elimu, Community, Smart AI, Marketplace and Faith. Trial starts are recorded once per user/hub. Essential features remain free. The backend entitlement service checks the active trial or a current paid subscription for designated premium capabilities.
 
-RevelaAI consults the same RevelaCode backend for image generation, document analysis, voice, Live Vision and persistent memory. A billing-service outage blocks these premium operations but does not block ordinary free text chat.
+RevelaAI consults the same RevelaCode backend for image generation, document analysis, voice, Live Vision, persistent memory, and USECT-ZERO engineering-tool dispatch. Approved Core Mesh operators also need Smart AI automation entitlement before Genesis tools can execute from chat. A billing-service outage blocks these premium operations but does not block ordinary free text chat.
 
 ## Plan publication and current limits
 
