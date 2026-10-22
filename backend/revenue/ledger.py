@@ -1,8 +1,11 @@
-﻿
-"""Secure transaction-intent ledger for the Jumuiya OS Revenue Engine.
 
-This module records pending payment intents only. It does not charge
-customers, confirm payments, credit wallets, or settle seller balances.
+"""Shared transaction history for the Jumuiya OS Revenue Engine.
+
+Intent-creation APIs in this module create pending intent records only. A
+separate trusted provider-verification path may append confirmed payment
+records to the same existing collection after reconciling with the provider.
+Browser redirects, client-supplied receipt numbers, and pending intents are
+never payment evidence. This ledger does not credit wallets or settle sellers.
 """
 
 from __future__ import annotations
