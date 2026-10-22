@@ -138,6 +138,7 @@ def test_mpesa_query_must_have_final_success_result_before_activation(monkeypatc
 
     assert mpesa._apply_final_result(checkout, {
         "CheckoutRequestID": "ws_CO_test123456",
+        "MerchantRequestID": "merchant-1",
         "ResponseCode": "0",
         "ResponseDescription": "The service request is accepted successfully",
     }) is False
@@ -330,3 +331,57 @@ def test_provider_query_must_explicitly_correlate_checkout_and_merchant_ids(monk
         "MerchantRequestID": "merchant-wrong",
         "ResultCode": "0",
     }) is False
+
+
+def test_idempotent_confirmed_payment_can_be_enriched_with_late_real_receipt(monkeypatch, revenue_app):
+    import hashlib
+    from datetime import datetime, timezone
+
+    provider = "mpesa"
+    provider_transaction_id = "ws_CO_receipt_late"
+    idempotency_key = "paid:" + hashlib.sha256(
+        f"{provider}:{provider_transaction_id}".encode("utf-8")
+    ).hexdigest()
+    row = {
+        "_id": "paid-ledger-id",
+        "user_id": "user-1",
+        "idempotency_key": idempotency_key,
+        "payment_confirmed": True,
+        "payment_provider": provider,
+        "provider_transaction_id": provider_transaction_id,
+        "receipt": None,
+        "status": "succeeded",
+        "amount": "199.00",
+        "currency": "KES",
+    }
+
+    class FakeTransactions:
+        def find_one(self, query):
+            return row if all(row.get(key) == value for key, value in query.items()) else None
+
+        def update_one(self, query, update):
+            assert row["_id"] == query["_id"]
+            row.update(update["$set"])
+
+    transactions = FakeTransactions()
+    monkeypatch.setattr(subscriptions, "_ensure_revenue_ledger_indexes", lambda: None)
+    monkeypatch.setattr(subscriptions, "collection", lambda name: transactions)
+    monkeypatch.setattr(subscriptions, "log_action", lambda *args, **kwargs: None)
+
+    event = {
+        "provider": provider,
+        "provider_transaction_id": provider_transaction_id,
+        "user_id": "user-1",
+        "plan_code": "ai_plus",
+        "amount": "199.00",
+        "currency": "KES",
+        "receipt": "QWERTY1234",
+    }
+
+    with revenue_app.app_context():
+        existing = subscriptions._record_confirmed_revenue_transaction(
+            event, {"hub": "smart_ai"}, {"_id": "sub-1"}
+        )
+
+    assert existing["receipt"] == "QWERTY1234"
+    assert row["receipt"] == "QWERTY1234"
