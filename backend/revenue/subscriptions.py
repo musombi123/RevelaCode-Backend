@@ -497,6 +497,9 @@ def activate_verified_payment(event):
             return _error("The payment was verified but subscription activation needs retry.", 503, "subscription_activation_retry")
         subscription = already_applied
 
+    # Do not call the payment event applied until the confirmed payment is
+    # durably present in the same transaction history the Revenue Center reads.
+    _record_confirmed_revenue_transaction(event, plan, subscription)
     public = _public_subscription(subscription)
     events.update_one(query, {"$set": {
         "subscription_activated": True,
