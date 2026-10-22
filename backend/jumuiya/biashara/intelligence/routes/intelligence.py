@@ -15,6 +15,7 @@ from backend.jumuiya.core.responses import (
 )
 
 from backend.jumuiya.core.errors import APIError
+from backend.revenue.subscriptions import require_revenue_entitlement
 
 from backend.jumuiya.biashara.intelligence import (
     schemas,
@@ -383,6 +384,7 @@ def get_market_trends():
     "/forecast"
 )
 @require_authenticated
+@require_revenue_entitlement("biashara", "advanced_analytics")
 def forecast():
     """
     Run a direct product/service forecast.
@@ -479,6 +481,7 @@ def forecast():
     "/analyze"
 )
 @require_authenticated
+@require_revenue_entitlement("biashara", "advanced_analytics")
 def analyze_market():
     """
     Run the complete Biashara Market Intelligence
@@ -550,6 +553,7 @@ def analyze_market():
     "/me/analyze"
 )
 @require_authenticated
+@require_revenue_entitlement("biashara", "advanced_analytics")
 def analyze_my_market():
     """
     Run Market Intelligence using the authenticated
@@ -578,6 +582,7 @@ def analyze_my_market():
     "/quick-analysis"
 )
 @require_authenticated
+@require_revenue_entitlement("biashara", "advanced_analytics")
 def quick_analysis():
     """
     Convenience endpoint for simple frontend requests.
@@ -684,6 +689,7 @@ def quick_analysis():
     "/business-analysis"
 )
 @require_authenticated
+@require_revenue_entitlement("biashara", "advanced_analytics")
 def business_analysis():
     """
     Analyze the authenticated business against a selected
@@ -769,6 +775,7 @@ def business_analysis():
     "/product-analysis"
 )
 @require_authenticated
+@require_revenue_entitlement("biashara", "advanced_analytics")
 def product_analysis():
     """
     Analyze one product/service in a selected market.
