@@ -809,6 +809,11 @@ def update_student(
         "stream",
         "enrollment_date",
         "leaving_date",
+        "student_duration",
+        "course_name",
+        "course_completed",
+        "course_completed_at",
+        "completion_status",
     }
 
     update = {
@@ -932,7 +937,37 @@ def update_student(
 
         update["status"] = status
 
-    update["updated_at"] = now_utc()
+    now = now_utc()
+    existing_status = _lower(existing.get("status"), "active")
+    requested_status = _lower(update.get("status"), existing_status)
+    update_ops = {"$set": update}
+    if requested_status == "inactive":
+        if existing_status != "inactive" or not (existing.get("inactive_since") or (existing.get("lifecycle") or {}).get("inactive_since")):
+            update["inactive_since"] = now
+            update["status_changed_at"] = now
+            update["lifecycle.status_changed_at"] = now
+            update["lifecycle.inactive_since"] = now
+        elif existing.get("inactive_since"):
+            update.setdefault("inactive_since", existing.get("inactive_since"))
+    elif requested_status in {"active", "graduated", "transferred", "suspended"} and existing_status == "inactive":
+        update_ops["$unset"] = {
+            "inactive_since": "",
+            "lifecycle.inactive_since": "",
+            "lifecycle.parent_reminder_sent_at": "",
+            "lifecycle.parent_response_deadline": "",
+            "lifecycle.parent_response_at": "",
+            "lifecycle.parent_response_kind": "",
+            "lifecycle.registrar_review_requested_at": "",
+        }
+        update["status_changed_at"] = now
+        update["lifecycle.status_changed_at"] = now
+
+    if update.get("course_completed") is True or requested_status == "graduated":
+        update["course_completed"] = True
+        update["completion_status"] = "successful"
+        update.setdefault("course_completed_at", existing.get("course_completed_at") or now.isoformat())
+    update["updated_at"] = now
+    update_ops["$set"] = update
 
     doc = collection(
         STUDENTS
@@ -941,9 +976,7 @@ def update_student(
             "_id": student_oid,
             "school_id": school_id,
         },
-        {
-            "$set": update
-        },
+        update_ops,
         return_document=ReturnDocument.AFTER,
     )
 
