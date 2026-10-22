@@ -31,6 +31,7 @@ from backend.jumuiya.core.permissions import (
     require_roles,
 )
 from backend.jumuiya.core.responses import created, ok
+from backend.revenue.subscriptions import require_revenue_entitlement
 from backend.services.ai_router import ask_ai
 
 shamba_trust_bp = Blueprint("jumuiya_shamba_trust", __name__, url_prefix="/trust")
@@ -449,6 +450,7 @@ def review_farm_verification(farm_id: str):
 
 @shamba_trust_bp.post("/farms/<farm_id>/soil-scan")
 @require_authenticated
+@require_revenue_entitlement("shamba", "advanced_analytics")
 def soil_scan(farm_id: str):
     user_id = current_user_id()
     farm = ensure_farm_verified(user_id, farm_id)
