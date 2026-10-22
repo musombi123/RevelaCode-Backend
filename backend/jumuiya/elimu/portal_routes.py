@@ -2,12 +2,13 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from io import BytesIO
 import re
 import math
 
 from bson import ObjectId
 from bson.errors import InvalidId
-from flask import Blueprint, request
+from flask import Blueprint, request, send_file
 
 from backend.jumuiya.core.database import collection
 from backend.jumuiya.core.errors import APIError
@@ -33,6 +34,8 @@ FEES = "jumuiya_fees"
 EVENTS = "jumuiya_school_events"
 PUBLIC_DOCUMENTS = "jumuiya_elimu_public_documents"
 PORTAL_LINKS = "jumuiya_elimu_portal_links"
+MEMBERS = "jumuiya_elimu_school_members"
+CERTIFICATES = "jumuiya_elimu_completion_certificates"
 MAX_NOTES = 500
 MAX_LIST = 100
 
@@ -129,6 +132,7 @@ def _find_student(school, identifier):
 
 
 def _project_student(student, school_name=""):
+    lifecycle = student.get("lifecycle") if isinstance(student.get("lifecycle"), dict) else {}
     return {
         "id": str(student["_id"]),
         "student_id": str(student["_id"]),
@@ -141,6 +145,22 @@ def _project_student(student, school_name=""):
         "status": _text(student.get("status"), 30),
         "school_id": str(student.get("school_id", "")),
         "school_name": school_name,
+        "enrollment_date": _ser(student.get("enrollment_date")),
+        "leaving_date": _ser(student.get("leaving_date")),
+        "student_duration": _text(student.get("student_duration") or student.get("duration_period"), 80),
+        "course_name": _text(student.get("course_name") or student.get("programme_name"), 140),
+        "completion_status": _text(student.get("completion_status"), 40),
+        "course_completed_at": _ser(student.get("course_completed_at")),
+        "portal_duration": _text(student.get("student_duration") or student.get("duration_period"), 80),
+        "portal_expires_at": _ser(student.get("leaving_date") or student.get("course_completed_at")),
+        "lifecycle_notice": {
+            "parent_reminder_sent_at": _ser(lifecycle.get("parent_reminder_sent_at")),
+            "parent_response_deadline": _ser(lifecycle.get("parent_response_deadline")),
+            "parent_response_at": _ser(lifecycle.get("parent_response_at")),
+            "parent_response_kind": _text(lifecycle.get("parent_response_kind"), 40),
+            "registrar_review_requested_at": _ser(lifecycle.get("registrar_review_requested_at")),
+            "review_status": _text(lifecycle.get("review_status"), 40),
+        },
     }
 
 
@@ -464,10 +484,31 @@ def parent_child_profile(student_id):
 @require_authenticated
 def parent_child_documents(student_id):
     link = _verified_parent_link(student_id)
-    student = collection(STUDENTS).find_one({"_id": _object_id(student_id, "student ID"), "school_id": str(link.get("school_id", "")), "status": "active"})
+    student = collection(STUDENTS).find_one({
+        "_id": _object_id(student_id, "student ID"),
+        "school_id": str(link.get("school_id", "")),
+        "status": "active",
+    })
     if not student:
         raise APIError("Student not found.", 404, "student_not_found")
-    return ok({"documents": [_safe_document(item) for item in _student_documents(student, parent=True)]})
+    documents = [_safe_document(item) for item in _student_documents(student, parent=True)]
+    certificate = collection(CERTIFICATES).find_one({
+        "school_id": str(student.get("school_id", "")),
+        "student_id": str(student["_id"]),
+        "certificate_type": "course_completion",
+        "status": "issued",
+    })
+    if certificate:
+        documents.insert(0, {
+            "id": str(certificate.get("certificate_code") or certificate.get("_id") or ""),
+            "title": "Course completion certificate",
+            "description": f"Congratulations! Certificate for { _text(certificate.get('student_name'), 160) or 'the student' } · { _text(certificate.get('course_name'), 140) or 'completed course' }",
+            "document_type": "completion_certificate",
+            "certificate_code": _text(certificate.get("certificate_code"), 80),
+            "created_at": _ser(certificate.get("issued_at")),
+            "downloadable": True,
+        })
+    return ok({"documents": documents})
 
 
 @parent_bp.get("/children/<student_id>/finance")
@@ -625,6 +666,92 @@ def parent_submit_fee_receipt(student_id):
         "payment_notice": "Receipt submitted for school review; this is not confirmation that the external payment has settled.",
     }, "Fee receipt submitted for school review.")
 
+
+
+
+@parent_bp.get("/children/<student_id>/completion-certificate")
+@require_authenticated
+def parent_download_completion_certificate(student_id):
+    link = _verified_parent_link(student_id)
+    student = collection(STUDENTS).find_one({
+        "_id": _object_id(student_id, "student ID"),
+        "school_id": str(link.get("school_id", "")),
+    })
+    if not student:
+        raise APIError("Student not found.", 404, "student_not_found")
+    certificate = collection(CERTIFICATES).find_one({
+        "school_id": str(student.get("school_id", "")),
+        "student_id": str(student["_id"]),
+        "certificate_type": "course_completion",
+        "status": "issued",
+    })
+    if not certificate or not certificate.get("pdf_bytes"):
+        raise APIError("No completion certificate has been issued for this student yet.", 404, "certificate_not_found")
+    content = bytes(certificate["pdf_bytes"])
+    admission = re.sub(r"[^A-Za-z0-9_-]+", "-", _text(student.get("admission_number"), 60)) or str(student["_id"])
+    return send_file(
+        BytesIO(content),
+        mimetype="application/pdf",
+        as_attachment=True,
+        download_name=f"{admission}-completion-certificate.pdf",
+        max_age=0,
+    )
+
+
+@parent_bp.post("/children/<student_id>/inactivity-response")
+@require_authenticated
+def parent_respond_to_inactivity_reminder(student_id):
+    link = _verified_parent_link(student_id)
+    student = collection(STUDENTS).find_one({
+        "_id": _object_id(student_id, "student ID"),
+        "school_id": str(link.get("school_id", "")),
+        "status": "inactive",
+    })
+    if not student:
+        raise APIError("This student is no longer marked inactive or the record was not found.", 409, "inactive_student_not_found")
+    lifecycle = student.get("lifecycle") if isinstance(student.get("lifecycle"), dict) else {}
+    if not lifecycle.get("parent_reminder_sent_at"):
+        raise APIError("No inactivity reminder is awaiting a response.", 409, "inactivity_response_not_expected")
+    if lifecycle.get("parent_response_at"):
+        raise APIError("A response has already been recorded for this reminder.", 409, "inactivity_already_responded")
+    payload = _json_body()
+    response_kind = _text(payload.get("response"), 40).lower()
+    if response_kind not in {"still_enrolled", "withdrawn", "please_contact_me"}:
+        raise APIError("response must be still_enrolled, withdrawn, or please_contact_me.", 422, "invalid_inactivity_response")
+    notes = _text(payload.get("notes"), 800)
+    now = _now()
+    collection(STUDENTS).update_one(
+        {"_id": student["_id"], "school_id": str(student.get("school_id", "")), "status": "inactive", "lifecycle.parent_response_at": {"$exists": False}},
+        {"$set": {
+            "lifecycle.parent_response_at": now,
+            "lifecycle.parent_response_kind": response_kind,
+            "lifecycle.parent_response_notes": notes,
+            "lifecycle.review_status": "parent_responded",
+            "updated_at": now,
+        }},
+    )
+    school_id = str(student.get("school_id", ""))
+    notify_message = {
+        "still_enrolled": "The parent/guardian confirms the learner is still enrolled and requests a status review.",
+        "withdrawn": "The parent/guardian reports the learner has withdrawn. The registrar should verify details before closing the enrolment record.",
+        "please_contact_me": "The parent/guardian responded to the inactivity reminder and requests contact from the school.",
+    }[response_kind]
+    for member in collection(MEMBERS).find({
+        "school_id": school_id,
+        "status": "active",
+        "role": {"$in": ["registrar", "owner", "principal"]},
+    }).limit(200):
+        try:
+            from backend.jumuiya.notifications.services import notify
+            notify(str(member.get("user_id") or ""), {
+                "title": "Parent responded to student inactivity reminder",
+                "message": f"{_text(student.get('full_name'), 160) or 'A student'}: {notify_message}" + (f" Parent notes: {notes}" if notes else ""),
+                "type": "action_needed",
+                "data": {"school_id": school_id, "student_id": str(student["_id"]), "parent_response": response_kind},
+            })
+        except Exception:
+            pass
+    return ok({"recorded": True, "response": response_kind, "responded_at": now.isoformat()}, "Your response has been sent to the school for review.")
 
 
 
