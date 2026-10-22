@@ -410,25 +410,26 @@ def revenue_billing_status():
     }), 200
 
 
-def activate_verified_payment(event):
-    """Activate a subscription after a provider-specific adapter verified payment."""
-    plan = get_plan(event["plan_code"])
-    if not plan:
-        return _error("The purchased plan does not exist.", 404, "plan_not_found")
-    if str(plan.get("status", "")).lower() != "available":
-        return _error("This plan is not enabled for paid checkout.", 409, "plan_not_purchasable")
-    if str(plan.get("hub", "")).lower() not in HUBS:
-        return _error("One-time campaigns are not subscription plans.", 400, "subscription_plan_required")
-    if str(plan.get("interval", "")).lower() not in {"month", "year"}:
-        return _error("Only monthly and yearly subscriptions can activate hub access.", 400, "invalid_subscription_interval")
-    try:
-        expected = to_money(plan.get("amount"), allow_zero=False)
-        received = to_money(event["amount"], allow_zero=False)
-    except MoneyValidationError:
-        return _error("The plan price is not configured as a positive amount.", 409, "invalid_plan_price")
-    if expected != received or str(plan.get("currency", CURRENCY_DEFAULT)).upper() != event["currency"]:
-        return _error("Verified payment does not match the configured plan price.", 409, "payment_amount_mismatch")
+def _subscription_plan_snapshot(plan):
+    """Persist the purchased terms so later price edits cannot strand a paid customer."""
+    return {
+        "code": str(plan.get("code") or ""),
+        "name": str(plan.get("name") or ""),
+        "hub": str(plan.get("hub") or "").strip().lower(),
+        "amount": str(plan.get("amount") or "0.00"),
+        "currency": str(plan.get("currency") or CURRENCY_DEFAULT).upper(),
+        "interval": str(plan.get("interval") or "").strip().lower(),
+        "status": str(plan.get("status") or "").strip().lower(),
+    }
 
+
+def activate_verified_payment(event, plan_override=None):
+    """Activate a subscription only after an upstream provider verified payment.
+
+    The plan snapshot freezes the terms at checkout. Publishing a new price or
+    pausing a plan while a customer is paying must not reject the payment they
+    already initiated under the old published terms.
+    """
     events = _events_collection()
     query = {
         "provider": event["provider"],
@@ -436,125 +437,181 @@ def activate_verified_payment(event):
     }
     now = now_utc()
     existing = events.find_one(query)
-    if existing and existing.get("subscription_activated") is True:
-        # Repair a prior successful activation if an older release marked the
-        # event complete before writing the shared revenue history.
-        applied_subscription = _subscription_collection().find_one(query)
+    subs = _subscription_collection()
+
+    snapshot = plan_override
+    if not isinstance(snapshot, dict) and existing and isinstance(existing.get("plan_snapshot"), dict):
+        snapshot = existing["plan_snapshot"]
+
+    if not isinstance(snapshot, dict) and existing and existing.get("subscription_activated"):
+        # Compatibility repair for historical records created before snapshots
+        # were stored. Use the subscription's immutable charged terms.
+        applied_subscription = subs.find_one(query)
         if applied_subscription:
-            try:
-                _record_confirmed_revenue_transaction(event, plan, applied_subscription)
-            except Exception:
-                current_app.logger.exception("Verified payment could not be reconciled into the revenue ledger")
-                return _error("Payment was verified but the transaction history needs reconciliation. Retry status refresh; do not pay again.", 503, "revenue_ledger_reconciliation_pending")
+            snapshot = {
+                "code": applied_subscription.get("plan_code"),
+                "name": "",
+                "hub": applied_subscription.get("hub"),
+                "amount": applied_subscription.get("amount"),
+                "currency": applied_subscription.get("currency", CURRENCY_DEFAULT),
+                "interval": applied_subscription.get("interval"),
+                "status": "available",
+            }
+
+    if isinstance(snapshot, dict):
+        plan = _subscription_plan_snapshot(snapshot)
+    else:
+        catalog_plan = get_plan(event["plan_code"])
+        if not catalog_plan:
+            return _error("The purchased plan does not exist.", 404, "plan_not_found")
+        plan = _subscription_plan_snapshot(catalog_plan)
+
+    if plan.get("code") != str(event["plan_code"]):
+        return _error("The payment plan reference does not match the checkout snapshot.", 409, "plan_snapshot_mismatch")
+    if plan.get("status") != "available":
+        return _error("This plan was not published for paid checkout when the payment was initiated.", 409, "plan_not_purchasable")
+    if plan.get("hub") not in HUBS:
+        return _error("One-time campaigns are not subscription plans.", 400, "subscription_plan_required")
+    if plan.get("interval") not in {"month", "year"}:
+        return _error("Only monthly and yearly subscriptions can activate hub access.", 400, "invalid_subscription_interval")
+
+    try:
+        expected = to_money(plan.get("amount"), allow_zero=False)
+        received = to_money(event["amount"], allow_zero=False)
+    except MoneyValidationError:
+        return _error("The plan price or verified payment amount is invalid.", 409, "invalid_plan_price")
+    if expected != received or plan.get("currency", CURRENCY_DEFAULT).upper() != str(event["currency"]).upper():
+        return _error("Verified payment does not match the price snapshot for this checkout.", 409, "payment_amount_mismatch")
+
+    if existing:
+        # The provider transaction reference is immutable. Never reinterpret a
+        # reused reference as another customer's payment or a different plan.
+        for key in ("user_id", "plan_code", "amount", "currency"):
+            if key in existing and str(existing.get(key)) != str(event.get(key)):
+                return _error("The provider transaction reference conflicts with an existing payment event.", 409, "payment_event_conflict")
+        canonical_event = dict(existing)
+        canonical_event["receipt"] = str(event.get("receipt") or existing.get("receipt") or event["provider_transaction_id"])[:128]
+        canonical_event["metadata"] = existing.get("metadata") if isinstance(existing.get("metadata"), dict) else event.get("metadata", {})
+    else:
+        canonical_event = dict(event)
+        canonical_event["receipt"] = str(event.get("receipt") or event["provider_transaction_id"])[:128]
+        canonical_event["plan_snapshot"] = plan
+
+    if existing and existing.get("subscription_activated") is True:
+        applied_subscription = subs.find_one(query)
+        if not applied_subscription:
+            return _error("The payment event is marked applied but its subscription record is missing. Support reconciliation is required.", 503, "subscription_record_missing")
+        try:
+            _record_confirmed_revenue_transaction(canonical_event, plan, applied_subscription)
+        except Exception:
+            current_app.logger.exception("Verified payment could not be reconciled into the revenue ledger")
+            return _error("Payment was verified but the transaction history needs reconciliation. Retry status refresh; do not pay again.", 503, "revenue_ledger_reconciliation_pending")
         return jsonify({
             "success": True,
             "replayed": True,
-            "subscription": existing.get("subscription"),
+            "subscription": existing.get("subscription") or _public_subscription(applied_subscription),
             "message": "This verified payment was already applied.",
         }), 200
+
     if not existing:
         try:
-            events.insert_one({
-                **event,
+            canonical_event.update({
                 "status": "verified",
                 "subscription_activated": False,
                 "created_at": now,
                 "updated_at": now,
             })
+            events.insert_one(canonical_event)
         except DuplicateKeyError:
+            # Another callback may have won the insert race. Re-read its
+            # canonical snapshot and reconcile through the idempotent path.
             existing = events.find_one(query)
-            if existing and existing.get("subscription_activated") is True:
-                applied_subscription = _subscription_collection().find_one(query)
-                if applied_subscription:
-                    try:
-                        _record_confirmed_revenue_transaction(event, plan, applied_subscription)
-                    except Exception:
-                        current_app.logger.exception("Verified payment could not be reconciled into the revenue ledger")
-                        return _error("Payment was verified but the transaction history needs reconciliation. Retry status refresh; do not pay again.", 503, "revenue_ledger_reconciliation_pending")
-                return jsonify({"success": True, "replayed": True, "subscription": existing.get("subscription")}), 200
-
-    subs = _subscription_collection()
-    already_applied = subs.find_one({
-        "provider": event["provider"],
-        "provider_transaction_id": event["provider_transaction_id"],
-    })
-    if already_applied:
-        try:
-            _record_confirmed_revenue_transaction(event, plan, already_applied)
-        except Exception:
-            current_app.logger.exception("Verified payment could not be reconciled into the revenue ledger")
-            return _error("Payment was verified but the transaction history needs reconciliation. Retry status refresh; do not pay again.", 503, "revenue_ledger_reconciliation_pending")
-        public = _public_subscription(already_applied)
-        events.update_one(query, {"$set": {
-            "subscription_activated": True,
-            "subscription": public,
-            "updated_at": now,
-        }})
-        return jsonify({"success": True, "replayed": True, "subscription": public}), 200
+            if not existing:
+                return _error("The verified payment could not be safely recorded. Retry status refresh; do not pay again.", 503, "payment_event_retry")
+            for key in ("user_id", "plan_code", "amount", "currency"):
+                if key in existing and str(existing.get(key)) != str(event.get(key)):
+                    return _error("The provider transaction reference conflicts with an existing payment event.", 409, "payment_event_conflict")
+            canonical_event = dict(existing)
+            stored_snapshot = existing.get("plan_snapshot")
+            if isinstance(stored_snapshot, dict):
+                plan = _subscription_plan_snapshot(stored_snapshot)
+            if existing.get("subscription_activated") is True:
+                applied_subscription = subs.find_one(query)
+                if not applied_subscription:
+                    return _error("The payment event is marked applied but its subscription record is missing. Support reconciliation is required.", 503, "subscription_record_missing")
+                try:
+                    _record_confirmed_revenue_transaction(canonical_event, plan, applied_subscription)
+                except Exception:
+                    current_app.logger.exception("Verified payment could not be reconciled into the revenue ledger")
+                    return _error("Payment was verified but the transaction history needs reconciliation. Retry status refresh; do not pay again.", 503, "revenue_ledger_reconciliation_pending")
+                return jsonify({"success": True, "replayed": True, "subscription": existing.get("subscription") or _public_subscription(applied_subscription)}), 200
 
     previous_ends = []
     for row in subs.find({
-        "user_id": event["user_id"],
-        "hub": str(plan["hub"]).lower(),
+        "user_id": str(canonical_event["user_id"]),
+        "hub": plan["hub"],
         "status": "active",
     }):
         ends_at = _as_utc(row.get("ends_at"))
         if ends_at and ends_at > now:
             previous_ends.append(ends_at)
     starts_at = max([_as_utc(now), *previous_ends])
-    interval = str(plan["interval"]).lower()
+    interval = plan["interval"]
     ends_at = starts_at + (timedelta(days=365) if interval == "year" else timedelta(days=30))
     subscription = {
-        "user_id": event["user_id"],
-        "hub": str(plan["hub"]).lower(),
-        "plan_code": event["plan_code"],
-        "provider": event["provider"],
-        "provider_transaction_id": event["provider_transaction_id"],
-        "receipt": event["receipt"],
-        "amount": event["amount"],
-        "currency": event["currency"],
+        "user_id": str(canonical_event["user_id"]),
+        "hub": plan["hub"],
+        "plan_code": plan["code"],
+        "provider": str(canonical_event["provider"]).lower(),
+        "provider_transaction_id": str(canonical_event["provider_transaction_id"]),
+        "receipt": str(canonical_event.get("receipt") or canonical_event["provider_transaction_id"])[:128],
+        "amount": f"{expected:.2f}",
+        "currency": plan["currency"],
         "interval": interval,
         "status": "active",
         "starts_at": starts_at,
         "ends_at": ends_at,
         "created_at": now,
         "source": "verified_provider_adapter",
+        "plan_snapshot": plan,
     }
     try:
         inserted = subs.insert_one(subscription)
         subscription["_id"] = inserted.inserted_id
     except DuplicateKeyError:
-        already_applied = subs.find_one(query)
-        if not already_applied:
+        applied_subscription = subs.find_one(query)
+        if not applied_subscription:
             return _error("The payment was verified but subscription activation needs retry.", 503, "subscription_activation_retry")
-        subscription = already_applied
+        subscription = applied_subscription
 
-    # Do not call the payment event applied until the confirmed payment is
-    # durably present in the same transaction history the Revenue Center reads.
+    # The shared transaction-history entry must exist before the event is
+    # marked complete. Retries can reconstruct the ledger entry from the snapshot.
     try:
-        _record_confirmed_revenue_transaction(event, plan, subscription)
+        _record_confirmed_revenue_transaction(canonical_event, plan, subscription)
     except Exception:
         current_app.logger.exception("Subscription exists but verified payment ledger reconciliation failed")
         return _error("Payment was verified but the transaction history needs reconciliation. Retry status refresh; do not pay again.", 503, "revenue_ledger_reconciliation_pending")
+
     public = _public_subscription(subscription)
     events.update_one(query, {"$set": {
         "subscription_activated": True,
         "subscription": public,
+        "plan_snapshot": plan,
         "updated_at": now_utc(),
     }})
     try:
         log_action(
-            user_id=event["user_id"],
+            user_id=canonical_event["user_id"],
             action="revenue.subscription.activated",
             resource="revenue_subscription",
             resource_id=public["id"],
             metadata={
                 "hub": public["hub"],
                 "plan_code": public["plan_code"],
-                "provider": event["provider"],
-                "amount": event["amount"],
-                "currency": event["currency"],
-                "provider_transaction_id": event["provider_transaction_id"],
+                "provider": canonical_event["provider"],
+                "amount": canonical_event["amount"],
+                "currency": canonical_event["currency"],
+                "provider_transaction_id": canonical_event["provider_transaction_id"],
             },
         )
     except Exception:
