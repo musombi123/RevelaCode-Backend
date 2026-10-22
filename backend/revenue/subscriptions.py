@@ -449,9 +449,9 @@ def _read_verified_payment():
 def revenue_billing_status():
     """Report configuration state without leaking secrets or claiming checkout is live."""
     secret_ready = len(os.getenv("REVENUE_PROVIDER_WEBHOOK_SECRET", "").strip()) >= 32
-    from backend.revenue.mpesa import checkout_is_configured, checkout_is_production_configured
+    from backend.revenue.mpesa import checkout_is_configured, checkout_is_production_configured, _environment
     mpesa_ready = checkout_is_production_configured()
-    mpesa_sandbox_ready = checkout_is_configured() and not mpesa_ready
+    mpesa_sandbox_ready = _environment() == "sandbox" and checkout_is_configured()
     providers = [
         item.strip().lower()
         for item in os.getenv("REVENUE_PAYMENT_PROVIDERS", "mpesa").split(",")
