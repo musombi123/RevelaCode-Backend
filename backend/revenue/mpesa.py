@@ -32,6 +32,8 @@ from backend.revenue.subscriptions import ADMIN_ROLES, activate_verified_payment
 logger = logging.getLogger("jumuiya.revenue.mpesa")
 CHECKOUTS_COLLECTION = "jumuiya_revenue_mpesa_checkouts"
 TOKEN_LOCK = threading.Lock()
+CHECKOUT_INDEX_LOCK = threading.Lock()
+_CHECKOUT_INDEXES_READY = False
 _TOKEN = None
 _TOKEN_EXPIRES = 0.0
 HTTP_TIMEOUT = 12.0
@@ -97,24 +99,32 @@ def checkout_is_production_configured() -> bool:
 
 
 def _checkout_rows():
+    global _CHECKOUT_INDEXES_READY
     rows = collection(CHECKOUTS_COLLECTION)
-    rows.create_index(
-        [("user_id", ASCENDING), ("idempotency_key", ASCENDING)],
-        unique=True,
-        name="uq_mpesa_checkout_user_idempotency",
-    )
-    rows.create_index(
-        [("checkout_request_id", ASCENDING)],
-        unique=True,
-        sparse=True,
-        name="uq_mpesa_checkout_request",
-    )
-    rows.create_index(
-        [("merchant_request_id", ASCENDING)],
-        sparse=True,
-        name="ix_mpesa_merchant_request",
-    )
-    rows.create_index([("created_at", DESCENDING)], name="ix_mpesa_checkout_created")
+    if not _CHECKOUT_INDEXES_READY:
+        with CHECKOUT_INDEX_LOCK:
+            if not _CHECKOUT_INDEXES_READY:
+                rows.create_index(
+                    [("user_id", ASCENDING), ("idempotency_key", ASCENDING)],
+                    unique=True,
+                    name="uq_mpesa_checkout_user_idempotency",
+                )
+                rows.create_index(
+                    [("checkout_request_id", ASCENDING)],
+                    unique=True,
+                    sparse=True,
+                    name="uq_mpesa_checkout_request",
+                )
+                rows.create_index(
+                    [("merchant_request_id", ASCENDING)],
+                    sparse=True,
+                    name="ix_mpesa_merchant_request",
+                )
+                rows.create_index(
+                    [("created_at", DESCENDING)],
+                    name="ix_mpesa_checkout_created",
+                )
+                _CHECKOUT_INDEXES_READY = True
     return rows
 
 
