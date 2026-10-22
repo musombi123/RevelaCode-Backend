@@ -286,6 +286,8 @@ def _read_verified_payment():
 def revenue_billing_status():
     """Report configuration state without leaking secrets or claiming checkout is live."""
     secret_ready = len(os.getenv("REVENUE_PROVIDER_WEBHOOK_SECRET", "").strip()) >= 32
+    from backend.revenue.mpesa import checkout_is_configured
+    mpesa_ready = checkout_is_configured()
     providers = [
         item.strip().lower()
         for item in os.getenv("REVENUE_PAYMENT_PROVIDERS", "mpesa").split(",")
@@ -293,8 +295,9 @@ def revenue_billing_status():
     ]
     return jsonify({
         "success": True,
-        "checkout_enabled": False,
-        "provider_callback_enabled": secret_ready,
+        "checkout_enabled": mpesa_ready,
+        "mpesa_checkout_enabled": mpesa_ready,
+        "provider_callback_enabled": secret_ready or mpesa_ready,
         "providers_allowed": providers,
         "activation_mode": "verified_provider_adapter_only",
         "message": (
@@ -452,6 +455,16 @@ def revenue_verified_payment():
         return _error(str(exc), status, "payment_activation_not_configured" if status == 503 else "invalid_payment_event")
 
     return activate_verified_payment(event)
+
+@revenue_bp.get("/subscriptions")
+@require_authenticated
+def revenue_my_subscriptions():
+    """List the authenticated user's own subscriptions and their expiry state."""
+    user_id = current_user_id()
+    rows = _subscription_collection().find({"user_id": user_id}).sort("created_at", DESCENDING)
+    items = [_public_subscription(row) for row in rows.limit(100)]
+    return jsonify({"success": True, "items": items}), 200
+
 
 @revenue_bp.get("/admin/subscriptions")
 @require_authenticated
