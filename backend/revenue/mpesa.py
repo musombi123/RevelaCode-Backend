@@ -246,15 +246,15 @@ def _public_checkout(row):
 
 def _apply_final_result(checkout, result):
     """Apply only a final success query; pending/indeterminate results never activate."""
-    query_checkout_id = str(result.get("CheckoutRequestID") or checkout.get("checkout_request_id") or "")
+    query_checkout_id = str(result.get("CheckoutRequestID") or "").strip()
     result_code = result.get("ResultCode")
     if query_checkout_id != str(checkout.get("checkout_request_id") or ""):
         logger.warning("Daraja query checkout ID mismatch")
         return False
     query_merchant_id = str(result.get("MerchantRequestID") or "").strip()
     stored_merchant_id = str(checkout.get("merchant_request_id") or "").strip()
-    if query_merchant_id and stored_merchant_id and query_merchant_id != stored_merchant_id:
-        logger.warning("Daraja query merchant request ID mismatch")
+    if not stored_merchant_id or not query_merchant_id or query_merchant_id != stored_merchant_id:
+        logger.warning("Daraja query merchant request ID missing or mismatched")
         return False
     if str(result_code) == "0" and _environment() != "production":
         # Never let a historical sandbox transaction create a paid entitlement or
@@ -634,7 +634,7 @@ def revenue_mpesa_callback():
             )
             return jsonify({"ResultCode": 0, "ResultDesc": "Callback acknowledged; verification pending"}), 200
 
-        if str(query_result.get("CheckoutRequestID") or checkout_id) != checkout_id:
+        if str(query_result.get("CheckoutRequestID") or "").strip() != checkout_id:
             logger.error("M-Pesa status query returned a different CheckoutRequestID")
             rows.update_one(
                 {"_id": checkout["_id"]},
