@@ -549,16 +549,72 @@ def revenue_mpesa_callback():
                 if key in {"MpesaReceiptNumber", "Amount", "TransactionDate", "PhoneNumber"} and isinstance(value, (str, int, float)):
                     callback_meta[key] = value
 
-        # A callback is an untrusted notification. Even a failure result is
-        # reconciled against Daraja's query before we change a final status.
+        # Correlate the callback against both IDs from our original STK request.
+        # These IDs and metadata are client-facing, so we also query Daraja below.
+        callback_merchant_id = str(callback.get("MerchantRequestID") or "").strip()
+        stored_merchant_id = str(checkout.get("merchant_request_id") or "").strip()
+        if (
+            str(callback.get("CheckoutRequestID") or "").strip() != checkout_id
+            or not callback_merchant_id
+            or not stored_merchant_id
+            or callback_merchant_id != stored_merchant_id
+        ):
+            logger.warning("M-Pesa callback identifiers do not match the stored checkout")
+            rows.update_one(
+                {"_id": checkout["_id"]},
+                {"$set": {
+                    "status": "awaiting_verification",
+                    "callback_received_at": now_utc(),
+                    "message": "Callback identifier mismatch; payment requires provider reconciliation.",
+                    "updated_at": now_utc(),
+                }},
+            )
+            return jsonify({"ResultCode": 0, "ResultDesc": "Callback acknowledged for reconciliation"}), 200
+
+        validated_receipt = None
+        if result_code == 0:
+            # The STK query confirms the payment result but often omits the M-Pesa
+            # receipt. Only use callback metadata after its amount and payer match
+            # this exact server-created checkout.
+            try:
+                callback_amount = to_money(callback_meta.get("Amount"), allow_zero=False)
+                expected_amount = to_money(checkout.get("amount"), allow_zero=False)
+                callback_phone = _phone(str(callback_meta.get("PhoneNumber") or ""))
+                expected_phone = _phone(str(checkout.get("phone") or ""))
+                receipt_candidate = str(callback_meta.get("MpesaReceiptNumber") or "").strip().upper()
+                receipt_valid = bool(re.fullmatch(r"[A-Z0-9]{6,20}", receipt_candidate))
+                if (
+                    callback_amount != expected_amount
+                    or callback_phone != expected_phone
+                    or not receipt_valid
+                ):
+                    raise ValueError("Callback metadata does not match the checkout amount, payer or receipt format.")
+                validated_receipt = receipt_candidate
+            except (MoneyValidationError, ValueError, TypeError):
+                rows.update_one(
+                    {"_id": checkout["_id"]},
+                    {"$set": {
+                        "callback_result_code": "0",
+                        "callback_result_description": str(callback.get("ResultDesc") or "")[:300],
+                        "callback_metadata": callback_meta,
+                        "status": "awaiting_verification",
+                        "callback_received_at": now_utc(),
+                        "message": "Successful callback metadata failed correlation checks; no subscription was activated.",
+                        "updated_at": now_utc(),
+                    }},
+                )
+                logger.warning("M-Pesa success callback failed amount/payer/receipt validation")
+                return jsonify({"ResultCode": 0, "ResultDesc": "Callback acknowledged for reconciliation"}), 200
+
+        # A callback is still reconciled against Daraja's query before changing
+        # final state. Save its receipt only after the amount/payer checks above.
         rows.update_one(
             {"_id": checkout["_id"]},
             {"$set": {
                 "callback_result_code": str(result_code) if result_code is not None else None,
                 "callback_result_description": str(callback.get("ResultDesc") or "")[:300],
                 "callback_metadata": callback_meta,
-                # Persist the real receipt before subscription/ledger activation.
-                "receipt": callback_meta.get("MpesaReceiptNumber") or checkout.get("receipt"),
+                "receipt": validated_receipt or checkout.get("receipt"),
                 "status": "callback_received",
                 "callback_received_at": now_utc(),
                 "updated_at": now_utc(),
