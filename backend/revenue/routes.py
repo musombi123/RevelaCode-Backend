@@ -58,10 +58,13 @@ def revenue_list_plans():
             "unsupported_revenue_stream",
         )
 
+    from backend.revenue.mpesa import checkout_is_configured
+
     return jsonify({
         "success": True,
         "pricing_status": PRICING_STATUS,
         "billing_enabled": False,
+        "checkout_enabled": checkout_is_configured(),
         "plans": list_plans(hub=hub or None),
     }), 200
 
