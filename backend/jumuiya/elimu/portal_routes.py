@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import re
+import math
 
 from bson import ObjectId
 from bson.errors import InvalidId
@@ -247,6 +248,32 @@ def _student_for_current_user():
     return matches[0]
 
 
+def _school_record(school_id):
+    conditions = [{"_id": str(school_id)}, {"school_id": str(school_id)}]
+    try:
+        conditions.append({"_id": ObjectId(str(school_id))})
+    except (InvalidId, TypeError, ValueError):
+        pass
+    return collection(SCHOOLS).find_one({"$or": conditions})
+
+
+def _public_payment_accounts(school_id):
+    school = _school_record(school_id) or {}
+    settings = school.get("settings") if isinstance(school.get("settings"), dict) else {}
+    finance = settings.get("finance") if isinstance(settings.get("finance"), dict) else {}
+    accounts = finance.get("payment_accounts") if isinstance(finance.get("payment_accounts"), list) else []
+    fields = (
+        "id", "type", "label", "account_name", "account_number", "paybill",
+        "till", "bank_name", "branch", "account_reference", "instructions",
+        "currency", "active",
+    )
+    return [
+        {key: account.get(key) for key in fields if key in account}
+        for account in accounts
+        if isinstance(account, dict) and account.get("active") is not False
+    ]
+
+
 def _school_name(school_id):
     try:
         oid = ObjectId(str(school_id))
@@ -447,29 +474,158 @@ def parent_child_documents(student_id):
 @require_authenticated
 def parent_child_finance(student_id):
     link = _verified_parent_link(student_id)
-    student = collection(STUDENTS).find_one({"_id": _object_id(student_id, "student ID"), "school_id": str(link.get("school_id", "")), "status": "active"})
+    student = collection(STUDENTS).find_one({
+        "_id": _object_id(student_id, "student ID"),
+        "school_id": str(link.get("school_id", "")),
+        "status": "active",
+    })
     if not student:
         raise APIError("Student not found.", 404, "student_not_found")
-    fees = list(collection(FEES).find({"school_id": str(student.get("school_id", "")), "student_id": str(student["_id"])}).sort("created_at", -1).limit(500))
+    school_id = str(student.get("school_id", ""))
+    fees = list(collection(FEES).find({
+        "school_id": school_id,
+        "student_id": str(student["_id"]),
+    }).sort("created_at", -1).limit(500))
     total_due = 0.0
     total_paid = 0.0
     result = []
     for fee in fees:
         amount = _number(fee.get("amount"))
         paid = _number(fee.get("amount_paid") if fee.get("amount_paid") is not None else fee.get("paid_amount"))
-        total_due += max(amount - paid, 0)
+        balance = max(amount - paid, 0)
+        total_due += balance
         total_paid += max(paid, 0)
         result.append({
             "id": str(fee.get("_id", "")),
             "title": _text(fee.get("title") or fee.get("description") or fee.get("fee_type"), 180),
             "description": _text(fee.get("description") or fee.get("title"), 180),
+            "fee_type": _text(fee.get("fee_type") or fee.get("category") or fee.get("title"), 80),
+            "term": _text(fee.get("term"), 50),
+            "academic_year": _text(fee.get("academic_year"), 30),
             "amount": amount,
             "paid_amount": paid,
-            "balance": max(amount - paid, 0),
+            "balance": balance,
             "status": _text(fee.get("status"), 40),
+            "due_date": _ser(fee.get("due_date")),
             "date": _ser(fee.get("created_at") or fee.get("date")),
+            "currency": _text(fee.get("currency") or "KES", 8),
         })
-    return ok({"student": _project_student(student, _text(link.get("school_name"), 180)), "fees": result, "total_due": round(total_due, 2), "total_paid": round(total_paid, 2)})
+    return ok({
+        "student": _project_student(student, _text(link.get("school_name"), 180)),
+        "fees": result,
+        "total_due": round(total_due, 2),
+        "total_paid": round(total_paid, 2),
+        "payment_accounts": _public_payment_accounts(school_id),
+        "payment_mode": "manual_receipt_review",
+        "payment_notice": "Use the school's listed instructions and submit proof for review. The portal does not claim a provider-confirmed online payment until a payment gateway is connected.",
+    })
+
+
+@parent_bp.post("/children/<student_id>/finance/receipts")
+@require_authenticated
+def parent_submit_fee_receipt(student_id):
+    link = _verified_parent_link(student_id)
+    student = collection(STUDENTS).find_one({
+        "_id": _object_id(student_id, "student ID"),
+        "school_id": str(link.get("school_id", "")),
+        "status": "active",
+    })
+    if not student:
+        raise APIError("Student not found.", 404, "student_not_found")
+
+    payload = _json_body()
+    fee_id = _text(payload.get("fee_id"), 160)
+    if not fee_id:
+        raise APIError("Choose a fee statement line before submitting a receipt.", 422, "fee_required")
+    method = _text(payload.get("payment_method"), 20).lower()
+    if method not in {"mpesa", "bank"}:
+        raise APIError("payment_method must be mpesa or bank.", 422, "validation_error")
+    try:
+        amount = float(payload.get("amount"))
+    except (TypeError, ValueError):
+        amount = 0.0
+    if not math.isfinite(amount) or amount <= 0 or amount > 1000000000:
+        raise APIError("Enter a valid positive receipt amount.", 422, "validation_error")
+    reference = _text(payload.get("payment_reference"), 120)
+    receipt_url = _text(payload.get("receipt_url"), 500)
+    notes = _text(payload.get("notes"), 800)
+    if not reference and not receipt_url:
+        raise APIError("Enter the M-Pesa/bank reference or attach a receipt URL.", 422, "receipt_evidence_required")
+    if receipt_url:
+        parsed = urlparse(receipt_url)
+        if parsed.scheme != "https" or not parsed.netloc:
+            raise APIError("Receipt URL must use HTTPS.", 422, "invalid_receipt_url")
+
+    school_id = str(student.get("school_id", ""))
+    conditions = [{"_id": candidate} for candidate in ([fee_id, _object_id(fee_id, "fee ID")] if ObjectId.is_valid(fee_id) else [fee_id])]
+    fee = collection(FEES).find_one({
+        "school_id": school_id,
+        "student_id": str(student["_id"]),
+        "$or": conditions,
+    })
+    if not fee:
+        raise APIError("The selected fee record does not belong to this student.", 404, "fee_not_found")
+    total = _number(fee.get("amount"))
+    paid = _number(fee.get("amount_paid") if fee.get("amount_paid") is not None else fee.get("paid_amount"))
+    balance = max(total - paid, 0)
+    if amount > balance + 0.0001:
+        raise APIError("Receipt amount exceeds the outstanding balance.", 422, "receipt_exceeds_balance")
+
+    receipts_collection = collection("jumuiya_elimu_fee_receipts")
+    duplicate = None
+    if reference:
+        duplicate = receipts_collection.find_one({
+            "school_id": school_id,
+            "payment_reference": reference,
+            "status": {"$in": ["pending", "approved"]},
+        })
+    if duplicate:
+        raise APIError("This payment reference has already been submitted to the school.", 409, "duplicate_payment_reference")
+
+    now = _now()
+    receipt = {
+        "school_id": school_id,
+        "student_id": str(student["_id"]),
+        "student_name": _text(student.get("full_name"), 160),
+        "admission_number": _text(student.get("admission_number"), 80),
+        "fee_id": str(fee.get("_id") or fee_id),
+        "fee_type": _text(fee.get("fee_type") or fee.get("title") or fee.get("description"), 80),
+        "parent_user_id": str(current_user_id()),
+        "payment_method": method,
+        "amount": round(amount, 2),
+        "currency": _text(fee.get("currency") or "KES", 8),
+        "payment_reference": reference,
+        "receipt_url": receipt_url,
+        "notes": notes,
+        "status": "pending",
+        "submitted_at": now,
+        "created_at": now,
+        "updated_at": now,
+    }
+    result = receipts_collection.insert_one(receipt)
+    receipt["_id"] = result.inserted_id
+
+    try:
+        school = _school_record(school_id) or {}
+        owner_id = str(school.get("owner_user_id") or school.get("owner_id") or "")
+        if owner_id:
+            from backend.jumuiya.notifications.services import notify
+            notify(owner_id, {
+                "title": "School fee receipt awaiting review",
+                "message": f"A parent submitted a {method.upper()} receipt for {receipt['student_name'] or 'a student'} ({receipt['admission_number'] or 'no admission number'}).",
+                "type": "action_needed",
+                "data": {"school_id": school_id, "student_id": str(student["_id"]), "receipt_id": str(result.inserted_id)},
+            })
+    except Exception:
+        pass
+
+    return created({
+        "receipt": _ser(receipt),
+        "status": "pending",
+        "payment_notice": "Receipt submitted for school review; this is not confirmation that the external payment has settled.",
+    }, "Fee receipt submitted for school review.")
+
+
 
 
 # ============================================================================
