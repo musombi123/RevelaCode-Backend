@@ -17,6 +17,8 @@ import time
 from datetime import datetime, timedelta, timezone
 
 import requests
+from bson import ObjectId
+from bson.errors import InvalidId
 from flask import current_app, jsonify, request
 from pymongo import ASCENDING, DESCENDING
 from pymongo.errors import DuplicateKeyError
@@ -904,6 +906,102 @@ def revenue_admin_refresh_checkout(checkout_id):
         "success": True,
         "verified": success,
         "checkout": _public_checkout(fresh),
+    }), 200
+
+
+@revenue_bp.post("/admin/checkouts/by-id/<checkout_row_id>/resolve-no-payment")
+@require_authenticated
+@require_roles(*ADMIN_ROLES)
+def revenue_admin_resolve_unknown_checkout(checkout_row_id):
+    """Release an ambiguous submission only after an admin verifies no charge occurred."""
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict) or set(payload) != {"resolution", "evidence_reference", "notes"}:
+        return _error(
+            "Provide resolution='provider_checked_no_charge', evidence_reference, and notes.",
+            400,
+            "invalid_manual_resolution",
+        )
+    if payload.get("resolution") != "provider_checked_no_charge":
+        return _error(
+            "The only supported manual resolution is provider_checked_no_charge.",
+            400,
+            "invalid_manual_resolution",
+        )
+    evidence = payload.get("evidence_reference")
+    notes = payload.get("notes")
+    if not isinstance(evidence, str) or not 6 <= len(evidence.strip()) <= 160:
+        return _error("Enter the provider reconciliation/report reference (6–160 characters).", 422, "invalid_evidence_reference")
+    if not isinstance(notes, str) or not 10 <= len(notes.strip()) <= 1000:
+        return _error("Add 10–1,000 characters explaining the provider-side review.", 422, "invalid_resolution_notes")
+    try:
+        row_id = ObjectId(checkout_row_id)
+    except (InvalidId, TypeError, ValueError):
+        return _error("Invalid checkout record identifier.", 400, "invalid_checkout_id")
+
+    rows = _checkout_rows()
+    checkout = rows.find_one({"_id": row_id})
+    if not checkout:
+        return _error("Checkout not found.", 404, "checkout_not_found")
+    if checkout.get("status") not in {"initiating", "submission_unknown"} or checkout.get("checkout_request_id"):
+        return _error(
+            "Only an ambiguous submission without a Daraja checkout reference can be manually resolved here.",
+            409,
+            "checkout_not_manually_resolvable",
+        )
+    if checkout.get("callback_received_at") or checkout.get("callback_metadata"):
+        return _error(
+            "Provider callback evidence exists. Use the Daraja reconciliation action instead of manually releasing this checkout.",
+            409,
+            "provider_evidence_exists",
+        )
+
+    actor = current_user_id()
+    now = now_utc()
+    updated = rows.update_one(
+        {
+            "_id": row_id,
+            "status": checkout.get("status"),
+            "checkout_request_id": {"$exists": False},
+        },
+        {
+            "$set": {
+                "status": "failed",
+                "result_description": "Finance reviewed the provider records and confirmed no charge occurred.",
+                "manual_resolution": {
+                    "resolution": "provider_checked_no_charge",
+                    "evidence_reference": evidence.strip(),
+                    "notes": notes.strip(),
+                    "resolved_by": str(actor),
+                    "resolved_at": now,
+                },
+                "updated_at": now,
+            },
+            "$unset": {"active_checkout_slot": ""},
+        },
+    )
+    if updated.modified_count != 1:
+        return _error("The checkout changed during resolution. Reload the queue and review it again.", 409, "checkout_state_conflict")
+
+    try:
+        log_action(
+            user_id=actor,
+            action="revenue.mpesa.submission_resolved_no_charge",
+            resource="revenue_mpesa_checkout",
+            resource_id=checkout_row_id,
+            metadata={
+                "provider": "mpesa",
+                "hub": checkout.get("hub"),
+                "evidence_reference": evidence.strip(),
+            },
+        )
+    except Exception:
+        current_app.logger.exception("Unknown submission released after provider review, but audit logging failed")
+
+    resolved = rows.find_one({"_id": row_id}) or checkout
+    return jsonify({
+        "success": True,
+        "message": "The provider review was recorded and this checkout slot was released. The customer may retry with a new checkout only after confirming the previous request did not charge.",
+        "checkout": _public_checkout(resolved),
     }), 200
 
 
