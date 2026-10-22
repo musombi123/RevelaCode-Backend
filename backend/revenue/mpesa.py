@@ -115,6 +115,14 @@ def _checkout_rows():
                     sparse=True,
                     name="uq_mpesa_checkout_request",
                 )
+                # Atomic one-unresolved-checkout-per-user/hub fence. Only
+                # unresolved checkouts retain this unique sparse key.
+                rows.create_index(
+                    [("active_checkout_slot", ASCENDING)],
+                    unique=True,
+                    sparse=True,
+                    name="uq_mpesa_active_checkout_slot",
+                )
                 rows.create_index(
                     [("merchant_request_id", ASCENDING)],
                     sparse=True,
@@ -480,6 +488,7 @@ def revenue_start_checkout():
         "provider": "mpesa",
         "status": "initiating",
         "subscription_activated": False,
+        "active_checkout_slot": f"{user_id}:{hub}",
         "created_at": now_utc(),
         "updated_at": now_utc(),
     }
@@ -519,11 +528,23 @@ def revenue_start_checkout():
             },
         )
     except RuntimeError as exc:
+        # The STK request may have reached Daraja even if the HTTP response was
+        # lost. Keep the user/hub slot reserved until a human reconciles it;
+        # another idempotency key must never risk a second charge.
         rows.update_one(
             {"_id": document["_id"]},
-            {"$set": {"status": "initiation_failed", "message": str(exc)[:300], "updated_at": now_utc()}},
+            {"$set": {
+                "status": "submission_unknown",
+                "message": "The STK submission result could not be confirmed. Do not retry payment until finance has reconciled this checkout.",
+                "submission_error": str(exc)[:200],
+                "updated_at": now_utc(),
+            }},
         )
-        return _error(str(exc), 503, "mpesa_initiation_failed")
+        return _error(
+            "M-Pesa submission could not be confirmed. Do not attempt another payment; this checkout requires reconciliation.",
+            503,
+            "mpesa_submission_unknown",
+        )
 
     if str(response.get("ResponseCode", "")) != "0" or not response.get("CheckoutRequestID") or not response.get("MerchantRequestID"):
         rows.update_one(
@@ -532,7 +553,7 @@ def revenue_start_checkout():
                 "status": "initiation_failed",
                 "message": str(response.get("errorMessage") or response.get("ResponseDescription") or "Daraja did not return valid checkout identifiers.")[:300],
                 "updated_at": now_utc(),
-            }},
+            }, "$unset": {"active_checkout_slot": ""}},
         )
         return _error("Daraja did not accept the STK Push request.", 502, "mpesa_request_rejected")
 
