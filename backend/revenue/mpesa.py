@@ -227,6 +227,7 @@ def _query_checkout(checkout):
 def _public_checkout(row):
     return {
         "id": str(row.get("_id", "")),
+        "user_id": str(row.get("user_id", "")),
         "hub": row.get("hub"),
         "plan_code": row.get("plan_code"),
         "amount": row.get("amount"),
