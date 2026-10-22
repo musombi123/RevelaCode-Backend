@@ -1,8 +1,9 @@
 
 """Public and authenticated endpoints for the Jumuiya OS Revenue Engine.
 
-Payment processing remains disabled. Transaction intents are records of
-requested purchases, not evidence that money has been received.
+Generic transaction intents remain request records only. Subscription checkout
+is available separately through the production Daraja adapter and is enabled
+only when its production credentials and callback URL are configured.
 """
 
 from flask import current_app, jsonify, request
@@ -45,7 +46,7 @@ def revenue_health():
         "success": True,
         "service": "jumuiya-revenue",
         "status": "operational",
-        "billing_enabled": False,
+        "billing_enabled": checkout_is_production_configured(),
         "checkout_enabled": checkout_is_production_configured(),
         "payment_provider": "mpesa",
     }), 200
