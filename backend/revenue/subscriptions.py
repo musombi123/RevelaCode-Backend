@@ -596,6 +596,52 @@ def revenue_my_subscriptions():
     return jsonify({"success": True, "items": items}), 200
 
 
+@revenue_bp.get("/admin/checkouts")
+@require_authenticated
+@require_roles(*ADMIN_ROLES)
+def revenue_admin_checkouts():
+    """Expose a safe, paginated view of M-Pesa checkout states for reconciliation."""
+    try:
+        page = max(1, int(request.args.get("page", "1")))
+        per_page = min(100, max(1, int(request.args.get("per_page", "25"))))
+    except (TypeError, ValueError):
+        return _error("Pagination values must be whole numbers.", 400, "invalid_pagination")
+
+    query = {}
+    hub = request.args.get("hub", "").strip().lower()
+    status = request.args.get("status", "").strip().lower()
+    supported_statuses = {
+        "initiating", "pending", "callback_received", "awaiting_verification",
+        "succeeded", "failed", "initiation_failed", "verified_activation_failed",
+        "sandbox_verified",
+    }
+    if hub:
+        if hub not in HUBS:
+            return _error("Unsupported hub.", 400, "unsupported_hub")
+        query["hub"] = hub
+    if status:
+        if status not in supported_statuses:
+            return _error("Unsupported checkout status.", 400, "unsupported_status")
+        query["status"] = status
+
+    checkouts = collection("jumuiya_revenue_mpesa_checkouts")
+    total = checkouts.count_documents(query)
+    rows = checkouts.find(query).sort("created_at", DESCENDING).skip((page - 1) * per_page).limit(per_page)
+    from backend.revenue.mpesa import _public_checkout
+    items = [_public_checkout(row) for row in rows]
+    return jsonify({
+        "success": True,
+        "items": items,
+        "pagination": {
+            "page": page,
+            "per_page": per_page,
+            "total": total,
+            "pages": (total + per_page - 1) // per_page,
+        },
+        "security_note": "Customer phone numbers and internal idempotency keys are not returned.",
+    }), 200
+
+
 @revenue_bp.get("/admin/subscriptions")
 @require_authenticated
 @require_roles(*ADMIN_ROLES)
