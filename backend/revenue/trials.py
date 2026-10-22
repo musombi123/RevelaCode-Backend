@@ -68,7 +68,12 @@ def _public_trial(row, now=None):
     now = _as_utc(now or now_utc())
     ends_at = _as_utc(row.get("ends_at"))
     started_at = _as_utc(row.get("started_at"))
-    active = bool(ends_at and ends_at > now)
+    active = bool(
+        str(row.get("status") or "").strip().lower() == "active"
+        and started_at
+        and ends_at
+        and started_at <= now < ends_at
+    )
     return {
         "id": str(row.get("_id", "")),
         "hub": row.get("hub"),
