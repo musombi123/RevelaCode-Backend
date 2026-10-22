@@ -294,7 +294,17 @@ def resolve_entitlement(user_id, hub, feature="essential"):
         } if trial else None,
         "subscription": _public_subscription(subscription) if subscription else None,
         "billing_enabled": False,
+        "checkout_enabled": False,
     }
+    try:
+        from backend.revenue.mpesa import checkout_is_production_configured
+        result["billing_enabled"] = checkout_is_production_configured()
+        result["checkout_enabled"] = result["billing_enabled"]
+    except Exception:
+        # Entitlement calculation remains authoritative; readiness is only a
+        # display signal and must never grant access.
+        result["billing_enabled"] = False
+        result["checkout_enabled"] = False
     return result
 
 
@@ -415,6 +425,7 @@ def revenue_billing_status():
     ]
     return jsonify({
         "success": True,
+        "billing_enabled": mpesa_ready,
         "checkout_enabled": mpesa_ready,
         "mpesa_checkout_enabled": mpesa_ready,
         "mpesa_sandbox_configured": mpesa_sandbox_ready,
