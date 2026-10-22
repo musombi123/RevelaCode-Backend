@@ -216,10 +216,11 @@ def revenue_admin_overview():
 
     from backend.revenue.mpesa import checkout_is_production_configured
 
+    live_checkout = checkout_is_production_configured()
     return jsonify({
         "success": True,
-        "billing_enabled": False,
-        "checkout_enabled": checkout_is_production_configured(),
+        "billing_enabled": live_checkout,
+        "checkout_enabled": live_checkout,
         "pricing_status": get_pricing_status(),
         "metrics": {
             "total_intents": total,
