@@ -922,6 +922,7 @@ def revenue_current_checkout():
                 "callback_received",
                 "awaiting_verification",
                 "verified_activation_failed",
+                "submission_unknown",
             ]
         },
     }
