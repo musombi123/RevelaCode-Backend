@@ -156,6 +156,39 @@ def _timestamp():
 
 
 def _password(timestamp):
+    # A new idempotency key must not bypass an existing unresolved payment.
+    from backend.revenue.subscriptions import _active_subscription
+    if _active_subscription(user_id, hub):
+        return _error(
+            "This hub already has an active paid subscription. No new payment was started.",
+            409,
+            "active_subscription_exists",
+        )
+
+    unresolved = rows.find_one(
+        {
+            "user_id": user_id,
+            "hub": hub,
+            "status": {
+                "$in": [
+                    "initiating",
+                    "pending",
+                    "callback_received",
+                    "awaiting_verification",
+                    "verified_activation_failed",
+                ]
+            },
+        },
+        sort=[("created_at", DESCENDING)],
+    )
+    if unresolved:
+        return jsonify({
+            "success": False,
+            "code": "checkout_already_pending",
+            "message": "A payment for this hub is still unresolved. Refresh its status before attempting another payment.",
+            "checkout": _public_checkout(unresolved),
+        }), 409
+
     shortcode = _env("MPESA_SHORTCODE")
     raw = f"{shortcode}{_env('MPESA_PASSKEY')}{timestamp}"
     return base64.b64encode(raw.encode("utf-8")).decode("ascii")
@@ -767,6 +800,35 @@ def revenue_admin_refresh_checkout(checkout_id):
         "success": True,
         "verified": success,
         "checkout": _public_checkout(fresh),
+    }), 200
+
+
+@revenue_bp.get("/checkouts/current")
+@require_authenticated
+def revenue_current_checkout():
+    """Return the authenticated user's most recent unresolved hub checkout."""
+    user_id = current_user_id()
+    hub = request.args.get("hub", "").strip().lower()
+    if hub and hub not in {"shamba", "biashara", "elimu", "community", "smart_ai", "marketplace", "faith"}:
+        return _error("Unsupported hub.", 400, "unsupported_hub")
+    query = {
+        "user_id": user_id,
+        "status": {
+            "$in": [
+                "initiating",
+                "pending",
+                "callback_received",
+                "awaiting_verification",
+                "verified_activation_failed",
+            ]
+        },
+    }
+    if hub:
+        query["hub"] = hub
+    checkout = _checkout_rows().find_one(query, sort=[("created_at", DESCENDING)])
+    return jsonify({
+        "success": True,
+        "checkout": _public_checkout(checkout) if checkout else None,
     }), 200
 
 
