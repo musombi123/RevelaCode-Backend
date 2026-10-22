@@ -9,6 +9,7 @@ from flask import Flask
 
 from backend.revenue import subscriptions
 from backend.revenue import mpesa
+from backend.revenue import trials
 
 
 def _trial_row(ends_at, started_at=None):
@@ -389,3 +390,29 @@ def test_idempotent_confirmed_payment_can_be_enriched_with_late_real_receipt(mon
 
     assert existing["receipt"] == "QWERTY1234"
     assert row["receipt"] == "QWERTY1234"
+
+
+def test_trial_is_not_consumed_when_hub_has_active_paid_subscription(monkeypatch, revenue_app):
+    paid = {
+        "_id": "sub-1",
+        "user_id": "user-1",
+        "hub": "smart_ai",
+        "status": "active",
+    }
+    monkeypatch.setattr(trials, "current_user_id", lambda: "user-1")
+    monkeypatch.setattr(trials, "now_utc", lambda: datetime(2026, 10, 22, tzinfo=timezone.utc))
+    monkeypatch.setattr(subscriptions, "_active_subscription", lambda *args, **kwargs: paid)
+    trial_collection = Mock()
+    monkeypatch.setattr(trials, "_trials", lambda: trial_collection)
+
+    with revenue_app.test_request_context(
+        "/api/revenue/trials/start",
+        method="POST",
+        json={"hub": "smart_ai"},
+    ):
+        response, status = trials.start_hub_trial.__wrapped__()
+
+    assert status == 409
+    assert response.get_json()["code"] == "active_subscription_exists"
+    trial_collection.find_one.assert_not_called()
+    trial_collection.insert_one.assert_not_called()
