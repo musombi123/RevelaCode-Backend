@@ -12,6 +12,7 @@ import hmac
 import json
 import os
 import re
+from functools import wraps
 from datetime import datetime, timedelta, timezone
 
 from flask import current_app, jsonify, request
@@ -38,7 +39,7 @@ ADMIN_ROLES = ("admin", "platform_admin", "super_admin", "revelacode_admin")
 PREMIUM_FEATURES = {
     "premium", "advanced_ai", "image_generation", "document_analysis",
     "voice_generation", "long_memory", "advanced_analytics",
-    "advanced_reports", "automation", "expanded_history",
+    "advanced_reports", "automation", "expanded_history", "seller_tools",
 }
 
 
@@ -81,6 +82,14 @@ def _events_collection():
 
 
 def _public_subscription(row):
+    status = str(row.get("status", "active"))
+    now = _as_utc(now_utc())
+    starts_at = _as_utc(row.get("starts_at"))
+    ends_at = _as_utc(row.get("ends_at"))
+    if status == "active" and ends_at and ends_at <= now:
+        status = "expired"
+    elif status == "active" and starts_at and starts_at > now:
+        status = "scheduled"
     return {
         "id": str(row.get("_id", "")),
         "hub": row.get("hub"),
@@ -89,9 +98,9 @@ def _public_subscription(row):
         "provider_transaction_id": row.get("provider_transaction_id"),
         "amount": row.get("amount"),
         "currency": row.get("currency", CURRENCY_DEFAULT),
-        "status": row.get("status", "active"),
-        "starts_at": _iso(row.get("starts_at")),
-        "ends_at": _iso(row.get("ends_at")),
+        "status": status,
+        "starts_at": _iso(starts_at),
+        "ends_at": _iso(ends_at),
         "created_at": _iso(row.get("created_at")),
     }
 
@@ -177,6 +186,36 @@ def _error(message, status=400, code="invalid_request"):
         "error": {"message": message, "code": code},
         "code": code,
     }), status
+def require_revenue_entitlement(hub, feature):
+    """Protect a premium hub capability while preserving essential free access."""
+    def decorator(fn):
+        @wraps(fn)
+        def wrapper(*args, **kwargs):
+            try:
+                entitlement = resolve_entitlement(current_user_id(), hub, feature)
+            except ValueError as exc:
+                return _error(str(exc), 400, "invalid_entitlement_request")
+            except Exception:
+                current_app.logger.exception(
+                    "Could not resolve revenue entitlement | hub=%s feature=%s",
+                    hub, feature,
+                )
+                return _error(
+                    "Access could not be verified right now. Please retry.",
+                    503,
+                    "revenue_entitlement_unavailable",
+                )
+            if entitlement.get("allowed") is not True:
+                return jsonify({
+                    "success": False,
+                    "code": "premium_entitlement_required",
+                    "message": "Start this hub's free trial or subscribe to unlock this feature.",
+                    "entitlement": entitlement,
+                }), 402
+            return fn(*args, **kwargs)
+        return wrapper
+    return decorator
+
 
 
 def _read_verified_payment():
