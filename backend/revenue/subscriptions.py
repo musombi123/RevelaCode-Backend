@@ -189,6 +189,7 @@ def _public_subscription(row):
         status = "scheduled"
     return {
         "id": str(row.get("_id", "")),
+        "user_id": str(row.get("user_id", "")),
         "hub": row.get("hub"),
         "plan_code": row.get("plan_code"),
         "provider": row.get("provider"),
