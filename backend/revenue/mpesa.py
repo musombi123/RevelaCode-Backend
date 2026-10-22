@@ -309,7 +309,10 @@ def _apply_final_result(checkout, result):
             "verification_source": "daraja_stkpushquery",
         },
     }
-    response, status_code = activate_verified_payment(event)
+    response, status_code = activate_verified_payment(
+        event,
+        plan_override=checkout.get("plan_snapshot"),
+    )
     body = response.get_json(silent=True) if hasattr(response, "get_json") else {}
     if status_code not in {200, 201} or not isinstance(body, dict) or body.get("success") is not True:
         _checkout_rows().update_one(
@@ -409,6 +412,15 @@ def revenue_start_checkout():
         "hub": hub,
         "amount": f"{amount:.2f}",
         "currency": str(plan.get("currency") or "KES").upper(),
+        "plan_snapshot": {
+            "code": plan_code,
+            "name": str(plan.get("name") or ""),
+            "hub": hub,
+            "amount": f"{amount:.2f}",
+            "currency": str(plan.get("currency") or "KES").upper(),
+            "interval": str(plan.get("interval") or "").lower(),
+            "status": "available",
+        },
         "phone": phone,
         "provider": "mpesa",
         "status": "initiating",
