@@ -912,6 +912,116 @@ def register():
 
 
 # =========================================================
+# SUPPORT: RESEND ACCOUNT VERIFICATION
+# =========================================================
+
+@auth_bp.route(
+    "/api/support/resend-verification",
+    methods=["POST"],
+)
+def support_resend_verification():
+    """Send a fresh activation code when support assists an unverified user."""
+    authorization = (request.headers.get("Authorization") or "").strip()
+    if not authorization.startswith("Bearer "):
+        return jsonify(success=False, code="authentication_required"), 401
+
+    try:
+        claims = jwt.decode(
+            authorization[7:].strip(),
+            JWT_SECRET,
+            algorithms=[JWT_ALGORITHM],
+            options={"require": ["sub", "iat", "exp"]},
+        )
+    except jwt.InvalidTokenError:
+        return jsonify(success=False, code="invalid_token"), 401
+
+    actor_id = str(claims.get("sub") or claims.get("user_id") or "").strip()
+    if not actor_id or len(actor_id) > 128:
+        return jsonify(success=False, code="invalid_user_identity"), 401
+
+    # Check the current stored role. Do not trust role claims supplied by the client/JWT.
+    try:
+        actor = None
+        if MONGO_AVAILABLE and users_col is not None:
+            projection = {"_id": 1, "id": 1, "user_id": 1, "role": 1, "roles": 1}
+            if ObjectId.is_valid(actor_id):
+                actor = users_col.find_one({"_id": ObjectId(actor_id)}, projection)
+            if actor is None:
+                actor = users_col.find_one(
+                    {"$or": [{"id": actor_id}, {"user_id": actor_id}]},
+                    projection,
+                )
+        else:
+            for record in load_users_file().values():
+                if not isinstance(record, dict):
+                    continue
+                if str(record.get("_id") or record.get("id") or record.get("user_id") or "") == actor_id:
+                    actor = record
+                    break
+    except Exception:
+        return jsonify(success=False, code="support_authorization_unavailable"), 503
+
+    if not actor or str(actor.get("_id") or actor.get("id") or actor.get("user_id") or "") != actor_id:
+        return jsonify(success=False, code="support_authorization_unavailable"), 403
+
+    roles = actor.get("roles") if isinstance(actor.get("roles"), list) else []
+    roles = {str(role).strip().casefold() for role in roles if role}
+    role = str(actor.get("role") or "").strip().casefold()
+    allowed_roles = {"support", "admin", "platform_admin", "super_admin", "revelacode_admin"}
+    if role not in allowed_roles and not roles.intersection(allowed_roles):
+        return jsonify(success=False, code="support_required"), 403
+
+    data = request.get_json(silent=True) or {}
+    contact = str(data.get("contact") or "").strip()
+    if not re.fullmatch(r"[^@\\s]+@[^@\\s]+\\.[^@\\s]+", contact):
+        return jsonify(success=False, message="Enter the user's registered email address."), 422
+
+    try:
+        user = (
+            users_col.find_one({"contact": contact})
+            if MONGO_AVAILABLE and users_col is not None
+            else get_user_from_file(contact)
+        )
+    except Exception:
+        return jsonify(success=False, code="user_lookup_unavailable"), 503
+
+    if not user:
+        return jsonify(success=False, message="No account was found for that email address."), 404
+    if _auth_profile_verified(user.get("verified", user.get("is_verified", False))):
+        return jsonify(success=False, message="This account is already verified."), 409
+
+    code = generate_code()
+    verification_data = {"code": code, "expires": expires_in(10).isoformat()}
+    try:
+        if MONGO_AVAILABLE and users_col is not None:
+            users_col.update_one({"contact": contact}, {"$set": {"verification": verification_data}})
+            user = users_col.find_one({"contact": contact})
+        else:
+            user["verification"] = verification_data
+        if user:
+            save_user_to_file(user)
+
+        send_verification_email(recipient=contact, code=code, purpose="support_activation")
+    except Exception:
+        if MONGO_AVAILABLE and users_col is not None:
+            users_col.update_one({"contact": contact}, {"$unset": {"verification": ""}})
+            user = users_col.find_one({"contact": contact})
+        else:
+            user.pop("verification", None)
+        if user:
+            save_user_to_file(user)
+        return jsonify(
+            success=False,
+            message="Verification email could not be sent. Please check delivery configuration and try again.",
+        ), 502
+
+    return jsonify(
+        success=True,
+        message="A fresh 10-minute verification code was sent to the user's registered email address.",
+    ), 200
+
+
+# =========================================================
 # REQUEST VERIFICATION CODE
 # =========================================================
 
