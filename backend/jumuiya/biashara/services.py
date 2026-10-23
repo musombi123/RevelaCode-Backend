@@ -11,6 +11,7 @@ from pymongo import ReturnDocument
 from backend.jumuiya.core.database import collection
 from backend.jumuiya.core.errors import APIError
 from backend.jumuiya.core.audit import log_action
+from backend.jumuiya.biashara.access import resolve_business_access
 
 from backend.jumuiya.biashara.website import (
     DEFAULT_BIASHARA_WEBSITE_SETTINGS,
@@ -181,15 +182,34 @@ def get_business_for_user(
     )
 
 
-def _require_business(user_id):
-    """Return a business only after platform-admin verification."""
-    business = get_business_for_user(user_id)
+def get_active_business_for_user(user_id):
+    """Return the active owned/member business without weakening owner-only lookup."""
+    context = resolve_business_access(user_id)
+    if not context:
+        return None
+    return serialise(context.get("business"))
+
+
+def _require_business(user_id, allowed_roles=None):
+    """Resolve the active business and enforce its member role and verification."""
+    access = resolve_business_access(user_id)
+    business = serialise(access.get("business")) if access else None
 
     if not business:
         raise APIError(
-            "Create your business profile first.",
+            "Create a business profile or accept a business invitation first.",
             409,
             "business_required",
+        )
+
+    role = str((access or {}).get("role") or "owner").strip().lower()
+    allowed = set(allowed_roles or {"owner"})
+    allowed.add("owner")
+    if role not in allowed:
+        raise APIError(
+            "Your business role does not permit this operation.",
+            403,
+            "business_role_forbidden",
         )
 
     verification_status = str(business.get("verification_status") or "").strip().lower()
@@ -217,7 +237,6 @@ def _require_business(user_id):
         403,
         "business_verification_required",
     )
-
 
 def create_or_update_business(user_id, payload):
     businesses = collection("jumuiya_businesses")
@@ -353,9 +372,7 @@ def create_product(
     payload,
 ):
 
-    business = _require_business(
-        user_id
-    )
+    business = _require_business(user_id, allowed_roles=set(['owner', 'admin', 'manager', 'inventory']))
 
     document = product_document(
         business["id"],
@@ -388,7 +405,7 @@ def list_products(
     limit=50,
 ):
     """List this business's products with filtering and a bounded limit."""
-    business = _require_business(user_id)
+    business = _require_business(user_id, allowed_roles=set(['owner', 'admin', 'manager', 'sales', 'inventory', 'viewer']))
     query = {"business_id": business["id"]}
 
     if status:
@@ -420,9 +437,7 @@ def update_product(
     payload,
 ):
 
-    business = _require_business(
-        user_id
-    )
+    business = _require_business(user_id, allowed_roles=set(['owner', 'admin', 'manager', 'inventory']))
 
     allowed = {
         "name",
@@ -496,9 +511,7 @@ def delete_product(
     product_id,
 ):
 
-    business = _require_business(
-        user_id
-    )
+    business = _require_business(user_id, allowed_roles=set(['owner', 'admin', 'manager', 'inventory']))
 
     products = collection(
         "jumuiya_products"
@@ -549,9 +562,7 @@ def low_stock(
     threshold=5,
 ):
 
-    business = _require_business(
-        user_id
-    )
+    business = _require_business(user_id, allowed_roles=set(['owner', 'admin', 'manager', 'sales', 'inventory', 'viewer']))
 
     try:
         threshold = float(
@@ -601,9 +612,7 @@ def inventory_adjustment(
     payload,
 ):
 
-    business = _require_business(
-        user_id
-    )
+    business = _require_business(user_id, allowed_roles=set(['owner', 'admin', 'manager', 'inventory']))
 
     products = collection(
         "jumuiya_products"
@@ -731,9 +740,7 @@ def create_customer(
     payload,
 ):
 
-    business = _require_business(
-        user_id
-    )
+    business = _require_business(user_id, allowed_roles=set(['owner', 'admin', 'manager', 'sales']))
 
     document = customer_document(
         business["id"],
@@ -766,7 +773,7 @@ def list_customers(
     limit=50,
 ):
     """List this business's customers with search and bounded pagination."""
-    business = _require_business(user_id)
+    business = _require_business(user_id, allowed_roles=set(['owner', 'admin', 'manager', 'sales', 'inventory', 'viewer']))
     query = {"business_id": business["id"]}
 
     search_text = str(search or "").strip()
@@ -803,7 +810,7 @@ def create_order(
     that limitation is recorded on the order until reservation/fulfilment is
     implemented as a separate, idempotent workflow.
     """
-    business = _require_business(user_id)
+    business = _require_business(user_id, allowed_roles=set(['owner', 'admin', 'manager', 'sales']))
 
     customer_id = payload.get("customer_id")
     if customer_id:
@@ -973,7 +980,7 @@ def list_orders(
     limit=50,
 ):
     """List this business's orders with optional status and bounded limit."""
-    business = _require_business(user_id)
+    business = _require_business(user_id, allowed_roles=set(['owner', 'admin', 'manager', 'sales', 'inventory', 'viewer']))
     query = {"business_id": business["id"]}
 
     if status:
@@ -993,9 +1000,7 @@ def get_order(
     order_id,
 ):
 
-    business = _require_business(
-        user_id
-    )
+    business = _require_business(user_id, allowed_roles=set(['owner', 'admin', 'manager', 'sales', 'inventory', 'viewer']))
 
     document = collection(
         "jumuiya_orders"
@@ -1035,7 +1040,7 @@ def update_order_status(
     if not isinstance(status, str) or status not in transitions:
         raise APIError("Invalid order status.", 422, "invalid_order_status")
 
-    business = _require_business(user_id)
+    business = _require_business(user_id, allowed_roles=set(['owner', 'admin', 'manager', 'sales']))
     orders = collection("jumuiya_orders")
     document = orders.find_one({
         "_id": clean_id(order_id),
@@ -1100,9 +1105,7 @@ def record_sale(
     payload,
 ):
 
-    business = _require_business(
-        user_id
-    )
+    business = _require_business(user_id, allowed_roles=set(['owner', 'admin', 'manager', 'sales']))
 
     # -----------------------------------------------------
     # Validate customer
@@ -1289,9 +1292,7 @@ def create_expense(
     payload,
 ):
 
-    business = _require_business(
-        user_id
-    )
+    business = _require_business(user_id, allowed_roles=set(['owner', 'admin', 'manager']))
 
     document = expense_document(
         business["id"],
@@ -1324,9 +1325,7 @@ def list_expenses(
     user_id,
 ):
 
-    business = _require_business(
-        user_id
-    )
+    business = _require_business(user_id, allowed_roles=set(['owner', 'admin', 'manager']))
 
     documents = (
         collection(
@@ -1354,9 +1353,7 @@ def dashboard(
     user_id,
 ):
 
-    business = _require_business(
-        user_id
-    )
+    business = _require_business(user_id, allowed_roles=set(['owner', 'admin', 'manager', 'sales', 'inventory', 'viewer']))
 
     business_id = business["id"]
 
@@ -1506,7 +1503,7 @@ def dashboard(
 
 
 def get_biashara_website_settings(user_id):
-    business = _require_business(user_id)
+    business = _require_business(user_id, allowed_roles=set(['owner', 'admin', 'manager', 'sales', 'inventory', 'viewer']))
     settings = dict(DEFAULT_BIASHARA_WEBSITE_SETTINGS)
     stored = business.get("website")
     if isinstance(stored, dict):
@@ -1519,7 +1516,7 @@ def get_biashara_website_settings(user_id):
 
 
 def save_biashara_website_settings(user_id, payload):
-    business = _require_business(user_id)
+    business = _require_business(user_id, allowed_roles=set(['owner', 'admin', 'manager']))
     now = now_utc()
     current = business.get("website") if isinstance(business.get("website"), dict) else {}
     settings = normalize_biashara_website_settings(payload, current)
@@ -1696,11 +1693,9 @@ def submit_public_biashara_inquiry(slug, payload):
 
 
 def list_biashara_website_inquiries(user_id, limit=30):
-    business = _require_business(user_id)
+    business = _require_business(user_id, allowed_roles=set(['owner', 'admin', 'manager', 'sales']))
     documents = collection("jumuiya_business_website_inquiries").find(
-        {
-            "business_id": business["id"],
-            "owner_user_id": str(user_id),
-        }
+        {"business_id": business["id"]}
     ).sort("created_at", -1).limit(_bounded_list_limit(limit))
     return serialise_many(documents)
+

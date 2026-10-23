@@ -184,7 +184,7 @@ def get_business():
     """
 
     return ok(
-        services.get_business_for_user(
+        services.get_active_business_for_user(
             user_id()
         )
     )

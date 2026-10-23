@@ -110,10 +110,9 @@ def test_new_business_is_created_as_pending_application(monkeypatch):
 
 
 def test_business_workspace_is_denied_before_verification(monkeypatch):
-    monkeypatch.setattr(services, "get_business_for_user", lambda user_id: {
-        "id": "business-1",
-        "status": "pending_verification",
-        "verification_status": "pending",
+    monkeypatch.setattr(services, "resolve_business_access", lambda user_id: {
+        "business": {"id": "business-1", "status": "pending_verification", "verification_status": "pending"},
+        "role": "owner", "is_owner": True, "membership": None,
     })
 
     with pytest.raises(APIError) as exc:
@@ -123,10 +122,9 @@ def test_business_workspace_is_denied_before_verification(monkeypatch):
 
 
 def test_business_workspace_requires_both_verified_and_active(monkeypatch):
-    monkeypatch.setattr(services, "get_business_for_user", lambda user_id: {
-        "id": "business-1",
-        "status": "active",
-        "verification_status": "verified",
+    monkeypatch.setattr(services, "resolve_business_access", lambda user_id: {
+        "business": {"id": "business-1", "status": "active", "verification_status": "verified"},
+        "role": "owner", "is_owner": True, "membership": None,
     })
 
     assert services._require_business("owner-1")["id"] == "business-1"

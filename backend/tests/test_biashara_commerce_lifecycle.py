@@ -68,7 +68,7 @@ def commerce_db(monkeypatch):
         "jumuiya_orders": orders,
     }
     monkeypatch.setattr(services, "collection", lambda name: collections[name])
-    monkeypatch.setattr(services, "_require_business", lambda user_id: {
+    monkeypatch.setattr(services, "_require_business", lambda user_id, allowed_roles=None: {
         "id": "business-1",
         "currency": "KES",
     })
