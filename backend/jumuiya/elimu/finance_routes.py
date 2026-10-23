@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from html import escape
 from math import isfinite
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 from bson import ObjectId
 from flask import Blueprint, request
@@ -257,7 +257,7 @@ def _student_fee_status(student: dict, fee_rows: list[dict]) -> dict:
     }
 
 
-def _normalize_sms_phone(value: Any) -> str:
+def _normalize_whatsapp_phone(value: Any) -> str:
     raw = _text(value, 80)
     if not raw:
         return ""
@@ -320,14 +320,57 @@ def _send_fee_reminder_email(recipient: str, subject: str, text_body: str, html_
     })
 
 
-def _send_fee_reminder_sms(recipient: str, body: str) -> None:
-    sid = (os.getenv("TWILIO_SID") or os.getenv("TWILIO_ACCOUNT_SID") or "").strip()
-    auth = (os.getenv("TWILIO_AUTH") or os.getenv("TWILIO_AUTH_TOKEN") or "").strip()
-    sender = (os.getenv("TWILIO_NUMBER") or os.getenv("TWILIO_FROM_NUMBER") or "").strip()
-    if not sid or not auth or not sender:
-        raise RuntimeError("sms_delivery_not_configured")
-    from twilio.rest import Client
-    Client(sid, auth).messages.create(body=body, from_=sender, to=recipient)
+def _send_fee_reminder_whatsapp(recipient: str, parameters: list[str]) -> str:
+    """Send a Meta-approved utility template through the WhatsApp Cloud API.
+
+    The template must contain eight body placeholders in this exact order:
+    school, student name, student ID, programme/class, required fees, paid,
+    outstanding balance, payment instructions.
+    """
+    access_token = os.getenv("WHATSAPP_ACCESS_TOKEN", "").strip()
+    phone_number_id = os.getenv("WHATSAPP_PHONE_NUMBER_ID", "").strip()
+    api_version = (os.getenv("WHATSAPP_API_VERSION") or "v26.0").strip()
+    template_name = (os.getenv("WHATSAPP_FEE_REMINDER_TEMPLATE") or "school_fee_reminder").strip()
+    language_code = (os.getenv("WHATSAPP_FEE_REMINDER_LANGUAGE") or "en_US").strip()
+    if not access_token or not phone_number_id:
+        raise RuntimeError("whatsapp_cloud_api_not_configured")
+
+    import requests
+
+    body_parameters = [
+        {"type": "text", "text": _text(value, 900)}
+        for value in parameters
+    ]
+    response = requests.post(
+        f"https://graph.facebook.com/{api_version}/{phone_number_id}/messages",
+        headers={
+            "Authorization": f"Bearer {access_token}",
+            "Content-Type": "application/json",
+        },
+        json={
+            "messaging_product": "whatsapp",
+            "recipient_type": "individual",
+            "to": recipient.lstrip("+"),
+            "type": "template",
+            "template": {
+                "name": template_name,
+                "language": {"code": language_code},
+                "components": [{
+                    "type": "body",
+                    "parameters": body_parameters,
+                }],
+            },
+        },
+        timeout=(5, 20),
+    )
+    try:
+        result = response.json()
+    except ValueError:
+        result = {}
+    if response.status_code >= 400 or not result.get("messages"):
+        # Never include credentials or full provider response in the exception.
+        raise RuntimeError("whatsapp_template_delivery_failed")
+    return _text((result.get("messages") or [{}])[0].get("id"), 160)
 
 
 @finance_bp.get("/fee-status")
@@ -435,36 +478,61 @@ def send_student_fee_reminder():
         f"<p>{safe_school}</p></div>"
     )
 
-    sms_phone = _normalize_sms_phone(guardian_phone_raw)
-    payment_sms = ""
-    if instructions:
-        # Use the first active school payment route, keeping SMS practical.
-        payment_sms = " " + instructions[0]
-    sms_body = (
-        f"School fee reminder from {school_name}: {student_name} (Student ID {student_label}, {program}). "
-        f"Required KES {required:,.2f}; paid KES {paid:,.2f}; balance KES {balance:,.2f}. "
-        f"Please pay using school instructions or contact the Bursar if already paid."
+    whatsapp_phone = _normalize_whatsapp_phone(guardian_phone_raw)
+    payment_text = _text(payment_text, 800)
+    whatsapp_message = (
+        f"School fee reminder from {school_name}\n"
+        f"Student: {student_name} (Student ID: {student_label})\n"
+        f"Programme/class: {program}\n"
+        f"Total fees required: KES {required:,.2f}\n"
+        f"Payments recorded: KES {paid:,.2f}\n"
+        f"Outstanding balance: KES {balance:,.2f}\n"
+        f"Payment instructions: {payment_text}\n\n"
+        "If you have already paid, please send your payment reference to the school Bursar. Thank you."
     )
-    if payment_sms and len(sms_body) + len(payment_sms) < 1500:
-        sms_body += payment_sms
+    manual_whatsapp_url = (
+        f"https://wa.me/{whatsapp_phone.lstrip('+')}?text={quote(whatsapp_message)}"
+        if whatsapp_phone else ""
+    )
 
     sent_channels = []
     warnings = []
+    whatsapp_message_id = ""
     if guardian_email:
         try:
             _send_fee_reminder_email(guardian_email, subject, email_text, html_body)
             sent_channels.append("email")
         except Exception:
             warnings.append("Email was not sent. Check RESEND_API_KEY, EMAIL_FROM, and the configured sender domain.")
+
     if guardian_phone_raw:
-        if not sms_phone:
-            warnings.append("SMS was not sent because the recorded guardian phone is not in a supported international format. Use +254… or a Kenyan 07…/01… number.")
+        if not whatsapp_phone:
+            warnings.append("WhatsApp could not be prepared because the saved parent phone is not in a supported international format. Use +254… or a Kenyan 07…/01… number.")
         else:
             try:
-                _send_fee_reminder_sms(sms_phone, sms_body)
-                sent_channels.append("sms")
+                template_parameters = [
+                    school_name,
+                    student_name,
+                    student_label,
+                    program,
+                    f"{required:,.2f}",
+                    f"{paid:,.2f}",
+                    f"{balance:,.2f}",
+                    payment_text,
+                ]
+                whatsapp_message_id = _send_fee_reminder_whatsapp(
+                    whatsapp_phone,
+                    template_parameters,
+                )
+                sent_channels.append("whatsapp")
             except Exception:
-                warnings.append("SMS was not sent. Check TWILIO_SID, TWILIO_AUTH, TWILIO_NUMBER, and Twilio account permissions.")
+                warnings.append(
+                    "Automatic WhatsApp delivery did not complete. Configure Meta WhatsApp Cloud API credentials and an approved school_fee_reminder utility template. You can still open WhatsApp and send the prepared message manually."
+                )
+
+    # Only expose a manual send link if API-based WhatsApp delivery did not succeed.
+    if "whatsapp" in sent_channels:
+        manual_whatsapp_url = ""
 
     log_record = {
         "school_id": school_id,
@@ -477,14 +545,16 @@ def send_student_fee_reminder():
         "amount_required": required,
         "amount_paid": paid,
         "balance": balance,
-        "status": "sent" if sent_channels else "failed",
+        "status": "sent" if sent_channels else ("manual_send_required" if manual_whatsapp_url else "failed"),
+        "channels_attempted": (["email"] if guardian_email else []) + (["whatsapp"] if whatsapp_phone else []),
+        "manual_whatsapp_available": bool(manual_whatsapp_url),
         "created_at": _now(),
     }
     audit = collection(REMINDERS).insert_one(log_record)
-    if not sent_channels:
-        raise APIError("No fee reminder was delivered. Configure Resend for parent email and/or Twilio for parent SMS, and verify the student's saved guardian contact.", 503, "fee_reminder_delivery_failed")
+    if not sent_channels and not manual_whatsapp_url:
+        raise APIError("No fee reminder was delivered or prepared. Configure Resend email or record a valid parent phone number for WhatsApp.", 503, "fee_reminder_delivery_failed")
 
-    return created({
+    result = {
         "reminder_id": str(audit.inserted_id),
         "student": {
             "student_id": status["student_id"],
@@ -497,7 +567,16 @@ def send_student_fee_reminder():
         },
         "channels_sent": sent_channels,
         "warnings": warnings,
-    }, "School fee reminder sent to the recorded parent/guardian contact.")
+        "manual_whatsapp_url": manual_whatsapp_url,
+        "whatsapp_message_id": whatsapp_message_id,
+        "delivery_status": "sent" if sent_channels else "manual_send_required",
+    }
+    message = (
+        "School fee reminder sent to the recorded parent/guardian contact."
+        if sent_channels
+        else "Reminder prepared. Open WhatsApp and press Send to deliver it to the recorded parent/guardian."
+    )
+    return created(result, message)
 
 
 @finance_bp.get("/payment-accounts")
