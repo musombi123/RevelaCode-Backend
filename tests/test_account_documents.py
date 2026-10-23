@@ -81,6 +81,9 @@ def test_certificate_issuance_is_verified_idempotent_signed_and_owner_only(accou
     assert issued.status_code == 201
     certificate_id = issued.get_json()["certificate_id"]
     assert certificate_id.startswith("RC-AC-")
+    assert issued.get_json()["verification_url"].endswith(
+        f"/api/verify/certificate/{certificate_id}"
+    )
 
     repeated = client.post("/api/accounts/certificates", headers=headers_for(), json={})
     assert repeated.status_code == 200
