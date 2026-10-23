@@ -1577,6 +1577,34 @@ def permanently_delete_owner_school():
     warning_hostnames = []
     deleted_by_collection = {}
 
+    # Supply requests may already have published a Community post. Retain its
+    # identifier before deleting the request so dependent post reactions,
+    # comments and other engagement records can be removed as well.
+    related_post_ids = []
+    inventory_needs = collection("jumuiya_elimu_inventory_needs")
+    for need in inventory_needs.find({"school_id": school_id}, {"community_post_id": 1}):
+        post_id = _text(need.get("community_post_id"))
+        if post_id:
+            related_post_ids.append(post_id)
+            if ObjectId.is_valid(post_id):
+                related_post_ids.append(ObjectId(post_id))
+
+    # Gather all directly school-owned Community posts before deleting any
+    # Community collection. That lets comments/reactions/bookmarks be removed
+    # even when a post was created by school staff and linked via its school tag.
+    community_posts = collection("jumuiya_community_posts")
+    post_query = _school_delete_match_query(school, school_tag)
+    for post in community_posts.find(post_query, {"_id": 1, "id": 1}):
+        for candidate in (post.get("_id"), post.get("id")):
+            if candidate is None or str(candidate).strip() == "":
+                continue
+            related_post_ids.append(str(candidate))
+            if ObjectId.is_valid(str(candidate)):
+                related_post_ids.append(ObjectId(str(candidate)))
+
+    # Deduplicate identifiers while preserving their string/ObjectId types.
+    related_post_ids = list(dict.fromkeys(related_post_ids))
+
     # Remove custom hostnames from the configured Render service where
     # possible; the local domain registry records are deleted below regardless.
     try:
@@ -1603,42 +1631,6 @@ def permanently_delete_owner_school():
                 except Exception:
                     warning_hostnames.append(hostname)
 
-    # Supply requests may already have published a Community post. Retain its
-    # identifier before deleting the request so dependent post reactions,
-    # comments and other engagement records can be removed as well.
-    related_post_ids = []
-    try:
-        inventory_needs = collection("jumuiya_elimu_inventory_needs")
-        for need in inventory_needs.find({"school_id": school_id}, {"community_post_id": 1}):
-            post_id = _text(need.get("community_post_id"))
-            if post_id:
-                related_post_ids.append(post_id)
-                if ObjectId.is_valid(post_id):
-                    related_post_ids.append(ObjectId(post_id))
-    except Exception:
-        # The school may predate the optional inventory module.
-        pass
-
-    # Gather all directly school-owned Community posts before deleting any
-    # Community collection. That lets comments/reactions/bookmarks be removed
-    # even when a post was created by a school staff member and linked by a
-    # school-specific tag instead of a school_id field.
-    try:
-        community_posts = collection("jumuiya_community_posts")
-        post_query = _school_delete_match_query(school, school_tag)
-        for post in community_posts.find(post_query, {"_id": 1, "id": 1}):
-            for candidate in (post.get("_id"), post.get("id")):
-                if candidate is None or str(candidate).strip() == "":
-                    continue
-                related_post_ids.append(str(candidate))
-                if ObjectId.is_valid(str(candidate)):
-                    related_post_ids.append(ObjectId(str(candidate)))
-    except Exception:
-        # Community may not have been enabled when this school was active.
-        pass
-
-    # Deduplicate identifiers while preserving their string/ObjectId types.
-    related_post_ids = list(dict.fromkeys(related_post_ids))
 
     # Revoke membership rows first, then remove every direct school-scoped
     # record in every existing Jumuiya collection. This avoids maintaining a
