@@ -7,6 +7,8 @@ settlement without a configured payment-provider integration.
 """
 from __future__ import annotations
 
+import hashlib
+import hmac
 import os
 import re
 from datetime import datetime, timezone
@@ -542,6 +544,9 @@ def send_student_fee_reminder():
         "sent_by": _uid(uid),
         "channels_sent": sent_channels,
         "warnings": warnings,
+        "whatsapp_message_id": whatsapp_message_id,
+        "whatsapp_delivery_status": "accepted" if whatsapp_message_id else ("manual_send_required" if manual_whatsapp_url else "not_sent"),
+        "whatsapp_status_history": [],
         "amount_required": required,
         "amount_paid": paid,
         "balance": balance,
@@ -754,3 +759,158 @@ def review_fee_receipt(receipt_id: str):
         pass
 
     return ok({"receipt": _serialize(updated_receipt), "status": new_status}, "Receipt approved and reconciled." if decision == "approve" else "Receipt rejected.")
+
+
+@finance_bp.get("/fee-reminders")
+@require_authenticated
+def list_student_fee_reminders():
+    """Return recent finance reminders, including verified WhatsApp delivery states."""
+    member, _school = _require_finance_role(current_user_id(), "fees.view")
+    school_id = _uid(member.get("school_id"))
+    try:
+        limit = int(request.args.get("limit", "10"))
+    except (TypeError, ValueError):
+        limit = 10
+    limit = min(max(limit, 1), 50)
+
+    records = list(
+        collection(REMINDERS)
+        .find({"school_id": school_id})
+        .sort("created_at", -1)
+        .limit(limit)
+    )
+    reminders = []
+    for record in records:
+        channels = record.get("channels_sent") if isinstance(record.get("channels_sent"), list) else []
+        whatsapp_status = _text(record.get("whatsapp_delivery_status"), 40).lower()
+        if not whatsapp_status:
+            whatsapp_status = (
+                "accepted" if record.get("whatsapp_message_id")
+                else ("manual_send_required" if record.get("manual_whatsapp_available") else "not_sent")
+            )
+        reminders.append({
+            "reminder_id": str(record.get("_id") or ""),
+            "student_id": _text(record.get("student_id"), 160),
+            "admission_number": _text(record.get("admission_number"), 120),
+            "student_name": _text(record.get("student_name"), 160),
+            "channels_sent": channels,
+            "status": _text(record.get("status"), 40),
+            "whatsapp_delivery_status": whatsapp_status,
+            "whatsapp_status_updated_at": _serialize(record.get("whatsapp_status_updated_at")),
+            "whatsapp_status_history": _serialize(record.get("whatsapp_status_history") or []),
+            "manual_whatsapp_available": bool(record.get("manual_whatsapp_available")),
+            "amount_required": _safe_money(record.get("amount_required")),
+            "amount_paid": _safe_money(record.get("amount_paid")),
+            "balance": _safe_money(record.get("balance")),
+            "warnings": record.get("warnings") if isinstance(record.get("warnings"), list) else [],
+            "created_at": _serialize(record.get("created_at")),
+        })
+    return ok({"reminders": reminders, "count": len(reminders)})
+
+
+@finance_bp.route("/whatsapp/webhook", methods=["GET"])
+def verify_whatsapp_webhook():
+    """Complete the Meta webhook subscription challenge."""
+    expected_token = os.getenv("WHATSAPP_WEBHOOK_VERIFY_TOKEN", "").strip()
+    mode = request.args.get("hub.mode", "")
+    received_token = request.args.get("hub.verify_token", "")
+    challenge = request.args.get("hub.challenge", "")
+    if not expected_token:
+        return "WhatsApp webhook verify token is not configured.", 503
+    if mode == "subscribe" and challenge and hmac.compare_digest(received_token, expected_token):
+        return challenge, 200, {"Content-Type": "text/plain; charset=utf-8"}
+    return "Forbidden", 403
+
+
+@finance_bp.route("/whatsapp/webhook", methods=["POST"])
+def receive_whatsapp_webhook():
+    """Authenticate Meta callbacks and persist WhatsApp message delivery states."""
+    app_secret = os.getenv("WHATSAPP_APP_SECRET", "").strip()
+    if not app_secret:
+        return "WhatsApp webhook signature verification is not configured.", 503
+
+    raw_body = request.get_data(cache=True)
+    signature = request.headers.get("X-Hub-Signature-256", "").strip()
+    expected_signature = "sha256=" + hmac.new(
+        app_secret.encode("utf-8"), raw_body, hashlib.sha256
+    ).hexdigest()
+    if not signature or not hmac.compare_digest(signature, expected_signature):
+        return "Invalid webhook signature.", 401
+
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict) or payload.get("object") != "whatsapp_business_account":
+        return {"status": "ignored"}, 200
+
+    for entry in payload.get("entry", []) if isinstance(payload.get("entry"), list) else []:
+        if not isinstance(entry, dict):
+            continue
+        for change in entry.get("changes", []) if isinstance(entry.get("changes"), list) else []:
+            if not isinstance(change, dict) or change.get("field") != "messages":
+                continue
+            value = change.get("value") if isinstance(change.get("value"), dict) else {}
+            statuses = value.get("statuses") if isinstance(value.get("statuses"), list) else []
+            for status in statuses:
+                if not isinstance(status, dict):
+                    continue
+                message_id = _text(status.get("id"), 240)
+                status_name = _text(status.get("status"), 30).lower()
+                if not message_id or status_name not in {"sent", "delivered", "read", "failed"}:
+                    continue
+
+                raw_timestamp = status.get("timestamp")
+                try:
+                    provider_timestamp = int(raw_timestamp)
+                    if provider_timestamp < 0 or provider_timestamp > 4102444800:
+                        provider_timestamp = None
+                except (TypeError, ValueError, OverflowError):
+                    provider_timestamp = None
+
+                now = _now()
+                provider_time = (
+                    datetime.fromtimestamp(provider_timestamp, tz=timezone.utc)
+                    if provider_timestamp is not None else now
+                )
+                errors = status.get("errors") if isinstance(status.get("errors"), list) else []
+                first_error = errors[0] if errors and isinstance(errors[0], dict) else {}
+                error_code = _text(first_error.get("code"), 40)
+                error_title = _text(first_error.get("title") or first_error.get("message"), 240)
+                history_event = {
+                    "status": status_name,
+                    "provider_timestamp": provider_timestamp,
+                    "received_at": now,
+                    "error_code": error_code,
+                    "error_title": error_title,
+                }
+                fields = {
+                    "whatsapp_delivery_status": status_name,
+                    "whatsapp_status_updated_at": provider_time,
+                    "whatsapp_status_received_at": now,
+                    "updated_at": now,
+                }
+                if provider_timestamp is not None:
+                    fields["whatsapp_status_timestamp"] = provider_timestamp
+                if error_code:
+                    fields["whatsapp_last_error_code"] = error_code
+                    fields["whatsapp_last_error_title"] = error_title
+
+                query = {"whatsapp_message_id": message_id}
+                if provider_timestamp is not None:
+                    # Ignore late/out-of-order events so "read" cannot regress to "sent".
+                    query["$or"] = [
+                        {"whatsapp_status_timestamp": {"$exists": False}},
+                        {"whatsapp_status_timestamp": {"$lte": provider_timestamp}},
+                    ]
+                collection(REMINDERS).update_one(
+                    query,
+                    {
+                        "$set": fields,
+                        "$push": {
+                            "whatsapp_status_history": {
+                                "$each": [history_event],
+                                "$slice": -10,
+                            }
+                        },
+                    },
+                )
+
+    return {"status": "ok"}, 200
