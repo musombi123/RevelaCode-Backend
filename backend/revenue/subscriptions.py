@@ -47,6 +47,18 @@ PREMIUM_FEATURES = {
     "premium", "advanced_ai", "image_generation", "document_analysis",
     "voice_generation", "long_memory", "advanced_analytics",
     "advanced_reports", "automation", "expanded_history", "seller_tools", "vision_analysis",
+    # Faith-specific service contracts share the same central subscription/trial engine.
+    "faith_courses", "faith_workspace", "faith_companion", "faith_group_tools",
+}
+
+# These are feature flags attached to approved Faith plans, not frontend-only labels.
+# A 30-day Faith trial unlocks all four capabilities. Paid Faith Plus covers courses,
+# saved workspace and the study companion; Faith Pro adds church/group tooling.
+FAITH_PLAN_FEATURES = {
+    "faith_courses": {"faith_plus", "faith_pro"},
+    "faith_workspace": {"faith_plus", "faith_pro"},
+    "faith_companion": {"faith_plus", "faith_pro"},
+    "faith_group_tools": {"faith_pro"},
 }
 
 
@@ -293,6 +305,20 @@ def resolve_entitlement(user_id, hub, feature="essential"):
     premium_feature = feature in PREMIUM_FEATURES
     allowed = True if not premium_feature else premium_access
 
+    # Faith plans carry different service entitlements. A trial is deliberately
+    # full-featured for its 30-day period; a Plus subscription cannot silently
+    # unlock Pro-only church/group administration. Other hubs retain their
+    # existing shared premium behavior.
+    if premium_feature and hub == "faith" and feature in FAITH_PLAN_FEATURES:
+        if trial_active:
+            allowed = True
+        elif subscription:
+            subscription_hub = str(subscription.get("hub") or hub).strip().lower()
+            plan_code = str(subscription.get("plan_code") or "").strip().lower()
+            allowed = subscription_hub == "all" or plan_code in FAITH_PLAN_FEATURES[feature]
+        else:
+            allowed = False
+
     if paid:
         tier = "paid"
         reason = "active_subscription"
@@ -303,7 +329,7 @@ def resolve_entitlement(user_id, hub, feature="essential"):
         tier = "free"
         reason = "free_tier"
     if premium_feature and not allowed:
-        reason = "premium_entitlement_required"
+        reason = "plan_upgrade_required" if paid and hub == "faith" and feature in FAITH_PLAN_FEATURES else "premium_entitlement_required"
 
     result = {
         "success": True,
