@@ -11,6 +11,7 @@ from bson import ObjectId
 from bson.errors import InvalidId
 from flask import Blueprint, redirect, request
 
+from backend.jumuiya.core.audit import log_action
 from backend.jumuiya.core.database import collection
 from backend.jumuiya.core.errors import APIError
 from backend.jumuiya.core.permissions import (
@@ -1471,6 +1472,234 @@ def save_owner_website_settings():
     return ok(
         {"school": _owner_website_projection(result)},
         "School website settings saved.",
+    )
+
+
+
+# ============================================================
+# SCHOOL OWNER: PERMANENT SCHOOL DELETION
+# ============================================================
+# Deletes school-owned records within the shared Jumuiya database while
+# preserving user identities, shared profiles, platform roles, and audit
+# logs. The school document itself is deleted last.
+# ============================================================
+
+_SCHOOL_DELETE_GLOBAL_COLLECTIONS = {
+    "jumuiya_schools",
+    "jumuiya_profiles",
+    "jumuiya_roles",
+    "jumuiya_users",
+    "jumuiya_user_sessions",
+    "jumuiya_auth_sessions",
+    "jumuiya_refresh_tokens",
+    "jumuiya_audit_logs",
+}
+
+
+def _school_delete_match_query(school, school_tag, community_post_ids=None):
+    """Build a school-specific reference query for the permanent cascade."""
+    school_id = _school_id(school)
+    identity_values = [school_id, school.get("_id")]
+    if school.get("school_id") not in (None, ""):
+        identity_values.append(str(school.get("school_id")))
+
+    clauses = []
+    reference_fields = (
+        "school_id",
+        "school_oid",
+        "schoolId",
+        "institution_id",
+        "institutionId",
+        "school_ref_id",
+        "school_ids",
+        "school",
+        "school.id",
+        "school._id",
+    )
+    for field in reference_fields:
+        clauses.append({field: {"$in": identity_values}})
+
+    school_code = _text(school.get("code"))
+    if school_code:
+        clauses.extend([
+            {"school_code": school_code},
+            {"schoolCode": school_code},
+        ])
+
+    school_slug = _text(school.get("public_slug"))
+    if school_slug:
+        clauses.extend([
+            {"school_slug": school_slug},
+            {"schoolSlug": school_slug},
+        ])
+
+    if school_tag:
+        clauses.append({"tags": school_tag})
+
+    post_ids = list(community_post_ids or [])
+    if post_ids:
+        clauses.extend([
+            {"_id": {"$in": post_ids}},
+            {"post_id": {"$in": post_ids}},
+            {"postId": {"$in": post_ids}},
+            {"parent_post_id": {"$in": post_ids}},
+            {"target_post_id": {"$in": post_ids}},
+        ])
+
+    return {"$or": clauses}
+
+
+@public_bp.delete("/school/permanently")
+@require_authenticated
+def permanently_delete_owner_school():
+    """Permanently delete the verified owner's school and its database data."""
+    user_id = str(current_user_id() or "").strip()
+    school = _current_owner_school()
+    payload = _json_body()
+
+    expected_name = _text(school.get("name"))
+    confirmation_name = _text(payload.get("school_name_confirmation"))
+    if not expected_name or confirmation_name != expected_name:
+        raise APIError(
+            "Type the exact official school name to confirm permanent deletion.",
+            422,
+            "school_name_confirmation_mismatch",
+        )
+    if payload.get("confirm_permanent_deletion") is not True:
+        raise APIError(
+            "Explicit confirmation of permanent deletion is required.",
+            422,
+            "school_deletion_confirmation_required",
+        )
+
+    school_id = _school_id(school)
+    school_tag = "school-id-" + school_id
+    warning_hostnames = []
+    deleted_by_collection = {}
+
+    # Remove custom hostnames from the configured Render service where
+    # possible; the local domain registry records are deleted below regardless.
+    try:
+        domain_documents = list(collection(SCHOOL_DOMAINS).find({"school_id": school_id}))
+    except Exception:
+        domain_documents = []
+
+    if domain_documents:
+        try:
+            _api_key, render_service_id, _target_host = _render_config()
+        except Exception:
+            warning_hostnames.extend(
+                _text(item.get("hostname"))
+                for item in domain_documents
+                if _text(item.get("hostname"))
+            )
+        else:
+            for domain in domain_documents:
+                hostname = _text(domain.get("hostname"))
+                if not hostname:
+                    continue
+                try:
+                    _render_request("DELETE", _render_domain_path(render_service_id, hostname))
+                except Exception:
+                    warning_hostnames.append(hostname)
+
+    # Supply requests may already have published a Community post. Retain its
+    # identifier before deleting the request so dependent post reactions,
+    # comments and other engagement records can be removed as well.
+    related_post_ids = []
+    try:
+        inventory_needs = collection("jumuiya_elimu_inventory_needs")
+        for need in inventory_needs.find({"school_id": school_id}, {"community_post_id": 1}):
+            post_id = _text(need.get("community_post_id"))
+            if post_id:
+                related_post_ids.append(post_id)
+                if ObjectId.is_valid(post_id):
+                    related_post_ids.append(ObjectId(post_id))
+    except Exception:
+        # The school may predate the optional inventory module.
+        pass
+
+    # Revoke membership rows first, then remove every direct school-scoped
+    # record in every existing Jumuiya collection. This avoids maintaining a
+    # brittle list that misses newly added Elimu modules.
+    try:
+        database = collection(SCHOOLS).database
+        collection_names = [
+            name for name in database.list_collection_names()
+            if name.startswith("jumuiya_")
+            and name not in _SCHOOL_DELETE_GLOBAL_COLLECTIONS
+        ]
+        collection_names.sort(key=lambda name: (
+            0 if name == "jumuiya_elimu_school_members" else
+            1 if "staff_invitation" in name or "staff_invit" in name else
+            2 if name == SCHOOL_DOMAINS else
+            3
+        ))
+
+        for collection_name in collection_names:
+            match = _school_delete_match_query(
+                school,
+                school_tag,
+                related_post_ids if collection_name.startswith("jumuiya_community_") else None,
+            )
+            result = collection(collection_name).delete_many(match)
+            if result.deleted_count:
+                deleted_by_collection[collection_name] = int(result.deleted_count)
+
+    except Exception as exc:
+        log_action(
+            user_id,
+            "elimu.school.permanent_deletion_incomplete",
+            "school",
+            school_id,
+            {
+                "school_name": expected_name,
+                "deleted_by_collection": deleted_by_collection,
+            },
+        )
+        raise APIError(
+            "School deletion did not finish. The school record has been retained so the owner can retry; some dependent records may already have been removed.",
+            500,
+            "school_deletion_incomplete",
+        ) from exc
+
+    # Retain an administrative audit event, not a copy of the deleted school.
+    log_action(
+        user_id,
+        "elimu.school.permanently_deleted",
+        "school",
+        school_id,
+        {
+            "school_name": expected_name,
+            "deleted_by_collection": deleted_by_collection,
+        },
+    )
+
+    school_result = collection(SCHOOLS).delete_one({
+        "_id": school["_id"],
+        "owner_user_id": user_id,
+        "is_demo": {"$ne": True},
+    })
+    if not school_result.deleted_count:
+        raise APIError(
+            "School data was cleaned, but the school record could not be deleted. Retry the operation or contact support.",
+            409,
+            "school_deletion_finalize_failed",
+        )
+
+    deleted_by_collection[SCHOOLS] = 1
+    total_deleted = sum(deleted_by_collection.values())
+
+    return ok(
+        {
+            "deleted": True,
+            "school_id": school_id,
+            "school_name": expected_name,
+            "deleted_documents": total_deleted,
+            "deleted_collections": deleted_by_collection,
+            "external_domain_cleanup_warnings": sorted(set(warning_hostnames)),
+        },
+        "School and school-scoped database records permanently deleted.",
     )
 
 # ============================================================
