@@ -261,7 +261,7 @@ def _normalize_sms_phone(value: Any) -> str:
     raw = _text(value, 80)
     if not raw:
         return ""
-    digits = re.sub(r"\\D", "", raw)
+    digits = re.sub(r"\D", "", raw)
     if raw.startswith("+"):
         normalized = "+" + digits
     elif digits.startswith("254") and len(digits) == 12:
@@ -270,7 +270,7 @@ def _normalize_sms_phone(value: Any) -> str:
         normalized = "+254" + digits[1:]
     else:
         return ""
-    return normalized if re.fullmatch(r"\\+[1-9]\\d{7,14}", normalized) else ""
+    return normalized if re.fullmatch(r"\+[1-9]\d{7,14}", normalized) else ""
 
 
 def _payment_instructions(school: dict, student: dict) -> list[str]:
@@ -423,7 +423,7 @@ def send_student_fee_reminder():
     html_body = (
         '<div style="font-family:Arial,sans-serif;max-width:620px;margin:0 auto;padding:24px;color:#0f172a">'
         '<div style="font-size:12px;font-weight:700;letter-spacing:.1em;color:#047857">JUMUIYA ELIMU · FINANCE</div>'
-        f"<h1 style=\\"font-size:22px;margin:18px 0 10px\\">School fee reminder</h1>"
+        f'<h1 style="font-size:22px;margin:18px 0 10px">School fee reminder</h1>'
         f"<p>Dear Parent/Guardian, this is a fee reminder from <strong>{safe_school}</strong> for <strong>{safe_student}</strong> (Student ID: {safe_label}).</p>"
         f"<p>Programme/class: {safe_program}</p>"
         f'<table role="presentation" style="border-collapse:collapse;width:100%;margin:18px 0">'
@@ -450,17 +450,13 @@ def send_student_fee_reminder():
 
     sent_channels = []
     warnings = []
-    email_attempted = False
-    sms_attempted = False
     if guardian_email:
-        email_attempted = True
         try:
             _send_fee_reminder_email(guardian_email, subject, email_text, html_body)
             sent_channels.append("email")
         except Exception:
             warnings.append("Email was not sent. Check RESEND_API_KEY, EMAIL_FROM, and the configured sender domain.")
     if guardian_phone_raw:
-        sms_attempted = True
         if not sms_phone:
             warnings.append("SMS was not sent because the recorded guardian phone is not in a supported international format. Use +254… or a Kenyan 07…/01… number.")
         else:
