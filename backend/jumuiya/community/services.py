@@ -1537,6 +1537,165 @@ def search(
 
 
 # =========================================================
+# PUBLIC COMMUNITY SHARE CONTENT
+# Public pages only expose explicitly public, published records.
+
+_PUBLIC_POST_FIELDS = (
+    "title", "body", "hub", "category", "type", "tags", "location",
+    "created_at", "updated_at", "likes_count", "comments_count",
+    "reactions_count", "shares_count", "action",
+)
+
+
+def _public_post_projection(document: dict[str, Any]) -> dict[str, Any]:
+    """Return an allowlisted payload for a public Community post."""
+    output: dict[str, Any] = {"id": str(document.get("_id") or document.get("id") or "")}
+    for key in _PUBLIC_POST_FIELDS:
+        if key in document:
+            output[key] = document.get(key)
+
+    output["likes_count"] = int(document.get("likes_count", document.get("reactions_count", 0)) or 0)
+    output["reactions_count"] = int(document.get("reactions_count", document.get("likes_count", 0)) or 0)
+    output["comments_count"] = int(document.get("comments_count", document.get("comment_count", 0)) or 0)
+
+    raw_author = document.get("author") if isinstance(document.get("author"), dict) else {}
+    output["author"] = {
+        key: raw_author.get(key)
+        for key in ("id", "name", "avatar_url", "bio", "county", "town")
+        if key in raw_author
+    }
+
+    attachments = []
+    for item in document.get("attachments") or []:
+        if not isinstance(item, dict):
+            continue
+        url = str(item.get("url") or item.get("secure_url") or "").strip()
+        if not url.startswith("https://"):
+            continue
+        attachment = {
+            "id": str(item.get("id") or item.get("media_id") or ""),
+            "url": url,
+            "kind": str(item.get("kind") or item.get("resource_type") or "image"),
+            "file_name": str(item.get("file_name") or "Community media"),
+        }
+        if item.get("mime_type"):
+            attachment["mime_type"] = str(item["mime_type"])
+        if item.get("format"):
+            attachment["format"] = str(item["format"])
+        attachments.append(attachment)
+
+    output["attachments"] = attachments[:4]
+    return _serialize_value(output)
+
+
+def public_feed(*, limit: int = 30, search: str | None = None) -> list[dict[str, Any]]:
+    """List only public and published Community posts for anonymous visitors."""
+    limit = _normalize_limit(limit, 30, 50)
+    query: dict[str, Any] = {"status": "published", "visibility": "public"}
+    normalized_search = _normalize_search(search)
+    if normalized_search:
+        escaped = re.escape(normalized_search)
+        query["$or"] = [
+            {"title": {"$regex": escaped, "$options": "i"}},
+            {"body": {"$regex": escaped, "$options": "i"}},
+            {"location": {"$regex": escaped, "$options": "i"}},
+            {"tags": {"$regex": escaped, "$options": "i"}},
+        ]
+
+    documents = list(
+        collection(POSTS).find(query).sort([("created_at", -1), ("_id", -1)]).limit(limit)
+    )
+    hydrated = _attach_authors(documents)
+    return [_public_post_projection(item) for item in hydrated]
+
+
+def public_post(post_id: Any) -> dict[str, Any]:
+    """Resolve a shareable post only when it is published and public."""
+    post_object_id = cid(post_id)
+    document = collection(POSTS).find_one({
+        "_id": post_object_id,
+        "status": "published",
+        "visibility": "public",
+    })
+    if not document:
+        raise APIError("Public Community post not found.", 404, "post_not_found")
+    return _public_post_projection(_attach_authors([document])[0])
+
+
+def public_profile(profile_id: Any, *, limit: int = 20) -> dict[str, Any]:
+    """Return safe profile fields plus that member's publicly published posts."""
+    lookup_id = str(profile_id or "").strip()
+    if not lookup_id or len(lookup_id) > 160:
+        raise APIError("Invalid Community profile ID.", 400, "invalid_profile_id")
+
+    profiles = collection(PROFILES)
+    profile = profiles.find_one(
+        {"user_id": lookup_id},
+        {"_id": 1, "user_id": 1, "full_name": 1, "avatar_url": 1, "bio": 1, "county": 1, "town": 1},
+    )
+    if profile is None:
+        try:
+            profile_object_id = ObjectId(lookup_id)
+        except (InvalidId, TypeError, ValueError):
+            profile_object_id = None
+        if profile_object_id is not None:
+            profile = profiles.find_one(
+                {"_id": profile_object_id},
+                {"_id": 1, "user_id": 1, "full_name": 1, "avatar_url": 1, "bio": 1, "county": 1, "town": 1},
+            )
+
+    resolved_user_id = str((profile or {}).get("user_id") or lookup_id)
+    limit = _normalize_limit(limit, 20, 50)
+    documents = list(
+        collection(POSTS)
+        .find({
+            "author_user_id": resolved_user_id,
+            "status": "published",
+            "visibility": "public",
+        })
+        .sort([("created_at", -1), ("_id", -1)])
+        .limit(limit)
+    )
+    if not documents:
+        raise APIError("Public Community profile not found.", 404, "profile_not_found")
+
+    author = _load_authors([resolved_user_id]).get(
+        resolved_user_id, _fallback_author(resolved_user_id)
+    )
+    hydrated = _attach_authors(documents)
+    return {
+        "profile": {
+            key: author.get(key)
+            for key in ("id", "name", "avatar_url", "bio", "county", "town")
+        },
+        "posts": [_public_post_projection(item) for item in hydrated],
+    }
+
+
+def public_media(media_id: Any) -> dict[str, Any]:
+    """Resolve a media ID only through a published public post that contains it."""
+    lookup_id = str(media_id or "").strip()
+    if not lookup_id or len(lookup_id) > 160:
+        raise APIError("Invalid Community media ID.", 400, "invalid_media_id")
+
+    document = collection(POSTS).find_one({
+        "status": "published",
+        "visibility": "public",
+        "$or": [
+            {"attachments.id": lookup_id},
+            {"attachments.media_id": lookup_id},
+        ],
+    })
+    if not document:
+        raise APIError("Public Community media not found.", 404, "media_not_found")
+
+    post = _public_post_projection(_attach_authors([document])[0])
+    media = next((item for item in post.get("attachments", []) if item.get("id") == lookup_id), None)
+    if media is None:
+        raise APIError("Public Community media not found.", 404, "media_not_found")
+    return {"media": media, "post": post}
+
+
 # UPDATE POST
 # =========================================================
 

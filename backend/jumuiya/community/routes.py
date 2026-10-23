@@ -403,6 +403,45 @@ def health():
 
 
 # =========================================================
+# PUBLIC COMMUNITY SHARE PAGES
+# Anonymous, read-only endpoints for the Community subdomain.
+# The services enforce published + visibility=public on every result.
+# =========================================================
+
+@community_bp.get("/public/feed")
+def get_public_feed():
+    query = request.args.get("q", request.args.get("search", "")).strip()
+    if len(query) > 100:
+        raise APIError("Search query must be 100 characters or fewer.", 422, "search_query_too_long")
+    return ok({
+        "posts": services.public_feed(
+            limit=parse_limit(default=30, maximum=50),
+            search=query or None,
+        )
+    })
+
+
+@community_bp.get("/public/posts/<post_id>")
+def get_public_post(post_id):
+    return ok({"post": services.public_post(post_id)})
+
+
+@community_bp.get("/public/profiles/<profile_id>")
+def get_public_profile(profile_id):
+    return ok(
+        services.public_profile(
+            profile_id,
+            limit=parse_limit(default=20, maximum=50),
+        )
+    )
+
+
+@community_bp.get("/public/media/<media_id>")
+def get_public_media(media_id):
+    return ok(services.public_media(media_id))
+
+
+# =========================================================
 # SMART PULSE
 # =========================================================
 

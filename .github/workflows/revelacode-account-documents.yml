@@ -48,6 +48,8 @@ jobs:
           backend/jumuiya/shamba/services.py
           backend/jumuiya/shamba/routes.py
           backend/jumuiya/shamba/trust_routes.py
+          backend/jumuiya/community/services.py
+          backend/jumuiya/community/routes.py
       - name: Verify account document and Elimu route registration contracts
         run: |
           python - <<'PY'
@@ -106,6 +108,8 @@ jobs:
           assert 'url_prefix="/api/study"' in main_text, "Existing study blueprint is not registered under /api/study"
           print(f"Verified {len(expected_account)} account-document routes and {len(expected_elimu)} Elimu learning routes on the existing study blueprint.")
           PY
+      - name: Run public Community share route tests
+        run: python -m pytest -q tests/test_community_public_share_routes.py
       - name: Run Shamba farmer verification regression tests
         run: python -m pytest -q tests/test_shamba_farmer_verification.py tests/test_shamba_marketplace_eligibility.py
       - name: Run Elimu progress and certificate tests
