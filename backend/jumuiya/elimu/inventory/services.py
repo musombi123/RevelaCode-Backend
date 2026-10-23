@@ -2,7 +2,7 @@
 """School-scoped inventory ledger and Principal-approved supply requests."""
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from math import isfinite
 from typing import Any
 
@@ -291,10 +291,44 @@ def decide_need(user_id: Any, need_id: Any, data: dict) -> dict:
     if decision == "reject":
         return {"need": _doc(current)}
 
-    # Approval is persisted first. Publishing is idempotent and retryable:
-    # if Community is unavailable, the request stays approved and can be retried.
+    # Approval is persisted first. Claim Community publication in the school
+    # request record so two Principals/tabs cannot publish the same request
+    # concurrently. A crashed claim becomes retryable after five minutes.
     if current.get("community_post_id"):
         return {"need": _doc(current)}
+
+    now = _now()
+    stale_before = now - timedelta(minutes=5)
+    claimable = {
+        "$or": [
+            {"publication_status": {"$in": ["not_submitted", "retry_required", ""]}},
+            {"publication_status": {"$exists": False}},
+            {"publication_status": "publishing", "publication_started_at": {"$lt": stale_before}},
+            {"publication_status": "publishing", "publication_started_at": {"$exists": False}, "updated_at": {"$lt": stale_before}},
+        ]
+    }
+    claimed = target.find_one_and_update(
+        {
+            "school_id": school_id,
+            "_id": current["_id"],
+            "status": "approved",
+            "community_post_id": "",
+            **claimable,
+        },
+        {"$set": {
+            "publication_status": "publishing",
+            "publication_started_at": now,
+            "publication_error": "",
+            "updated_at": now,
+        }},
+        return_document=ReturnDocument.AFTER,
+    )
+    if not claimed:
+        latest = target.find_one({"school_id": school_id, "_id": current["_id"]})
+        if latest and latest.get("community_post_id"):
+            return {"need": _doc(latest)}
+        raise APIError("Community publication is already in progress. Refresh this request before retrying.", 409, "need_publication_in_progress")
+
     try:
         from backend.jumuiya.community import services as community_services
         school_name = _school_name(school_id)
@@ -304,37 +338,40 @@ def decide_need(user_id: Any, need_id: Any, data: dict) -> dict:
         needed_by = _text(current.get("needed_by"), 40)
         purpose = _text(current.get("purpose"), 1000)
         title = f"{school_name} needs {item_name}"
+        request_id_tag = f"school-need-{str(current.get('_id'))[-24:]}"
         lines = [
             f"{school_name} has an approved school supply request.",
             f"Item needed: {quantity:g} {unit} of {item_name}.",
+            "This request has been reviewed and approved by the school Principal.",
         ]
         if needed_by:
             lines.append(f"Needed by: {needed_by}.")
         if purpose:
             lines.append(f"Purpose: {purpose}")
-        post = community_services.create_post(str(user_id), {
+        requester_id = _uid(current.get("requested_by_user_id")) or _uid(user_id)
+        post = community_services.create_post(requester_id, {
             "title": title,
             "body": "\n\n".join(lines),
             "hub": "community",
             "type": "request",
             "category": "school_needs",
             "visibility": "public",
-            "tags": ["school-needs", item_name.lower(), "elimu"],
+            "tags": ["school-needs", item_name.lower(), "elimu", request_id_tag],
             "location": school_name,
         })
         post_id = _text(post.get("id") or post.get("_id"), 160) if isinstance(post, dict) else ""
         if not post_id:
             raise RuntimeError("Community returned no post identifier.")
         saved = target.find_one_and_update(
-            {"school_id": school_id, "_id": current["_id"], "status": "approved", "community_post_id": ""},
-            {"$set": {"community_post_id": post_id, "publication_status": "published", "publication_error": "", "updated_at": _now()}},
+            {"school_id": school_id, "_id": current["_id"], "status": "approved", "community_post_id": "", "publication_status": "publishing"},
+            {"$set": {"community_post_id": post_id, "publication_status": "published", "publication_error": "", "updated_at": _now()}, "$unset": {"publication_started_at": ""}},
             return_document=ReturnDocument.AFTER,
         )
         return {"need": _doc(saved or target.find_one({"_id": current["_id"], "school_id": school_id}))}
     except Exception as exc:
         target.update_one(
-            {"school_id": school_id, "_id": current["_id"], "status": "approved", "community_post_id": ""},
-            {"$set": {"publication_status": "retry_required", "publication_error": _text(str(exc), 500), "updated_at": _now()}},
+            {"school_id": school_id, "_id": current["_id"], "status": "approved", "community_post_id": "", "publication_status": "publishing"},
+            {"$set": {"publication_status": "retry_required", "publication_error": _text(str(exc), 500), "updated_at": _now()}, "$unset": {"publication_started_at": ""}},
         )
         latest = target.find_one({"school_id": school_id, "_id": current["_id"]})
         return {"need": _doc(latest), "warning": "Approved, but Community publication failed. Use Publish retry after checking Community availability."}
