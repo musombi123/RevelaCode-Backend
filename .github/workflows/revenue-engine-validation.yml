@@ -5,12 +5,18 @@ on:
     branches: [main]
     paths:
       - "backend/revenue/**"
+      - "backend/jumuiya/biashara/**"
+      - "backend/tests/test_biashara_website.py"
+      - "backend/tests/test_biashara_business_forecast.py"
       - "tests/test_revenue_entitlements_and_mpesa.py"
       - ".github/workflows/revenue-engine-validation.yml"
   pull_request:
     branches: [main]
     paths:
       - "backend/revenue/**"
+      - "backend/jumuiya/biashara/**"
+      - "backend/tests/test_biashara_website.py"
+      - "backend/tests/test_biashara_business_forecast.py"
       - "tests/test_revenue_entitlements_and_mpesa.py"
       - ".github/workflows/revenue-engine-validation.yml"
 
@@ -39,7 +45,9 @@ jobs:
           cache: pip
       - name: Install revenue-engine test dependencies
         run: python -m pip install --upgrade pip && python -m pip install pytest Flask python-dotenv pymongo PyJWT requests resend
-      - name: Compile revenue modules and regression tests
-        run: python -m compileall -q backend/revenue tests/test_revenue_entitlements_and_mpesa.py
-      - name: Run entitlement, trial, plan, checkout, and reconciliation tests
-        run: python -m pytest -q tests/test_revenue_entitlements_and_mpesa.py
+      - name: Compile revenue, Biashara intelligence, and regression tests
+        run: python -m compileall -q backend/revenue backend/jumuiya/biashara backend/tests tests/test_revenue_entitlements_and_mpesa.py
+      - name: Run revenue, website, forecast, and plan-entitlement tests
+        env:
+          PYTHONPATH: backend:.
+        run: python -m pytest -q tests/test_revenue_entitlements_and_mpesa.py backend/tests/test_biashara_website.py backend/tests/test_biashara_business_forecast.py
