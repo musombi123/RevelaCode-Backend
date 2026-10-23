@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 from backend.jumuiya.core.errors import APIError
@@ -2673,6 +2673,7 @@ def forecast_business_data(
     products: list[dict],
     forecast_days: int = 7,
     target_margin_percent: float = 25.0,
+    currency: str = DEFAULT_CURRENCY,
     as_of: datetime | None = None,
 ) -> dict:
     """Forecast recorded business revenue/product demand and review active prices.
@@ -2695,10 +2696,11 @@ def forecast_business_data(
     now = as_of or now_utc()
     today = now.date()
     window_start = today - timedelta(days=89)
+    currency_code = as_string(currency, DEFAULT_CURRENCY).upper() or DEFAULT_CURRENCY
     revenue_by_date: dict[str, float] = {}
     transactions_by_date: dict[str, int] = {}
     quantities_by_product: dict[str, dict[str, float]] = {}
-    valid_sales: list[tuple[datetime.date, dict]] = []
+    valid_sales: list[tuple[date, dict]] = []
 
     def record_date(value: Any):
         if isinstance(value, datetime):
@@ -2890,7 +2892,7 @@ def forecast_business_data(
         "sales_record_count": len(valid_sales),
         "sales_days_with_revenue": positive_revenue_days,
         "actual_last_7_days": actual_last_7_days,
-        "currency": DEFAULT_CURRENCY,
+        "currency": currency_code,
         "revenue": {
             "available": revenue_model is not None,
             "reason": None if revenue_model else "At least three different days with recorded revenue are needed before the dashboard will show a revenue projection.",
