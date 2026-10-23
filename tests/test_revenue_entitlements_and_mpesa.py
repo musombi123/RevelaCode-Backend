@@ -883,3 +883,66 @@ def test_new_trial_snapshot_uses_hub_specific_duration(hub, expected_days):
     assert public["status"] == "active"
     assert public["trial_days"] == expected_days
     assert public["access"] == "trial"
+
+@pytest.mark.parametrize(
+    ("hub", "plan_code", "feature", "expected"),
+    [
+        ("biashara", "biashara_starter", "advanced_reports", True),
+        ("biashara", "biashara_starter", "advanced_analytics", False),
+        ("biashara", "biashara_pro", "advanced_analytics", True),
+        ("elimu", "elimu_small", "advanced_reports", False),
+        ("elimu", "elimu_standard", "advanced_reports", True),
+        ("elimu", "elimu_advanced", "automation", True),
+        ("shamba", "shamba_plus", "advanced_analytics", False),
+        ("shamba", "shamba_pro", "advanced_analytics", True),
+    ],
+)
+def test_paid_hub_plan_only_unlocks_included_features(
+    monkeypatch, hub, plan_code, feature, expected
+):
+    now = datetime(2026, 10, 24, tzinfo=timezone.utc)
+    paid = {
+        "_id": "sub-1",
+        "user_id": "user-1",
+        "hub": hub,
+        "plan_code": plan_code,
+        "status": "active",
+        "starts_at": now - timedelta(days=1),
+        "ends_at": now + timedelta(days=29),
+    }
+    monkeypatch.setattr(subscriptions, "now_utc", lambda: now)
+    monkeypatch.setattr(subscriptions, "_active_subscription", lambda *args, **kwargs: paid)
+    monkeypatch.setattr(subscriptions, "collection", lambda name: Mock(find_one=lambda query: None))
+
+    result = subscriptions.resolve_entitlement("user-1", hub, feature)
+
+    assert result["allowed"] is expected
+    assert result["tier"] == "paid"
+
+
+@pytest.mark.parametrize(
+    ("hub", "feature"),
+    [
+        ("biashara", "advanced_analytics"),
+        ("elimu", "automation"),
+        ("shamba", "advanced_analytics"),
+    ],
+)
+def test_active_hub_trial_unlocks_all_hub_premium_features(monkeypatch, hub, feature):
+    now = datetime(2026, 10, 24, tzinfo=timezone.utc)
+    trial = {
+        "user_id": "user-1",
+        "hub": hub,
+        "status": "active",
+        "started_at": now - timedelta(days=1),
+        "ends_at": now + timedelta(days=9),
+        "trial_days": trials.trial_days_for_hub(hub),
+    }
+    monkeypatch.setattr(subscriptions, "now_utc", lambda: now)
+    monkeypatch.setattr(subscriptions, "_active_subscription", lambda *args, **kwargs: None)
+    monkeypatch.setattr(subscriptions, "collection", lambda name: Mock(find_one=lambda query: trial))
+
+    result = subscriptions.resolve_entitlement("user-1", hub, feature)
+
+    assert result["allowed"] is True
+    assert result["tier"] == "trial"
