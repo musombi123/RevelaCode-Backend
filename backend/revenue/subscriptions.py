@@ -66,8 +66,8 @@ FAITH_PLAN_FEATURES = {
 # the capabilities included in their exact plan.
 HUB_PLAN_FEATURES = {
     "biashara": {
-        "biashara_starter": {"premium", "advanced_reports"},
-        "biashara_pro": {"premium", "advanced_reports", "advanced_analytics", "automation", "expanded_history"},
+        "biashara_starter": {"premium", "advanced_reports", "seller_tools"},
+        "biashara_pro": {"premium", "advanced_reports", "advanced_analytics", "automation", "expanded_history", "seller_tools"},
     },
     "elimu": {
         "elimu_small": {"premium"},
