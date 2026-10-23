@@ -530,6 +530,10 @@ def send_student_fee_reminder():
                     "Automatic WhatsApp delivery did not complete. Configure Meta WhatsApp Cloud API credentials and an approved school_fee_reminder utility template. You can still open WhatsApp and send the prepared message manually."
                 )
 
+    # Only expose a manual send link if API-based WhatsApp delivery did not succeed.
+    if "whatsapp" in sent_channels:
+        manual_whatsapp_url = ""
+
     log_record = {
         "school_id": school_id,
         "student_id": status["student_id"],
