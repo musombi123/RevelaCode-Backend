@@ -46,7 +46,7 @@ def send_staff_invitation_email(
     frontend_url = (
         os.getenv("FRONTEND_URL")
         or os.getenv("REVELACODE_FRONTEND_URL")
-        or "https://revelacode-frontend.onrender.com"
+        or "https://revelacode.co.ke"
     ).strip().rstrip("/")
 
     if not sender:
