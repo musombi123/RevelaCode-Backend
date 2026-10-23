@@ -434,6 +434,74 @@ INDEX_DEFINITIONS = {
     ],
 
     # -----------------------------------------------------
+    # BIASHARA MEMBERSHIPS / SWITCHING
+    # -----------------------------------------------------
+
+    "jumuiya_biashara_memberships": [
+        (
+            [
+                ("business_id", ASCENDING),
+                ("user_id", ASCENDING),
+            ],
+            {"unique": True, "name": "uq_biashara_membership_business_user"},
+        ),
+        (
+            [
+                ("user_id", ASCENDING),
+                ("status", ASCENDING),
+                ("created_at", DESCENDING),
+            ],
+            {"name": "ix_biashara_membership_user_status_created"},
+        ),
+        (
+            [
+                ("business_id", ASCENDING),
+                ("status", ASCENDING),
+                ("role", ASCENDING),
+            ],
+            {"name": "ix_biashara_membership_business_status_role"},
+        ),
+    ],
+
+    "jumuiya_biashara_invitations": [
+        (
+            [
+                ("invitation_token_hash", ASCENDING),
+            ],
+            {
+                "unique": True,
+                "sparse": True,
+                "name": "uq_biashara_invitation_token_hash",
+            },
+        ),
+        (
+            [
+                ("business_id", ASCENDING),
+                ("email", ASCENDING),
+                ("status", ASCENDING),
+            ],
+            {"name": "ix_biashara_invitations_business_email_status"},
+        ),
+        (
+            [
+                ("business_id", ASCENDING),
+                ("status", ASCENDING),
+                ("expires_at", ASCENDING),
+            ],
+            {"name": "ix_biashara_invitations_business_status_expiry"},
+        ),
+    ],
+
+    "jumuiya_biashara_active_business": [
+        (
+            [
+                ("user_id", ASCENDING),
+            ],
+            {"unique": True, "name": "uq_biashara_active_business_user"},
+        ),
+    ],
+
+    # -----------------------------------------------------
     # SHAMBA
     # -----------------------------------------------------
 
