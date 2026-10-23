@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 import requests
 from backend.alert_engine import process_events
 import feedparser
+from urllib.parse import urlparse
 
 # === CONFIG / ENVIRONMENT VARIABLES ===
 # === GLOBAL RSS SOURCES ===
@@ -59,9 +60,8 @@ REGION_MAP = {
     ]
 }
 
+# NewsAPI is optional; RSS ingestion must work without a paid API key.
 API_KEY = os.environ.get("NEWS_API_KEY")
-if not API_KEY:
-    raise ValueError("❌ NEWS_API_KEY not set in environment variables!")
 
 QUERY = os.environ.get("NEWS_QUERY", "prophecy")
 EVENTS_DIR = os.environ.get("EVENTS_DIR", "./events")
@@ -86,21 +86,48 @@ LOG_FILE = os.path.join(ARCHIVED_DIR, "archive_log.json")
 
 # === HIGH-LEVEL FUNCTIONS ===
 def fetch_rss(url, content_type="article"):
+    """Fetch RSS headlines while preserving the publisher's identity."""
     items = []
-    feed = feedparser.parse(url)
+    try:
+        feed = feedparser.parse(url)
+    except Exception as exc:
+        logging.warning("RSS fetch failed for %s: %s", url, exc)
+        return items
+
+    publisher = ""
+    try:
+        publisher = str(feed.feed.get("title", "") or "").strip()
+    except Exception:
+        publisher = ""
+
+    if not publisher:
+        publisher = urlparse(url).netloc or "Unknown publisher"
+
+    if getattr(feed, "bozo", False):
+        logging.warning(
+            "RSS feed returned a parsing warning for %s: %s",
+            url,
+            getattr(feed, "bozo_exception", "unknown feed error"),
+        )
 
     for entry in feed.entries:
+        article_url = str(entry.get("link", "") or "").strip()
+        title = str(entry.get("title", "") or "").strip()
+        if not article_url or not title:
+            continue
+
         items.append({
             "type": content_type,
-            "title": entry.get("title", ""),
+            "title": title,
             "description": entry.get("summary", ""),
-            "url": entry.get("link", ""),
-            "publishedAt": entry.get("published", ""),
-            "source": "rss",
+            "url": article_url,
+            "publishedAt": entry.get("published", "") or entry.get("updated", ""),
+            "source": publisher,
+            "source_url": url,
 
-            # 🔥 IMPORTANT FOR FRONTEND VIDEO AUTOPLAY
+            # Preserve the existing frontend article/video contract.
             "media_type": content_type,
-            "video_url": entry.get("link", "") if content_type == "video" else None
+            "video_url": article_url if content_type == "video" else None,
         })
 
     return items
@@ -160,6 +187,12 @@ def fetch_global_rss():
 # === FETCH ARTICLES FROM NEWSAPI ===
 def fetch_articles(api_key, query):
     all_articles = []
+    if not api_key:
+        logging.info(
+            "NEWS_API_KEY is not configured; skipping NewsAPI and continuing with RSS sources."
+        )
+        return all_articles
+
     to_date = datetime.now(timezone.utc)
     from_date = to_date - timedelta(days=7)
     headers = {"User-Agent": "Mozilla/5.0", "Accept": "application/json"}
