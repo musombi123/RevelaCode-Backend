@@ -77,8 +77,8 @@ ROLE_DESCRIPTIONS = {
         "actions remain reserved for the School Owner."
     ),
     ROLE_BURSAR: (
-        "School finance and fee administration with controlled "
-        "access to supporting student and reporting information."
+        "Finance-only access to fee records, payment claims, "
+        "receipt reconciliation, and financial reports."
     ),
     ROLE_REGISTRAR: (
         "Student records, classes, academic administration, "
