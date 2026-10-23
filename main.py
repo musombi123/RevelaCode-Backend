@@ -458,6 +458,16 @@ except Exception:
 
 logger.info("Study blueprint registered with /api prefix")
 
+# Stable aliases for current and legacy Elimu clients. All aliases delegate to
+# the same authenticated route functions and the same progress/certificate store.
+try:
+    from backend.routes.elimu_compat_routes import elimu_compat_bp
+    app.register_blueprint(elimu_compat_bp)
+    logger.info("Elimu compatibility routes registered at /api/elimu and /api/certificates")
+except Exception:
+    logger.exception("CRITICAL: Elimu compatibility route registration failed")
+    raise
+
 
 # =========================================================
 # ROUTE DIAGNOSTICS HELPERS

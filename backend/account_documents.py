@@ -386,7 +386,7 @@ def issue_account_certificate():
     public_root = os.getenv("REVELACODE_PUBLIC_URL", "https://revelacode.co.ke").strip().rstrip("/")
     if not public_root.startswith(("https://", "http://localhost", "http://127.0.0.1")):
         public_root = "https://revelacode.co.ke"
-    claims["verification_url"] = f"{public_root}/verify/certificate/{certificate_id}"
+    claims["verification_url"] = f"{public_root}/api/verify/certificate/{certificate_id}"
     signature = _canonical_signature(claims)
     record = {
         "certificate_id": certificate_id,
@@ -440,6 +440,12 @@ def revoke_account_certificate(certificate_id: str):
 @account_documents_bp.route("/api/verify/certificate/<certificate_id>", methods=["GET"])
 def verify_account_certificate(certificate_id: str):
     certificate_id = str(certificate_id or "").strip()
+    # The public certificate verifier is also the canonical QR target for Elimu
+    # learning-completion certificates. Delegate RC-EL records to their own
+    # signed collection and verifier instead of looking them up as account records.
+    if re.fullmatch(r"RC-EL-[A-F0-9]{16}", certificate_id):
+        from backend.routes.study_routes import elimu_learning_verify_certificate
+        return elimu_learning_verify_certificate(certificate_id)
     if not re.fullmatch(r"RC-AC-[A-F0-9]{16}", certificate_id):
         return jsonify(valid=False, certificate_id=certificate_id, reason="certificate_not_found"), 404
     record = certificates_col.find_one({"certificate_id": certificate_id})
