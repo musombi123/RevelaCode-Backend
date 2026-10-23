@@ -1520,6 +1520,19 @@ def save_biashara_website_settings(user_id, payload):
     now = now_utc()
     current = business.get("website") if isinstance(business.get("website"), dict) else {}
     settings = normalize_biashara_website_settings(payload, current)
+
+    # Website publishing is part of the Biashara seller-tools entitlement.
+    # Owners can always disable a previously published site, even after access expires.
+    if settings.get("published") is True:
+        from backend.revenue.subscriptions import resolve_entitlement
+        entitlement = resolve_entitlement(str(user_id), "biashara", "seller_tools")
+        if entitlement.get("allowed") is not True:
+            raise APIError(
+                "Publishing a Biashara website requires an active Biashara trial or a plan that includes website tools.",
+                402,
+                "biashara_website_entitlement_required",
+            )
+
     old_domain = str(current.get("custom_domain", "") or "").strip().lower()
     new_domain = str(settings.get("custom_domain", "") or "").strip().lower()
     if new_domain != old_domain:
@@ -1556,6 +1569,17 @@ def get_public_biashara_website(slug):
     })
     if not business:
         raise APIError("Business website not found or not published.", 404, "website_not_found")
+
+    # A saved published flag is not perpetual entitlement. Once a trial expires,
+    # the public storefront stays hidden until the owner activates a qualifying plan.
+    from backend.revenue.subscriptions import resolve_entitlement
+    entitlement = resolve_entitlement(
+        str(business.get("owner_user_id") or ""),
+        "biashara",
+        "seller_tools",
+    )
+    if entitlement.get("allowed") is not True:
+        raise APIError("This business website needs an active Biashara trial or an eligible plan.", 404, "website_not_found")
 
     website = business.get("website") if isinstance(business.get("website"), dict) else {}
     public_business = {
