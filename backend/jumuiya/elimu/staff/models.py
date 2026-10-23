@@ -16,6 +16,7 @@ from backend.jumuiya.elimu.permissions import (
     ROLE_REGISTRAR,
     ROLE_TEACHER,
     ROLE_STOREKEEPER,
+    ROLE_LIBRARIAN,
 )
 
 
@@ -46,6 +47,7 @@ ROLES = (
     ROLE_REGISTRAR,
     ROLE_TEACHER,
     ROLE_STOREKEEPER,
+    ROLE_LIBRARIAN,
 )
 
 
