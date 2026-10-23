@@ -888,7 +888,9 @@ def test_new_trial_snapshot_uses_hub_specific_duration(hub, expected_days):
     ("hub", "plan_code", "feature", "expected"),
     [
         ("biashara", "biashara_starter", "advanced_reports", True),
+        ("biashara", "biashara_starter", "seller_tools", True),
         ("biashara", "biashara_starter", "advanced_analytics", False),
+        ("biashara", "biashara_pro", "seller_tools", True),
         ("biashara", "biashara_pro", "advanced_analytics", True),
         ("elimu", "elimu_small", "advanced_reports", False),
         ("elimu", "elimu_standard", "advanced_reports", True),
