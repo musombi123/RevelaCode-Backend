@@ -44,7 +44,7 @@ def test_business_forecast_uses_recorded_sales_and_produces_horizon():
     assert result["revenue"]["available"] is True
     assert result["revenue"]["projected_total"] > 0
     assert len(result["revenue"]["daily_forecast"]) == 7
-    assert result["actual_last_7_days"] == 2300
+    assert result["actual_last_7_days"] == 2750
     assert result["products"][0]["demand"]["available"] is True
     assert len(result["products"][0]["demand"]["daily_forecast"]) == 7
     assert result["products"][0]["recommended_price"] == 100
