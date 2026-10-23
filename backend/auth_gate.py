@@ -973,7 +973,7 @@ def support_resend_verification():
 
     data = request.get_json(silent=True) or {}
     contact = str(data.get("contact") or "").strip()
-    if not re.fullmatch(r"[^@\\s]+@[^@\\s]+\\.[^@\\s]+", contact):
+    if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", contact):
         return jsonify(success=False, message="Enter the user's registered email address."), 422
 
     try:
