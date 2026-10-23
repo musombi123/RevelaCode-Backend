@@ -760,3 +760,29 @@ def test_public_plan_catalog_reports_real_production_checkout_readiness(
     assert payload["checkout_enabled"] is checkout_ready
     assert payload["billing_enabled"] is checkout_ready
 
+def test_every_trial_hub_has_a_proposed_paid_subscription_plan(monkeypatch):
+    from backend.revenue import plans
+
+    monkeypatch.setattr(plans, "collection", lambda _name: Mock(find=lambda _query: []))
+    catalogue = plans.list_plans()
+    subscription_hubs = set(trials.TRIAL_HUBS)
+
+    for hub in subscription_hubs:
+        matching = [
+            plan for plan in catalogue
+            if plan.get("hub") == hub
+            and plan.get("interval") in {"month", "year"}
+            and Decimal(str(plan.get("amount", "0"))) > 0
+        ]
+        assert matching, f"{hub} has a trial but no paid subscription plan"
+
+    for hub in ("community", "faith"):
+        matching = [
+            plan for plan in catalogue
+            if plan.get("hub") == hub
+            and plan.get("interval") == "month"
+            and Decimal(str(plan.get("amount", "0"))) > 0
+        ]
+        assert matching
+        assert all(plan.get("status") == "proposed" for plan in matching)
+
