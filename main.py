@@ -47,6 +47,11 @@ app = Flask(__name__)
 DEFAULT_FRONTEND_ORIGINS = {
     "https://revelacode.co.ke",
     "https://www.revelacode.co.ke",
+    # Reserved first-party hub subdomains served by the same RevelaCode frontend.
+    "https://biashara.revelacode.co.ke",
+    "https://elimu.revelacode.co.ke",
+    "https://shamba.revelacode.co.ke",
+    "https://community.revelacode.co.ke",
     # Temporary compatibility for existing Render-hosted frontend links.
     # New invitation links should use the canonical RevelaCode domain.
     "https://revelacode-frontend.onrender.com",
@@ -159,7 +164,7 @@ CORS_ALLOWED_METHODS_SET = {
 }
 
 CORS_ALLOWED_HEADERS = (
-    "Accept, Content-Type, Authorization, "
+    "Accept, Content-Type, Authorization, X-Revela-License, "
     "X-ADMIN-KEY, X-ADMIN-API-KEY, x-api-key, Idempotency-Key"
 )
 
@@ -181,6 +186,7 @@ CORS(
         "Accept",
         "Content-Type",
         "Authorization",
+        "X-Revela-License",
         "X-ADMIN-KEY",
         "X-ADMIN-API-KEY",
         "x-api-key",
