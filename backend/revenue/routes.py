@@ -68,7 +68,7 @@ def revenue_list_plans():
     return jsonify({
         "success": True,
         "pricing_status": get_pricing_status(),
-        "billing_enabled": False,
+        "billing_enabled": checkout_is_production_configured(),
         "checkout_enabled": checkout_is_production_configured(),
         "plans": list_plans(hub=hub or None),
     }), 200
