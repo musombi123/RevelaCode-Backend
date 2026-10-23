@@ -193,7 +193,7 @@ def get_active_business_for_user(user_id):
 def _require_business(user_id, allowed_roles=None):
     """Resolve the active business and enforce its member role and verification."""
     access = resolve_business_access(user_id)
-    business = access.get("business") if access else None
+    business = serialise(access.get("business")) if access else None
 
     if not business:
         raise APIError(
@@ -1695,9 +1695,7 @@ def submit_public_biashara_inquiry(slug, payload):
 def list_biashara_website_inquiries(user_id, limit=30):
     business = _require_business(user_id, allowed_roles=set(['owner', 'admin', 'manager', 'sales']))
     documents = collection("jumuiya_business_website_inquiries").find(
-        {
-            "business_id": business["id"],
-            "owner_user_id": str(user_id),
-        }
+        {"business_id": business["id"]}
     ).sort("created_at", -1).limit(_bounded_list_limit(limit))
     return serialise_many(documents)
+

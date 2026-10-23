@@ -5,6 +5,7 @@ They deliberately do not claim external payment, automation, or sync completion.
 """
 from __future__ import annotations
 
+import hashlib
 import secrets
 from datetime import datetime, timezone, timedelta
 from decimal import Decimal, InvalidOperation
@@ -12,10 +13,11 @@ from decimal import Decimal, InvalidOperation
 from flask import Blueprint, request
 
 from backend.jumuiya.core.database import collection
-from backend.jumuiya.core.permissions import require_authenticated, current_user_id
+from backend.jumuiya.core.permissions import require_authenticated, current_user, current_user_id
 from backend.jumuiya.core.responses import ok, created
 from backend.jumuiya.core.errors import APIError
 from backend.jumuiya.biashara.services import get_business_for_user, clean_id, serialise, serialise_many
+from backend.jumuiya.biashara.access import resolve_business_access, list_business_access
 from backend.jumuiya.core.audit import log_action
 
 contracts_bp = Blueprint("jumuiya_biashara_contracts", __name__)
@@ -36,16 +38,24 @@ def _body():
 
 
 def _owner_business():
+    """Resolve the selected business, keeping finance/team contracts owner-only."""
     uid = str(current_user_id())
-    business = get_business_for_user(uid)
+    preference = collection("jumuiya_biashara_active_business").find_one({"user_id": uid}) or {}
+    selected_id = str(preference.get("business_id") or "").strip()
+    if selected_id:
+        context = resolve_business_access(uid, selected_id)
+        if not context:
+            raise APIError("The selected business is no longer accessible to this account.", 403, "business_access_denied")
+        if not context.get("is_owner"):
+            raise APIError("This operation is reserved for the business owner.", 403, "business_owner_required")
+        business = serialise(context.get("business"))
+    else:
+        business = get_business_for_user(uid)
     if not business:
         raise APIError("Create a business profile first.", 409, "business_required")
-    # Existing Biashara operations are owner-scoped. Do not treat an unverified
-    # business as operationally enabled.
     if business.get("verification_status") != "verified" or business.get("status") != "active":
         raise APIError("Business verification is required for this operation.", 403, "business_verification_required")
     return uid, business
-
 
 def _business_id(business):
     return str(business.get("id") or business.get("_id"))
@@ -275,9 +285,9 @@ def list_team():
     uid, business = _owner_business()
     bid = _business_id(business)
     members = list(collection("jumuiya_biashara_memberships").find(
-        {"business_id": bid}, {"invitation_token": 0}).sort("created_at", -1).limit(200))
+        {"business_id": bid}, {"invitation_token": 0, "invitation_token_hash": 0, "claimed_by_user_id": 0, "claimed_at": 0}).sort("created_at", -1).limit(200))
     invites = list(collection("jumuiya_biashara_invitations").find(
-        {"business_id": bid, "status": "pending"}, {"invitation_token": 0}).sort("created_at", -1).limit(200))
+        {"business_id": bid, "status": "pending"}, {"invitation_token": 0, "invitation_token_hash": 0, "claimed_by_user_id": 0, "claimed_at": 0}).sort("created_at", -1).limit(200))
     return ok({"members": serialise_many(members), "invitations": serialise_many(invites), "owner_user_id": uid})
 
 
@@ -292,20 +302,123 @@ def invite_team_member():
         raise APIError("Provide a valid email and a supported non-admin role.", 422, "validation_error")
     bid = _business_id(business)
     invites = collection("jumuiya_biashara_invitations")
-    existing = invites.find_one({"business_id": bid, "email": email, "status": "pending"})
-    if existing:
+    if invites.find_one({"business_id": bid, "email": email, "status": "pending"}):
         raise APIError("A pending invitation already exists for this email.", 409, "invitation_exists")
     now = _now()
-    doc = {"owner_user_id": uid, "business_id": bid, "email": email, "role": role,
-           "status": "pending", "invitation_token": secrets.token_urlsafe(32),
-           "created_at": now, "expires_at": now + timedelta(days=30),
-           "delivery_status": "not_configured", "created_by_user_id": uid}
+    token = secrets.token_urlsafe(32)
+    token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    doc = {
+        "owner_user_id": uid, "business_id": bid, "email": email, "role": role,
+        "status": "pending", "invitation_token_hash": token_hash,
+        "created_at": now, "expires_at": now + timedelta(days=30),
+        "delivery_status": "manual_share_required", "created_by_user_id": uid,
+    }
     result = invites.insert_one(doc)
     doc["_id"] = result.inserted_id
     safe = serialise(doc)
-    safe.pop("invitation_token", None)
+    safe.pop("invitation_token_hash", None)
+    safe["accept_token"] = token
+    safe["accept_endpoint"] = "/api/jumuiya/biashara/team/invitations/accept"
     log_action(uid, "biashara.team.invitation_created", "biashara_invitation", result.inserted_id, {"email": email, "role": role})
-    return created(safe, "Invitation recorded but not delivered: email delivery is not configured.")
+    return created(safe, "Invitation created. Share the one-time token securely with the intended invitee; email delivery is not configured.")
+
+@contracts_bp.post("/team/invitations/accept")
+@require_authenticated
+def accept_team_invitation():
+    """Accept a single-use invitation with an authenticated RevelaCode identity."""
+    uid = str(current_user_id())
+    identity = current_user()
+    data = _body()
+    token = str(data.get("token") or data.get("accept_token") or "").strip()
+    if len(token) < 32 or len(token) > 512:
+        raise APIError("A valid invitation token is required.", 422, "invalid_invitation_token")
+    token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    now = _now()
+    invitations = collection("jumuiya_biashara_invitations")
+    invitation = invitations.find_one({
+        "invitation_token_hash": token_hash, "status": "pending", "expires_at": {"$gt": now},
+    })
+    if not invitation:
+        raise APIError("Invitation token is invalid, expired, or already used.", 410, "invitation_invalid")
+    target_email = str(invitation.get("email") or "").strip().lower()
+    account_email = str(identity.get("email") or "").strip().lower()
+    if account_email and target_email and account_email != target_email:
+        raise APIError("This invitation was issued to a different email address.", 403, "invitation_email_mismatch")
+    business_id = str(invitation.get("business_id") or "").strip()
+    business = collection("jumuiya_businesses").find_one({"_id": clean_id(business_id)})
+    if not business:
+        business = collection("jumuiya_businesses").find_one({"_id": business_id})
+    if not business:
+        raise APIError("The invited business no longer exists.", 404, "business_not_found")
+    if business.get("verification_status") != "verified" or business.get("status") != "active":
+        raise APIError("This business is not currently available for team access.", 409, "business_not_available")
+    owner_user_id = str(invitation.get("owner_user_id") or "")
+    if owner_user_id == uid:
+        raise APIError("The business owner cannot accept their own invitation.", 409, "owner_invitation_not_allowed")
+    memberships = collection("jumuiya_biashara_memberships")
+    member_query = {"business_id": business_id, "user_id": uid}
+    previous_membership = memberships.find_one(member_query)
+    if previous_membership and str(previous_membership.get("status") or "").lower() in {"active", "accepted"}:
+        raise APIError("This account is already an active member of the business.", 409, "membership_exists")
+    claim = invitations.update_one(
+        {"_id": invitation["_id"], "invitation_token_hash": token_hash, "status": "pending", "expires_at": {"$gt": now}},
+        {"$set": {"status": "accepting", "claimed_by_user_id": uid, "claimed_at": now}},
+    )
+    if getattr(claim, "modified_count", 0) != 1:
+        raise APIError("This invitation has already been claimed or expired.", 409, "invitation_claim_conflict")
+    invitation_id = str(invitation.get("_id"))
+    role = str(invitation.get("role") or "viewer").strip().lower()
+    if role not in ROLES - {"admin"}:
+        invitations.update_one(
+            {"_id": invitation["_id"], "status": "accepting", "claimed_by_user_id": uid},
+            {"$set": {"status": "pending"}, "$unset": {"claimed_by_user_id": "", "claimed_at": ""}},
+        )
+        raise APIError("The invitation contains an unsupported role.", 409, "invalid_invitation_role")
+    member_values = {
+        "owner_user_id": owner_user_id, "business_id": business_id, "user_id": uid,
+        "full_name": str(identity.get("full_name") or ""), "contact": str(identity.get("contact") or ""),
+        "email": account_email or target_email, "role": role, "status": "active",
+        "invitation_id": invitation_id, "invited_by_user_id": owner_user_id,
+        "accepted_at": now, "updated_at": now,
+    }
+    try:
+        memberships.update_one(member_query, {"$set": member_values, "$setOnInsert": {"created_at": now}}, upsert=True)
+        accepted = invitations.update_one(
+            {"_id": invitation["_id"], "status": "accepting", "claimed_by_user_id": uid},
+            {"$set": {"status": "accepted", "accepted_by_user_id": uid, "accepted_at": now},
+             "$unset": {"invitation_token_hash": "", "claimed_by_user_id": "", "claimed_at": ""}},
+        )
+        if getattr(accepted, "modified_count", 0) != 1:
+            raise RuntimeError("Invitation state changed during acceptance.")
+    except Exception as exc:
+        try:
+            if previous_membership:
+                memberships.replace_one({"_id": previous_membership["_id"]}, previous_membership, upsert=True)
+            else:
+                memberships.delete_one({"business_id": business_id, "user_id": uid, "invitation_id": invitation_id})
+            invitations.update_one(
+                {"_id": invitation["_id"], "status": "accepting", "claimed_by_user_id": uid},
+                {"$set": {"status": "pending"}, "$unset": {"claimed_by_user_id": "", "claimed_at": ""}},
+            )
+        except Exception:
+            from flask import current_app
+            current_app.logger.exception("Biashara invitation rollback failed.")
+        raise APIError("The invitation could not be completed. Please retry with the same token.", 500, "invitation_acceptance_failed") from exc
+    active_selection_updated = True
+    try:
+        collection("jumuiya_biashara_active_business").update_one(
+            {"user_id": uid}, {"$set": {"user_id": uid, "business_id": business_id, "updated_at": now}}, upsert=True,
+        )
+    except Exception:
+        active_selection_updated = False
+    member = memberships.find_one(member_query)
+    log_action(uid, "biashara.team.invitation_accepted", "biashara_membership",
+               (member or {}).get("_id", invitation_id), {"business_id": business_id, "role": role})
+    return created(
+        {"membership": serialise(member), "business": {"id": business_id, "name": business.get("name", "")},
+         "active_business_updated": active_selection_updated},
+        "Invitation accepted. You now have access to this business workspace.",
+    )
 
 
 @contracts_bp.delete("/team/members/<member_id>")
@@ -329,8 +442,7 @@ def remove_team_member(member_id):
 @require_authenticated
 def list_businesses():
     uid = str(current_user_id())
-    docs = collection("jumuiya_businesses").find({"owner_user_id": uid}).sort("created_at", -1).limit(100)
-    return ok(serialise_many(docs))
+    return ok(serialise_many(list_business_access(uid)))
 
 
 @contracts_bp.post("/businesses/active")
@@ -341,13 +453,22 @@ def set_active_business():
     bid = str(data.get("business_id") or "").strip()
     if not bid:
         raise APIError("business_id is required.", 422, "validation_error")
-    business = collection("jumuiya_businesses").find_one({"_id": clean_id(bid), "owner_user_id": uid})
-    if not business:
+    context = resolve_business_access(uid, bid)
+    if not context:
         raise APIError("Business is not owned by or accessible to this account.", 403, "business_access_denied")
+    business = context["business"]
+    canonical_bid = str(business.get("_id") or business.get("id") or bid)
     now = _now()
     collection("jumuiya_biashara_active_business").update_one(
-        {"user_id": uid}, {"$set": {"user_id": uid, "business_id": str(business["_id"]), "updated_at": now}},
-        upsert=True)
-    log_action(uid, "biashara.active_business.changed", "business", business["_id"], {"business_id": str(business["_id"])})
-    return ok({"business_id": str(business["_id"]), "name": business.get("name"), "updated_at": now.isoformat()},
-              "Active business preference saved. Existing owner-scoped endpoints still use the primary business.")
+        {"user_id": uid},
+        {"$set": {"user_id": uid, "business_id": canonical_bid, "updated_at": now}},
+        upsert=True,
+    )
+    log_action(uid, "biashara.active_business.changed", "business", business.get("_id", canonical_bid),
+               {"business_id": canonical_bid, "access_role": context.get("role", "owner")})
+    return ok(
+        {"business_id": canonical_bid, "name": business.get("name"),
+         "access_role": context.get("role", "owner"), "is_owner": bool(context.get("is_owner")),
+         "updated_at": now.isoformat()},
+        "Active business preference saved.",
+    )
