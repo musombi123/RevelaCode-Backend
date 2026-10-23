@@ -127,5 +127,6 @@ def test_three_angels_and_great_controversy_are_labeled_as_adventist_perspective
         lesson["content"] for lesson in by_slug["great-controversy-theme"]["lessons"]
     )
     assert "official Adventist" in great_controversy_text
-    assert "without claiming" in by_slug["great-controversy-theme"]["summary"]
+    assert "official Seventh-day Adventist" in by_slug["great-controversy-theme"]["summary"]
+    assert "not rank the human worth" in great_controversy_text
 
