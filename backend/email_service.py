@@ -53,7 +53,6 @@ def send_verification_email(recipient, code, purpose="activation"):
 
     # Apply the currently configured deployment key at send time.
     resend.api_key = api_key
-    sender = os.getenv("EMAIL_FROM", "RevelaCode <noreply@revelacode.co.ke>").strip()
     if not sender:
         raise RuntimeError("EMAIL_FROM is not configured.")
 
@@ -61,10 +60,17 @@ def send_verification_email(recipient, code, purpose="activation"):
         subject = "Reset your RevelaCode password"
         heading = "Password reset code"
         explanation = "Use this code to reset your RevelaCode password."
+        sender = os.getenv("EMAIL_FROM", "RevelaCode <noreply@revelacode.co.ke>").strip()
+    elif purpose == "support_activation":
+        subject = "RevelaCode account verification assistance"
+        heading = "Your account verification code"
+        explanation = "RevelaCode Support has sent you a fresh code to verify your email address and activate your account."
+        sender = os.getenv("SUPPORT_EMAIL_FROM", "RevelaCode Support <support@revelacode.co.ke>").strip()
     else:
         subject = "Activate your RevelaCode account"
         heading = "Your RevelaCode activation code"
         explanation = "Use this code to verify your email address and activate your RevelaCode account."
+        sender = os.getenv("EMAIL_FROM", "RevelaCode <noreply@revelacode.co.ke>").strip()
 
     safe_code = escape(code)
     safe_heading = escape(heading)
