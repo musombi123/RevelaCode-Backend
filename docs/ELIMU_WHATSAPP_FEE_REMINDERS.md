@@ -17,8 +17,10 @@ Set these secrets on the RevelaCode Backend Render service:
 - `WHATSAPP_API_VERSION`: optional; defaults to `v26.0`.
 - `WHATSAPP_FEE_REMINDER_TEMPLATE`: optional; defaults to `school_fee_reminder`.
 - `WHATSAPP_FEE_REMINDER_LANGUAGE`: optional; defaults to `en_US`, and must match the template's actual language code.
+- `WHATSAPP_WEBHOOK_VERIFY_TOKEN`: a private random string you create and enter both in Render and the Meta webhook configuration.
+- `WHATSAPP_APP_SECRET`: the App Secret from Meta for Developers; it is used to verify signed webhook events. Store it only in Render, never in frontend code or GitHub.
 
-After setting the variables, redeploy/restart the backend.
+After setting the variables, redeploy/restart the backend. Then set the Meta webhook callback URL to `https://revelacode-backend.onrender.com/api/jumuiya/elimu/finance/whatsapp/webhook`, enter the same `WHATSAPP_WEBHOOK_VERIFY_TOKEN`, and subscribe the WhatsApp Business Account to the `messages` field. The backend validates `X-Hub-Signature-256` with `WHATSAPP_APP_SECRET`, correlates provider message IDs to finance reminder audit records, and records sent/delivered/read/failed updates. Bursar-only finance users can review recent reminders at `GET /api/jumuiya/elimu/finance/fee-reminders`.
 
 ## Create the approved template
 
