@@ -73,3 +73,60 @@ def test_course_and_lesson_lookup_reject_unknown_slugs():
     course, lesson = get_lesson("not-a-real-course", "observe-before-interpreting")
     assert course is None
     assert lesson is None
+
+def test_priority_faith_courses_cover_requested_topics_and_primary_sources():
+    by_slug = {course["slug"]: course for course in COURSES}
+    expected = {
+        "three-angels-messages",
+        "sda-28-fundamental-beliefs",
+        "great-controversy-theme",
+        "catholic-muslim-comparative-dialogue",
+    }
+    assert expected.issubset(by_slug)
+
+    for slug in expected:
+        course = by_slug[slug]
+        assert course["sources"]
+        assert len(course["lessons"]) >= 3
+        assert course["tier"] == "premium"
+        assert course["preview_lesson_slug"] is None
+        for lesson in course["lessons"]:
+            assert lesson["sources"]
+            assert lesson["quiz"]
+            assert len(lesson["content"]) >= 500
+
+    beliefs = by_slug["sda-28-fundamental-beliefs"]
+    belief_text = "\\n".join(lesson["title"] + "\\n" + lesson["content"] for lesson in beliefs["lessons"])
+    required_belief_names = [
+        "Holy Scriptures", "The Trinity", "God the Father", "God the Son",
+        "God the Holy Spirit", "Creation", "Nature of Humanity", "The Great Controversy",
+        "The Life, Death and Resurrection of Christ", "The Experience of Salvation",
+        "Growing in Christ", "The Church", "The Remnant and its Mission",
+        "Unity in the Body of Christ", "Baptism", "The Lord's Supper",
+        "Spiritual Gifts and Ministries", "The Gift of Prophecy", "The Law of God",
+        "The Sabbath", "Stewardship", "Christian Behavior", "Marriage and the Family",
+        "Christ's Ministry in the Heavenly Sanctuary", "The Second Coming of Christ",
+        "Death and Resurrection", "The Millennium and the End of Sin", "The New Earth",
+    ]
+    for belief in required_belief_names:
+        assert belief in belief_text, f"Missing Fundamental Belief: {belief}"
+
+    interfaith_text = "\\n".join(
+        lesson["title"] + "\\n" + lesson["content"]
+        for lesson in by_slug["catholic-muslim-comparative-dialogue"]["lessons"]
+    )
+    assert "Catholic" in interfaith_text
+    assert "Muslim" in interfaith_text
+    assert "without ranking" in by_slug["catholic-muslim-comparative-dialogue"]["summary"]
+
+
+def test_three_angels_and_great_controversy_are_labeled_as_adventist_perspectives():
+    by_slug = {course["slug"]: course for course in COURSES}
+    assert "Seventh-day Adventist" in by_slug["three-angels-messages"]["summary"]
+    great_controversy_text = " ".join(
+        lesson["content"] for lesson in by_slug["great-controversy-theme"]["lessons"]
+    )
+    assert "official Adventist" in great_controversy_text
+    assert "official Seventh-day Adventist" in by_slug["great-controversy-theme"]["summary"]
+    assert "greater human worth" in great_controversy_text
+
