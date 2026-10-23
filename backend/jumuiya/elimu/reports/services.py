@@ -179,6 +179,7 @@ def _safe_bool(
 
 def _school_document(
     user_id: str,
+    permission: str = "reports.view",
 ) -> dict:
     """
     Reuse the Elimu school ownership boundary without importing
@@ -187,7 +188,7 @@ def _school_document(
     # authorize() already returns the authorized school/member context.
     member = authorize(
         user_id,
-        "reports.view",
+        permission,
     )
 
     if not isinstance(
@@ -618,7 +619,8 @@ def fees(
     School fee totals.
     """
     member = _school_document(
-        user_id
+        user_id,
+        "fees.reports",
     )
 
     school_id = _school_id(

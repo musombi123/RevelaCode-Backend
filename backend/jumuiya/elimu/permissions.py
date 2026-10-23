@@ -38,6 +38,7 @@ ROLE_BURSAR = "bursar"
 ROLE_REGISTRAR = "registrar"
 ROLE_TEACHER = "teacher"
 ROLE_STOREKEEPER = "storekeeper"
+ROLE_LIBRARIAN = "librarian"
 
 ROLES = (
     ROLE_OWNER,
@@ -46,6 +47,7 @@ ROLES = (
     ROLE_REGISTRAR,
     ROLE_TEACHER,
     ROLE_STOREKEEPER,
+    ROLE_LIBRARIAN,
 )
 
 
@@ -56,6 +58,7 @@ ROLE_LABELS = {
     ROLE_REGISTRAR: "Registrar",
     ROLE_TEACHER: "Teacher",
     ROLE_STOREKEEPER: "Storekeeper",
+    ROLE_LIBRARIAN: "School Librarian",
 }
 
 
@@ -74,8 +77,8 @@ ROLE_DESCRIPTIONS = {
         "actions remain reserved for the School Owner."
     ),
     ROLE_BURSAR: (
-        "School finance and fee administration with controlled "
-        "access to supporting student and reporting information."
+        "Finance-only access to fee records, payment claims, "
+        "receipt reconciliation, and financial reports."
     ),
     ROLE_REGISTRAR: (
         "Student records, classes, academic administration, "
@@ -86,8 +89,10 @@ ROLE_DESCRIPTIONS = {
         "CBC work and assigned-class academic activities."
     ),
     ROLE_STOREKEEPER: (
-        "School inventory and store operations with read-only access to "
-        "the school identity and staff directory."
+        "School inventory, stock movements, and principal-approved supply needs."
+    ),
+    ROLE_LIBRARIAN: (
+        "School library catalogue, book circulation, and loan records only."
     ),
 }
 
@@ -217,6 +222,8 @@ PERMISSIONS = frozenset(
         "automation.manage",
         "inventory.view",
         "inventory.manage",
+        "library.view",
+        "library.manage",
     }
 )
 
@@ -250,28 +257,13 @@ ROLE_PERMISSIONS = {
     # ---------------------------------------------------------
 
     ROLE_BURSAR: {
+        # The Bursar may enter the workspace context, but operational access
+        # is restricted to finance and fee reconciliation.
         "school.view",
-
-        "staff.view",
-
-        "students.view",
-        "classes.view",
-
         "fees.view",
         "fees.create",
         "fees.update",
         "fees.reports",
-
-        "reports.view",
-        "reports.print",
-        "reports.export",
-
-        "calendar.view",
-
-        "sync.view",
-        "sync.export",
-
-        "automation.view",
     },
 
     # ---------------------------------------------------------
@@ -375,10 +367,15 @@ ROLE_PERMISSIONS = {
 
     ROLE_STOREKEEPER: {
         "school.view",
-        "staff.view",
         "inventory.view",
         "inventory.manage",
-        "calendar.view",
+    },
+
+    # Optional role. It has no access to student marks or finance.
+    ROLE_LIBRARIAN: {
+        "school.view",
+        "library.view",
+        "library.manage",
     },
 
 }
@@ -545,6 +542,13 @@ def effective_permissions(
 
     if not supplied:
         return defaults
+
+    # These operational roles have a deliberately narrow security ceiling.
+    # Older memberships may still carry previously stored explicit grants;
+    # a custom list may narrow these roles, but must never broaden them into
+    # finance, academic records, staff administration, or other workspaces.
+    if normalized_role in {ROLE_BURSAR, ROLE_STOREKEEPER, ROLE_LIBRARIAN}:
+        return supplied & defaults
 
     return supplied
 
