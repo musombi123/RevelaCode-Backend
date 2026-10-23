@@ -349,17 +349,30 @@ def decide_need(user_id: Any, need_id: Any, data: dict) -> dict:
         if purpose:
             lines.append(f"Purpose: {purpose}")
         requester_id = _uid(current.get("requested_by_user_id")) or _uid(user_id)
-        post = community_services.create_post(requester_id, {
-            "title": title,
-            "body": "\n\n".join(lines),
+        request_tags = ["school-needs", item_name.lower(), "elimu", request_id_tag]
+        # Recover if Community inserted the post but its response was lost
+        # before the Elimu request could save community_post_id.
+        existing_post = collection(community_services.POSTS).find_one({
+            "author_user_id": requester_id,
+            "status": "published",
             "hub": "community",
-            "type": "request",
-            "category": "school_needs",
-            "visibility": "public",
-            "tags": ["school-needs", item_name.lower(), "elimu", request_id_tag],
-            "location": school_name,
+            "title": title,
+            "tags": request_id_tag,
         })
-        post_id = _text(post.get("id") or post.get("_id"), 160) if isinstance(post, dict) else ""
+        if existing_post:
+            post_id = _text(existing_post.get("_id") or existing_post.get("id"), 160)
+        else:
+            post = community_services.create_post(requester_id, {
+                "title": title,
+                "body": "\n\n".join(lines),
+                "hub": "community",
+                "type": "request",
+                "category": "school_needs",
+                "visibility": "public",
+                "tags": request_tags,
+                "location": school_name,
+            })
+            post_id = _text(post.get("id") or post.get("_id"), 160) if isinstance(post, dict) else ""
         if not post_id:
             raise RuntimeError("Community returned no post identifier.")
         saved = target.find_one_and_update(
