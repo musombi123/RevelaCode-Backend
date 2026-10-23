@@ -373,10 +373,6 @@ def _send_fee_reminder_whatsapp(recipient: str, parameters: list[str]) -> str:
     return _text((result.get("messages") or [{}])[0].get("id"), 160)
 
 
-def _normalize_whatsapp_phone(value: Any) -> str:
-    return _normalize_sms_phone(value)
-
-
 @finance_bp.get("/fee-status")
 @require_authenticated
 def get_student_fee_status():
