@@ -649,7 +649,7 @@ def test_unknown_stk_submission_requires_admin_provider_reconciliation_before_re
             "notes": "Checked the provider transaction history; no matching debit or receipt was found.",
         },
     ):
-        response, status = mpesa.revenue_admin_resolve_unknown_checkout.__wrapped__.__wrapped__()
+        response, status = mpesa.revenue_admin_resolve_unknown_checkout.__wrapped__.__wrapped__(row_id)
 
     assert status == 200
     assert response.get_json()["success"] is True
@@ -783,7 +783,7 @@ def test_recent_initiating_checkout_cannot_be_manually_released(monkeypatch, rev
             "notes": "Checked provider transaction history and confirmed no matching debit.",
         },
     ):
-        response, status = mpesa.revenue_admin_resolve_unknown_checkout.__wrapped__.__wrapped__()
+        response, status = mpesa.revenue_admin_resolve_unknown_checkout.__wrapped__.__wrapped__(row_id)
 
     assert status == 409
     assert response.get_json()["code"] == "checkout_initiation_still_fresh"
