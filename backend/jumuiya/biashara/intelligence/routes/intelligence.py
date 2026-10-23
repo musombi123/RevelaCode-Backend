@@ -16,6 +16,8 @@ from backend.jumuiya.core.responses import (
 
 from backend.jumuiya.core.errors import APIError
 from backend.revenue.subscriptions import require_revenue_entitlement
+from backend.jumuiya.core.database import collection
+from backend.jumuiya.biashara import services as biashara_services
 
 from backend.jumuiya.biashara.intelligence import (
     schemas,
@@ -147,14 +149,14 @@ def query_limit(
     )
 
 
-def forecast_days():
+def forecast_days(default=DEFAULT_FORECAST_DAYS, maximum=MAX_FORECAST_DAYS):
     """
-    Parse forecast horizon from query parameters.
+    Parse and bound a forecast horizon from query parameters.
     """
 
     raw = request.args.get(
         "forecast_days",
-        DEFAULT_FORECAST_DAYS,
+        default,
     )
 
     try:
@@ -183,7 +185,7 @@ def forecast_days():
 
     return min(
         value,
-        MAX_FORECAST_DAYS,
+        maximum,
     )
 
 
@@ -908,3 +910,82 @@ def info():
 __all__ = [
     "intelligence_bp",
 ]
+
+
+# =========================================================
+# AUTHENTICATED BUSINESS FORECAST AND PRICING REVIEW
+# =========================================================
+
+@intelligence_bp.get("/business-forecast")
+@require_authenticated
+@require_revenue_entitlement("biashara", "advanced_analytics")
+def forecast_business():
+    """Forecast recorded sales/demand and calculate a transparent price floor."""
+    horizon = forecast_days(default=7, maximum=90)
+    raw_margin = request.args.get("target_margin_percent", "25")
+    try:
+        margin = float(raw_margin)
+    except (TypeError, ValueError):
+        raise APIError(
+            "target_margin_percent must be a number between 5 and 80.",
+            422,
+            "invalid_target_margin",
+        ) from None
+
+    business = biashara_services._require_business(
+        user_id(),
+        allowed_roles={"owner", "admin", "manager", "sales"},
+    )
+    business_id = str(business["id"])
+
+    # Pull only this verified business's existing records. No client-supplied
+    # sales data is accepted by this endpoint.
+    sales = list(
+        collection("jumuiya_sales").find(
+            {"business_id": business_id},
+            {
+                "_id": 0,
+                "amount": 1,
+                "currency": 1,
+                "items": 1,
+                "sold_at": 1,
+                "created_at": 1,
+                "updated_at": 1,
+            },
+        ).sort("created_at", -1).limit(3000)
+    )
+    products = list(
+        collection("jumuiya_products").find(
+            {"business_id": business_id, "status": "active"},
+            {
+                "_id": 1,
+                "name": 1,
+                "category": 1,
+                "price": 1,
+                "cost_price": 1,
+                "currency": 1,
+                "stock_quantity": 1,
+                "low_stock_threshold": 1,
+            },
+        ).sort("created_at", -1).limit(100)
+    )
+
+    try:
+        report = service.forecast_business_data(
+            sales,
+            products,
+            forecast_days=horizon,
+            target_margin_percent=margin,
+            currency=business.get("currency") or "KES",
+        )
+    except ValueError as exc:
+        raise APIError(
+            str(exc),
+            422,
+            "business_forecast_validation_error",
+        ) from None
+
+    report["business_name"] = business.get("name", "")
+    report["business_id"] = business_id
+    return ok(report)
+
