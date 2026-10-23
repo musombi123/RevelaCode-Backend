@@ -27,7 +27,9 @@ _test_db_module.get_db = lambda: _test_db_module.db
 sys.modules["backend.db"] = _test_db_module
 
 from backend.jumuiya.core.errors import APIError
+from backend.account_documents import account_documents_bp
 from backend.routes import study_routes as routes
+from backend.routes.elimu_compat_routes import elimu_compat_bp
 
 
 class FakeCursor(list):
@@ -153,6 +155,8 @@ def app_client(monkeypatch):
 
     app = Flask(__name__)
     app.register_blueprint(routes.study_bp, url_prefix="/api/study")
+    app.register_blueprint(elimu_compat_bp)
+    app.register_blueprint(account_documents_bp)
 
     @app.before_request
     def set_test_identity():
@@ -223,6 +227,52 @@ def test_list_hubs_and_persisted_progress_read(app_client):
     assert progress.status_code == 200
     assert progress.get_json()["progress"]["completed_lessons"] == 1
     assert progress.get_json()["progress"]["total_lessons"] == 2
+
+
+def test_compatibility_aliases_share_progress_certificates_and_public_qr_verifier(app_client, monkeypatch):
+    client, _ = app_client
+    monkeypatch.setenv("REVELACODE_PUBLIC_URL", "https://revelacode.co.ke")
+
+    hubs = client.get("/api/elimu/hubs", headers=auth())
+    assert hubs.status_code == 200
+    assert hubs.get_json()["hubs"][0]["id"] == routes._ELIMU_LEARNING_HUB_ID
+
+    saved = client.post(
+        "/api/elimu/progress",
+        headers=auth(),
+        json={
+            "hub_id": routes._ELIMU_LEARNING_HUB_ID,
+            "course_id": "foundations",
+            "action": "start",
+        },
+    )
+    assert saved.status_code == 200
+    progress = client.get("/api/elimu/progress", headers=auth())
+    assert progress.status_code == 200
+
+    complete_all_lessons(client)
+    issued = client.post(
+        "/api/certificates/generate",
+        headers=auth(),
+        json={"hub_id": routes._ELIMU_LEARNING_HUB_ID},
+    )
+    assert issued.status_code == 201, issued.get_json()
+    payload = issued.get_json()
+    certificate_id = payload["certificate_id"]
+    assert payload["verification_url"] == (
+        f"https://revelacode.co.ke/api/verify/certificate/{certificate_id}"
+    )
+
+    pdf = client.get(f"/api/certificates/{certificate_id}", headers=auth())
+    assert pdf.status_code == 200
+    assert pdf.mimetype == "application/pdf"
+
+    verified = client.get(f"/api/verify/certificate/{certificate_id}")
+    assert verified.status_code == 200
+    assert verified.get_json()["valid"] is True
+    assert verified.get_json()["certificate_scope"] == (
+        "Recorded Elimu learning completion only; not a government qualification or external accreditation."
+    )
 
 
 def test_progress_rejects_unknown_lesson_and_incomplete_course(app_client):
