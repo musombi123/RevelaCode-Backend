@@ -112,3 +112,55 @@ def test_website_settings_rejects_oversized_uploaded_images():
         normalize_biashara_website_settings({
             "logo_url": "data:image/webp;base64," + ("A" * 450_001),
         })
+
+def test_website_settings_accept_cover_photo_and_service_listings():
+    result = normalize_biashara_website_settings({
+        "cover_image_url": "https://cdn.example.com/cover.webp",
+        "service_items": [
+            {
+                "title": "Equipment servicing",
+                "description": "Inspection and repair for small business equipment.",
+                "price_label": "From KES 1,500",
+                "image_url": "https://cdn.example.com/service.webp",
+            }
+        ],
+        "show_services": True,
+        "published": True,
+    })
+
+    assert result["cover_image_url"] == "https://cdn.example.com/cover.webp"
+    assert result["service_items"][0]["title"] == "Equipment servicing"
+    assert result["service_items"][0]["price_label"] == "From KES 1,500"
+    assert result["show_services"] is True
+    assert result["published"] is True
+
+
+def test_website_settings_can_disable_public_website_without_deleting_content():
+    current = {
+        "published": True,
+        "headline": "Coastal Electronics",
+        "cover_image_url": "https://cdn.example.com/cover.webp",
+    }
+
+    result = normalize_biashara_website_settings({"published": False}, current)
+
+    assert result["published"] is False
+    assert result["headline"] == "Coastal Electronics"
+    assert result["cover_image_url"] == "https://cdn.example.com/cover.webp"
+
+
+def test_website_settings_rejects_invalid_service_items():
+    with pytest.raises(APIError):
+        normalize_biashara_website_settings({
+            "service_items": [{"title": "", "description": "Missing title"}],
+        })
+
+
+def test_website_settings_rejects_unsafe_service_image_url():
+    with pytest.raises(APIError):
+        normalize_biashara_website_settings({
+            "service_items": [{
+                "title": "Installation",
+                "image_url": "http://example.com/service.jpg",
+            }],
+        })
