@@ -726,3 +726,37 @@ def test_recent_initiating_checkout_cannot_be_manually_released(monkeypatch, rev
     assert response.get_json()["code"] == "checkout_initiation_still_fresh"
     assert row["status"] == "initiating"
     assert row["active_checkout_slot"] == "user-1:smart_ai"
+
+@pytest.mark.parametrize("checkout_ready", [True, False])
+def test_public_plan_catalog_reports_real_production_checkout_readiness(
+    monkeypatch, revenue_app, checkout_ready
+):
+    from backend.revenue import routes
+
+    monkeypatch.setattr(
+        mpesa, "checkout_is_production_configured", lambda: checkout_ready
+    )
+    monkeypatch.setattr(routes, "get_pricing_status", lambda: "draft")
+    monkeypatch.setattr(
+        routes,
+        "list_plans",
+        lambda hub=None: [
+            {
+                "code": "free",
+                "hub": "all",
+                "amount": "0.00",
+                "currency": "KES",
+                "interval": "month",
+                "status": "available",
+            }
+        ],
+    )
+
+    with revenue_app.test_request_context("/api/revenue/plans"):
+        response, status = routes.revenue_list_plans()
+
+    assert status == 200
+    payload = response.get_json()
+    assert payload["checkout_enabled"] is checkout_ready
+    assert payload["billing_enabled"] is checkout_ready
+
