@@ -36,7 +36,7 @@ A browser redirect, an unsigned callback body, an STK initiation response, or a 
 
 ## Trial and entitlement behavior
 
-Each authenticated user can start one 30-day trial for each supported hub: Shamba, Biashara, Elimu, Community, Smart AI, Marketplace and Faith. Trial starts are recorded once per user/hub. Essential features remain free. The backend entitlement service checks the active trial or a current paid subscription for designated premium capabilities.
+Each authenticated user can start one trial per supported hub: Elimu (7 days), Biashara (10 days), Shamba (20 days), and Community, Smart AI, Marketplace and Faith (30 days each). Trial starts are recorded once per user/hub and the duration is persisted on each trial record, so a repeat request cannot reset or extend it. Essential features remain free. The backend entitlement service checks the active trial or current paid subscription for designated premium capabilities.
 
 RevelaAI consults the same RevelaCode backend for image generation, document analysis, voice, Live Vision, persistent memory, and USECT-ZERO engineering-tool dispatch. Approved Core Mesh operators also need Smart AI automation entitlement before Genesis tools can execute from chat. A billing-service outage blocks these premium operations but does not block ordinary free text chat.
 

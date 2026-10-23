@@ -849,3 +849,102 @@ def test_every_trial_hub_has_a_proposed_paid_subscription_plan(monkeypatch):
         assert matching
         assert all(plan.get("status") == "proposed" for plan in matching)
 
+@pytest.mark.parametrize(
+    ("hub", "expected_days"),
+    [
+        ("elimu", 7),
+        ("biashara", 10),
+        ("shamba", 20),
+        ("community", 30),
+        ("smart_ai", 30),
+        ("marketplace", 30),
+        ("faith", 30),
+    ],
+)
+def test_hub_trial_durations_are_configured(hub, expected_days):
+    assert trials.trial_days_for_hub(hub) == expected_days
+
+
+@pytest.mark.parametrize(
+    ("hub", "expected_days"),
+    [("elimu", 7), ("biashara", 10), ("shamba", 20)],
+)
+def test_new_trial_snapshot_uses_hub_specific_duration(hub, expected_days):
+    now = datetime(2026, 10, 24, tzinfo=timezone.utc)
+    trial = {
+        "hub": hub,
+        "status": "active",
+        "started_at": now - timedelta(hours=1),
+        "ends_at": now + timedelta(days=expected_days) - timedelta(hours=1),
+    }
+
+    public = trials._public_trial(trial, now)
+
+    assert public["status"] == "active"
+    assert public["trial_days"] == expected_days
+    assert public["access"] == "trial"
+
+@pytest.mark.parametrize(
+    ("hub", "plan_code", "feature", "expected"),
+    [
+        ("biashara", "biashara_starter", "advanced_reports", True),
+        ("biashara", "biashara_starter", "seller_tools", True),
+        ("biashara", "biashara_starter", "advanced_analytics", False),
+        ("biashara", "biashara_pro", "seller_tools", True),
+        ("biashara", "biashara_pro", "advanced_analytics", True),
+        ("elimu", "elimu_small", "advanced_reports", False),
+        ("elimu", "elimu_standard", "advanced_reports", True),
+        ("elimu", "elimu_advanced", "automation", True),
+        ("shamba", "shamba_plus", "advanced_analytics", False),
+        ("shamba", "shamba_pro", "advanced_analytics", True),
+    ],
+)
+def test_paid_hub_plan_only_unlocks_included_features(
+    monkeypatch, hub, plan_code, feature, expected
+):
+    now = datetime(2026, 10, 24, tzinfo=timezone.utc)
+    paid = {
+        "_id": "sub-1",
+        "user_id": "user-1",
+        "hub": hub,
+        "plan_code": plan_code,
+        "status": "active",
+        "starts_at": now - timedelta(days=1),
+        "ends_at": now + timedelta(days=29),
+    }
+    monkeypatch.setattr(subscriptions, "now_utc", lambda: now)
+    monkeypatch.setattr(subscriptions, "_active_subscription", lambda *args, **kwargs: paid)
+    monkeypatch.setattr(subscriptions, "collection", lambda name: Mock(find_one=lambda query: None))
+
+    result = subscriptions.resolve_entitlement("user-1", hub, feature)
+
+    assert result["allowed"] is expected
+    assert result["tier"] == "paid"
+
+
+@pytest.mark.parametrize(
+    ("hub", "feature"),
+    [
+        ("biashara", "advanced_analytics"),
+        ("elimu", "automation"),
+        ("shamba", "advanced_analytics"),
+    ],
+)
+def test_active_hub_trial_unlocks_all_hub_premium_features(monkeypatch, hub, feature):
+    now = datetime(2026, 10, 24, tzinfo=timezone.utc)
+    trial = {
+        "user_id": "user-1",
+        "hub": hub,
+        "status": "active",
+        "started_at": now - timedelta(days=1),
+        "ends_at": now + timedelta(days=9),
+        "trial_days": trials.trial_days_for_hub(hub),
+    }
+    monkeypatch.setattr(subscriptions, "now_utc", lambda: now)
+    monkeypatch.setattr(subscriptions, "_active_subscription", lambda *args, **kwargs: None)
+    monkeypatch.setattr(subscriptions, "collection", lambda name: Mock(find_one=lambda query: trial))
+
+    result = subscriptions.resolve_entitlement("user-1", hub, feature)
+
+    assert result["allowed"] is True
+    assert result["tier"] == "trial"

@@ -78,6 +78,7 @@ PLANS = [
         "features": [
             "Advanced farm analytics",
             "Crop planning tools",
+            "Automated farm workflows and alerts",
             "Available market insights",
         ],
     },
@@ -92,6 +93,8 @@ PLANS = [
         "features": [
             "Expanded business reporting",
             "Additional inventory tools",
+            "Business website builder with product and service storefront",
+
         ],
     },
     {
@@ -104,8 +107,10 @@ PLANS = [
         "status": "proposed",
         "features": [
             "Advanced sales analytics",
-            "Forecasting tools",
+            "Recorded-sales demand and revenue forecasts",
+            "Cost-based pricing and gross-margin recommendations",
             "Business insights",
+            "Business website builder with product and service storefront",
         ],
     },
     {

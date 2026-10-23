@@ -1520,6 +1520,19 @@ def save_biashara_website_settings(user_id, payload):
     now = now_utc()
     current = business.get("website") if isinstance(business.get("website"), dict) else {}
     settings = normalize_biashara_website_settings(payload, current)
+
+    # Website publishing is part of the Biashara seller-tools entitlement.
+    # Owners can always disable a previously published site, even after access expires.
+    if settings.get("published") is True:
+        from backend.revenue.subscriptions import resolve_entitlement
+        entitlement = resolve_entitlement(str(user_id), "biashara", "seller_tools")
+        if entitlement.get("allowed") is not True:
+            raise APIError(
+                "Publishing a Biashara website requires an active Biashara trial or a plan that includes website tools.",
+                402,
+                "biashara_website_entitlement_required",
+            )
+
     old_domain = str(current.get("custom_domain", "") or "").strip().lower()
     new_domain = str(settings.get("custom_domain", "") or "").strip().lower()
     if new_domain != old_domain:
@@ -1557,11 +1570,25 @@ def get_public_biashara_website(slug):
     if not business:
         raise APIError("Business website not found or not published.", 404, "website_not_found")
 
+    # A saved published flag is not perpetual entitlement. Once a trial expires,
+    # the public storefront stays hidden until the owner activates a qualifying plan.
+    from backend.revenue.subscriptions import resolve_entitlement
+    entitlement = resolve_entitlement(
+        str(business.get("owner_user_id") or ""),
+        "biashara",
+        "seller_tools",
+    )
+    if entitlement.get("allowed") is not True:
+        raise APIError("This business website needs an active Biashara trial or an eligible plan.", 404, "website_not_found")
+
     website = business.get("website") if isinstance(business.get("website"), dict) else {}
     public_business = {
         "name": business.get("name", ""),
         "slug": business.get("slug", ""),
         "description": business.get("description", ""),
+        "business_type": business.get("business_type", ""),
+        "category": business.get("category", ""),
+        "opening_hours": business.get("opening_hours", {}) if isinstance(business.get("opening_hours", {}), dict) else {},
         "phone": business.get("phone", "") if website.get("contact_enabled", True) is True else "",
         "email": business.get("email", "") if website.get("contact_enabled", True) is True else "",
         "location": business.get("location", ""),
@@ -1574,9 +1601,11 @@ def get_public_biashara_website(slug):
         "tagline": website.get("tagline", ""),
         "about": website.get("about") or business.get("description", ""),
         "logo_url": website.get("logo_url") or business.get("logo_url", ""),
+        "cover_image_url": website.get("cover_image_url", "") or website.get("hero_image_url", ""),
         "hero_image_url": website.get("hero_image_url", ""),
         "hero_video_url": website.get("hero_video_url", ""),
         "hero_slides": website.get("hero_slides", []) if isinstance(website.get("hero_slides", []), list) else [],
+        "service_items": website.get("service_items", []) if isinstance(website.get("service_items", []), list) else [],
         "gallery_items": website.get("gallery_items", []) if isinstance(website.get("gallery_items", []), list) else [],
         "social_links": website.get("social_links", {}) if isinstance(website.get("social_links", {}), dict) else {},
         "announcement": website.get("announcement", ""),
@@ -1589,6 +1618,7 @@ def get_public_biashara_website(slug):
         "seo_description": website.get("seo_description") or business.get("description", ""),
         "whatsapp_number": website.get("whatsapp_number", "") if website.get("contact_enabled", True) is True else "",
         "show_products": website.get("show_products", True) is True,
+        "show_services": website.get("show_services", True) is True,
         "show_gallery": website.get("show_gallery", True) is True,
         "show_social_links": website.get("show_social_links", True) is True,
         "contact_enabled": website.get("contact_enabled", True) is True,

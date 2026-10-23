@@ -13,9 +13,11 @@ DEFAULT_BIASHARA_WEBSITE_SETTINGS = {
     "tagline": "",
     "about": "",
     "logo_url": "",
+    "cover_image_url": "",
     "hero_image_url": "",
     "hero_video_url": "",
     "hero_slides": [],
+    "service_items": [],
     "gallery_items": [],
     "social_links": {},
     "custom_domain": "",
@@ -24,6 +26,7 @@ DEFAULT_BIASHARA_WEBSITE_SETTINGS = {
     "announcement": "",
     "footer_message": "",
     "show_products": True,
+    "show_services": True,
     "show_gallery": True,
     "show_social_links": True,
     "contact_enabled": True,
@@ -159,6 +162,7 @@ def normalize_biashara_website_settings(payload, current=None):
     result = dict(DEFAULT_BIASHARA_WEBSITE_SETTINGS)
     result.update(current)
     result["hero_slides"] = list(current.get("hero_slides", [])) if isinstance(current.get("hero_slides"), list) else []
+    result["service_items"] = list(current.get("service_items", [])) if isinstance(current.get("service_items"), list) else []
     result["gallery_items"] = list(current.get("gallery_items", [])) if isinstance(current.get("gallery_items"), list) else []
     result["social_links"] = dict(current.get("social_links", {})) if isinstance(current.get("social_links"), dict) else {}
 
@@ -166,7 +170,7 @@ def normalize_biashara_website_settings(payload, current=None):
         if field in payload:
             result[field] = _clean_text(field, payload[field], limit)
 
-    for field in ("logo_url", "hero_image_url"):
+    for field in ("logo_url", "cover_image_url", "hero_image_url"):
         if field in payload:
             result[field] = _safe_https_url(field, payload[field], allow_embedded_image=True)
 
@@ -175,6 +179,28 @@ def normalize_biashara_website_settings(payload, current=None):
 
     if "hero_slides" in payload:
         result["hero_slides"] = _normalise_media_items(payload["hero_slides"], "hero_slides", 8)
+    if "service_items" in payload:
+        raw_services = payload["service_items"]
+        if not isinstance(raw_services, list) or len(raw_services) > 12:
+            raise APIError("Service items must be a list of no more than 12 items.", 422, "invalid_website_services")
+        services = []
+        for item in raw_services:
+            if not isinstance(item, dict):
+                raise APIError("Each service item must be an object.", 422, "invalid_website_services")
+            title = _clean_text("service title", item.get("title", ""), 100)
+            description = _clean_text("service description", item.get("description", ""), 600)
+            price_label = _clean_text("service price", item.get("price_label", ""), 80)
+            image_url = _safe_https_url("service image", item.get("image_url", ""), allow_embedded_image=True)
+            if not title:
+                raise APIError("Each service item requires a title.", 422, "invalid_website_services")
+            services.append({
+                "title": title,
+                "description": description,
+                "price_label": price_label,
+                "image_url": image_url,
+            })
+        result["service_items"] = services
+
     if "gallery_items" in payload:
         result["gallery_items"] = _normalise_media_items(payload["gallery_items"], "gallery_items", 12)
 
@@ -215,7 +241,7 @@ def normalize_biashara_website_settings(payload, current=None):
                 raise APIError(field.replace("_", " ").capitalize() + " must be a six-digit hex colour.", 422, "invalid_website_color")
             result[field] = value.strip().lower()
 
-    for field in ("show_products", "show_gallery", "show_social_links", "contact_enabled", "published"):
+    for field in ("show_products", "show_services", "show_gallery", "show_social_links", "contact_enabled", "published"):
         if field in payload:
             if not isinstance(payload[field], bool):
                 raise APIError(field.replace("_", " ").capitalize() + " must be true or false.", 422, "validation_error")
