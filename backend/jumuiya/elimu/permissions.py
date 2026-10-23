@@ -543,6 +543,13 @@ def effective_permissions(
     if not supplied:
         return defaults
 
+    # These operational roles have a deliberately narrow security ceiling.
+    # Older memberships may still carry previously stored explicit grants;
+    # a custom list may narrow these roles, but must never broaden them into
+    # finance, academic records, staff administration, or other workspaces.
+    if normalized_role in {ROLE_BURSAR, ROLE_STOREKEEPER, ROLE_LIBRARIAN}:
+        return supplied & defaults
+
     return supplied
 
 
