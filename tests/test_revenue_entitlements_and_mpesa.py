@@ -94,6 +94,69 @@ def test_premium_entitlement_allows_active_paid_subscription(monkeypatch):
     assert result["subscription"]["plan_code"] == "ai_plus"
 
 
+def test_faith_plus_unlocks_courses_workspace_and_companion_but_not_group_tools(monkeypatch):
+    now = datetime(2026, 10, 23, tzinfo=timezone.utc)
+    subscription = {
+        "_id": "faith-plus-1",
+        "user_id": "user-1",
+        "hub": "faith",
+        "plan_code": "faith_plus",
+        "status": "active",
+        "starts_at": now - timedelta(days=1),
+        "ends_at": now + timedelta(days=29),
+    }
+    monkeypatch.setattr(subscriptions, "now_utc", lambda: now)
+    monkeypatch.setattr(subscriptions, "_active_subscription", lambda *args, **kwargs: subscription)
+    monkeypatch.setattr(subscriptions, "collection", lambda name: Mock(find_one=lambda query: None))
+
+    assert subscriptions.resolve_entitlement("user-1", "faith", "faith_courses")["allowed"] is True
+    assert subscriptions.resolve_entitlement("user-1", "faith", "faith_workspace")["allowed"] is True
+    assert subscriptions.resolve_entitlement("user-1", "faith", "faith_companion")["allowed"] is True
+    group_entitlement = subscriptions.resolve_entitlement("user-1", "faith", "faith_group_tools")
+    assert group_entitlement["allowed"] is False
+    assert group_entitlement["reason"] == "plan_upgrade_required"
+
+
+def test_faith_pro_unlocks_group_tools(monkeypatch):
+    now = datetime(2026, 10, 23, tzinfo=timezone.utc)
+    subscription = {
+        "_id": "faith-pro-1",
+        "user_id": "user-1",
+        "hub": "faith",
+        "plan_code": "faith_pro",
+        "status": "active",
+        "starts_at": now - timedelta(days=1),
+        "ends_at": now + timedelta(days=29),
+    }
+    monkeypatch.setattr(subscriptions, "now_utc", lambda: now)
+    monkeypatch.setattr(subscriptions, "_active_subscription", lambda *args, **kwargs: subscription)
+    monkeypatch.setattr(subscriptions, "collection", lambda name: Mock(find_one=lambda query: None))
+
+    result = subscriptions.resolve_entitlement("user-1", "faith", "faith_group_tools")
+    assert result["allowed"] is True
+    assert result["tier"] == "paid"
+
+
+def test_faith_trial_unlocks_group_tools_for_its_full_duration(monkeypatch):
+    now = datetime(2026, 10, 23, tzinfo=timezone.utc)
+    trial = {
+        "user_id": "user-1",
+        "hub": "faith",
+        "status": "active",
+        "started_at": now - timedelta(days=1),
+        "ends_at": now + timedelta(days=29),
+        "trial_days": 30,
+    }
+    monkeypatch.setattr(subscriptions, "now_utc", lambda: now)
+    monkeypatch.setattr(subscriptions, "_active_subscription", lambda *args, **kwargs: None)
+    monkeypatch.setattr(subscriptions, "collection", lambda name: Mock(find_one=lambda query: trial))
+
+    result = subscriptions.resolve_entitlement("user-1", "faith", "faith_group_tools")
+    assert result["allowed"] is True
+    assert result["tier"] == "trial"
+    assert result["trial_status"] == "active"
+
+
 def test_proposed_plan_cannot_activate_paid_subscription(monkeypatch, revenue_app):
     monkeypatch.setattr(subscriptions, "get_plan", lambda plan_code: {
         "code": "ai_plus", "hub": "smart_ai", "status": "proposed",
