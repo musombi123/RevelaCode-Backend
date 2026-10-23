@@ -615,6 +615,31 @@ def study_health():
 
 
 # =========================================================
+# CURATED FAITH CATALOGUE
+# =========================================================
+
+@study_bp.route(
+    "/seed-faith-catalog",
+    methods=["POST"],
+)
+@require_role("admin")
+def seed_faith_catalog_route():
+    """Publish/update the reviewed starter Faith lessons (admin-only)."""
+    try:
+        from backend.study.faith_curated_catalog import publish_faith_catalog
+
+        result = publish_faith_catalog()
+        status = 200 if result.get("success") else 500
+        return jsonify(_serialize_value(result)), status
+    except Exception as exc:
+        return _error_response(
+            "Failed to publish the curated Faith catalogue.",
+            500,
+            error=exc,
+        )
+
+
+# =========================================================
 # MATERIALS
 # =========================================================
 

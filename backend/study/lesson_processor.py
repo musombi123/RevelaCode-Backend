@@ -535,6 +535,11 @@ class LessonProcessor:
             material.to_dict()
         )
 
+        # Admin uploads and curated imports are publish actions by design.
+        # Legacy records without this flag remain hidden from the public Faith
+        # catalogue until deliberately reviewed and republished.
+        material_data["published"] = True
+
         # -------------------------------------------------
         # Insert
         # -------------------------------------------------
