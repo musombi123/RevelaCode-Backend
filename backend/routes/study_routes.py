@@ -3139,3 +3139,654 @@ def elimu_learning_verify_certificate(certificate_id):
         signature_algorithm="HMAC-SHA256",
         certificate_scope="Recorded Elimu learning completion only; not a government qualification or external accreditation.",
     )
+
+
+# =========================================================
+# FAITH PREMIUM LEARNING, WORKSPACE, ASSESSMENTS & GROUPS
+# =========================================================
+# Reuses the current study collection, Mongo database, auth bridge,
+# RevelaAI router, and shared Revenue Engine entitlement service.
+
+import uuid as _faith_uuid
+from pymongo import ASCENDING as _FAITH_ASCENDING, DESCENDING as _FAITH_DESCENDING
+from pymongo.errors import DuplicateKeyError as _FaithDuplicateKeyError
+from backend.revenue.subscriptions import (
+    resolve_entitlement as _faith_resolve_entitlement,
+    require_revenue_entitlement as _faith_require_entitlement,
+)
+from backend.study.faith_premium_curriculum import (
+    COURSES as _FAITH_COURSES,
+    get_course as _faith_get_course,
+    get_lesson as _faith_get_lesson,
+    public_course as _faith_public_course,
+)
+
+_FAITH_INDEXES_READY = False
+_FAITH_PROGRESS = "jumuiya_faith_learning_progress"
+_FAITH_NOTES = "jumuiya_faith_study_notes"
+_FAITH_ASSESSMENTS = "jumuiya_faith_assessment_attempts"
+_FAITH_GROUPS = "jumuiya_faith_study_groups"
+_FAITH_GROUP_MEMBERS = "jumuiya_faith_study_group_members"
+_FAITH_GROUP_ASSIGNMENTS = "jumuiya_faith_study_assignments"
+_FAITH_ASSIGNMENT_PROGRESS = "jumuiya_faith_study_assignment_progress"
+
+
+def _faith_now():
+    return datetime.now(timezone.utc)
+
+
+def _faith_db():
+    return get_db()
+
+
+def _faith_indexes():
+    global _FAITH_INDEXES_READY
+    if _FAITH_INDEXES_READY:
+        return
+    db = _faith_db()
+    db[_FAITH_PROGRESS].create_index(
+        [("user_id", _FAITH_ASCENDING), ("course_slug", _FAITH_ASCENDING), ("lesson_slug", _FAITH_ASCENDING)],
+        unique=True, name="uq_faith_progress_user_course_lesson",
+    )
+    db[_FAITH_PROGRESS].create_index(
+        [("user_id", _FAITH_ASCENDING), ("updated_at", _FAITH_DESCENDING)],
+        name="ix_faith_progress_user_updated",
+    )
+    db[_FAITH_NOTES].create_index(
+        [("user_id", _FAITH_ASCENDING), ("updated_at", _FAITH_DESCENDING)],
+        name="ix_faith_notes_user_updated",
+    )
+    db[_FAITH_ASSESSMENTS].create_index(
+        [("user_id", _FAITH_ASCENDING), ("created_at", _FAITH_DESCENDING)],
+        name="ix_faith_assessments_user_created",
+    )
+    db[_FAITH_GROUPS].create_index(
+        [("invite_code", _FAITH_ASCENDING)], unique=True, name="uq_faith_group_invite_code",
+    )
+    db[_FAITH_GROUP_MEMBERS].create_index(
+        [("group_id", _FAITH_ASCENDING), ("user_id", _FAITH_ASCENDING)],
+        unique=True, name="uq_faith_group_member",
+    )
+    db[_FAITH_GROUP_MEMBERS].create_index(
+        [("user_id", _FAITH_ASCENDING), ("joined_at", _FAITH_DESCENDING)],
+        name="ix_faith_group_member_user",
+    )
+    db[_FAITH_GROUP_ASSIGNMENTS].create_index(
+        [("group_id", _FAITH_ASCENDING), ("created_at", _FAITH_DESCENDING)],
+        name="ix_faith_group_assignment_group",
+    )
+    db[_FAITH_ASSIGNMENT_PROGRESS].create_index(
+        [("assignment_id", _FAITH_ASCENDING), ("user_id", _FAITH_ASCENDING)],
+        unique=True, name="uq_faith_assignment_progress_user",
+    )
+    _FAITH_INDEXES_READY = True
+
+
+def _faith_clean(value, limit=500):
+    return str(value or "").strip()[:limit]
+
+
+def _faith_access(feature):
+    try:
+        user_id = current_user_id()
+        entitlement = _faith_resolve_entitlement(user_id, "faith", feature)
+        return user_id, entitlement, None
+    except ValueError as exc:
+        return None, None, _faith_error(str(exc), 400, "invalid_entitlement_request")
+    except Exception as exc:
+        logger.exception("Faith entitlement check failed: %s", exc)
+        return None, None, _faith_error(
+            "Faith access could not be verified right now. Please retry.",
+            503, "faith_entitlement_unavailable",
+        )
+
+
+def _faith_error(message, status=400, code="invalid_request", extra=None):
+    payload = {"success": False, "message": message, "code": code}
+    if isinstance(extra, dict):
+        payload.update(extra)
+    return jsonify(payload), status
+
+
+def _faith_locked(entitlement):
+    return jsonify({
+        "success": False,
+        "code": "premium_entitlement_required",
+        "message": "Start your one-time 30-day Faith trial or activate an eligible Faith plan to unlock this service.",
+        "entitlement": entitlement,
+    }), 402
+
+
+def _faith_public_group(group, can_manage=False, member_count=0):
+    output = {
+        "id": str(group.get("group_id") or ""),
+        "name": group.get("name") or "Faith Study Group",
+        "organization": group.get("organization") or "",
+        "description": group.get("description") or "",
+        "owner_id": str(group.get("owner_id") or ""),
+        "member_count": int(member_count),
+        "created_at": _serialize_value(group.get("created_at")),
+        "can_manage": bool(can_manage),
+    }
+    if can_manage:
+        output["invite_code"] = group.get("invite_code") or ""
+    return output
+
+
+def _faith_member(group_id, user_id):
+    _faith_indexes()
+    return _faith_db()[_FAITH_GROUP_MEMBERS].find_one({
+        "group_id": str(group_id), "user_id": str(user_id),
+    })
+
+
+def _faith_progress(user_id, course_slug, lesson_slug):
+    _faith_indexes()
+    return _faith_db()[_FAITH_PROGRESS].find_one({
+        "user_id": str(user_id),
+        "course_slug": course_slug,
+        "lesson_slug": lesson_slug,
+    })
+
+
+@study_bp.get("/faith/courses")
+@require_authenticated
+def faith_list_learning_courses():
+    user_id, entitlement, failure = _faith_access("faith_courses")
+    if failure:
+        return failure
+    _faith_indexes()
+    courses = []
+    for course in _FAITH_COURSES:
+        item = _faith_public_course(course, has_premium_access=bool(entitlement.get("allowed")), detail=False)
+        item["completed_lessons"] = (
+            _faith_db()[_FAITH_PROGRESS].count_documents({
+                "user_id": user_id, "course_slug": course["slug"], "completed": True,
+            }) if entitlement.get("allowed") else 0
+        )
+        courses.append(item)
+    return jsonify({
+        "success": True,
+        "courses": courses,
+        "entitlement": entitlement,
+        "preview_note": "One lesson in Study Scripture with Context is free to preview. Full courses unlock during the Faith trial or through an eligible paid plan.",
+    }), 200
+
+
+@study_bp.get("/faith/courses/<course_slug>")
+@require_authenticated
+def faith_get_learning_course(course_slug):
+    user_id, entitlement, failure = _faith_access("faith_courses")
+    if failure:
+        return failure
+    course = _faith_get_course(course_slug)
+    if not course:
+        return _faith_error("Course not found.", 404, "course_not_found")
+    payload = _faith_public_course(course, has_premium_access=bool(entitlement.get("allowed")), detail=True)
+    for lesson in payload.get("lessons", []):
+        row = _faith_progress(user_id, course["slug"], lesson["slug"])
+        lesson["completed"] = bool(row and row.get("completed"))
+        lesson["last_accessed_at"] = _serialize_value(row.get("updated_at")) if row else None
+    payload["entitlement"] = entitlement
+    return jsonify({"success": True, "course": payload}), 200
+
+
+@study_bp.post("/faith/progress")
+@require_authenticated
+def faith_save_learning_progress():
+    data = _json_body()
+    course_slug = _faith_clean(data.get("course_slug"), 100).lower()
+    lesson_slug = _faith_clean(data.get("lesson_slug"), 100).lower()
+    completed = data.get("completed", True)
+    if not isinstance(completed, bool):
+        return _faith_error("'completed' must be a boolean.", 400, "invalid_progress")
+    course, lesson = _faith_get_lesson(course_slug, lesson_slug)
+    if not course or not lesson:
+        return _faith_error("Course or lesson not found.", 404, "lesson_not_found")
+    user_id, entitlement, failure = _faith_access("faith_courses")
+    if failure:
+        return failure
+    if not entitlement.get("allowed") and not lesson.get("preview"):
+        return _faith_locked(entitlement)
+
+    _faith_indexes()
+    now = _faith_now()
+    try:
+        last_position = max(0, min(int(data.get("last_position") or 0), 5_000_000))
+    except (TypeError, ValueError):
+        last_position = 0
+    _faith_db()[_FAITH_PROGRESS].update_one(
+        {"user_id": user_id, "course_slug": course_slug, "lesson_slug": lesson_slug},
+        {"$set": {
+            "completed": completed, "last_position": last_position,
+            "updated_at": now, "completed_at": now if completed else None,
+        }, "$setOnInsert": {
+            "user_id": user_id, "course_slug": course_slug,
+            "lesson_slug": lesson_slug, "created_at": now,
+        }},
+        upsert=True,
+    )
+    row = _faith_progress(user_id, course_slug, lesson_slug)
+    return jsonify({"success": True, "progress": {
+        "course_slug": course_slug, "lesson_slug": lesson_slug,
+        "completed": bool(row.get("completed")),
+        "last_position": int(row.get("last_position") or 0),
+        "updated_at": _serialize_value(row.get("updated_at")),
+    }}), 200
+
+
+@study_bp.get("/faith/workspace")
+@require_authenticated
+@_faith_require_entitlement("faith", "faith_workspace")
+def faith_get_personal_workspace():
+    user_id = current_user_id()
+    _faith_indexes()
+    db = _faith_db()
+    progress = list(db[_FAITH_PROGRESS].find({"user_id": user_id}).sort("updated_at", _FAITH_DESCENDING).limit(100))
+    notes = list(db[_FAITH_NOTES].find({"user_id": user_id}).sort("updated_at", _FAITH_DESCENDING).limit(100))
+    attempts = list(db[_FAITH_ASSESSMENTS].find({"user_id": user_id}).sort("created_at", _FAITH_DESCENDING).limit(20))
+    public_notes = [{
+        "id": str(row.get("note_id") or ""),
+        "title": row.get("title") or "Study note",
+        "content": row.get("content") or "",
+        "course_slug": row.get("course_slug") or "",
+        "lesson_slug": row.get("lesson_slug") or "",
+        "material_id": row.get("material_id") or "",
+        "created_at": _serialize_value(row.get("created_at")),
+        "updated_at": _serialize_value(row.get("updated_at")),
+    } for row in notes]
+    public_progress = [{
+        "course_slug": row.get("course_slug"),
+        "lesson_slug": row.get("lesson_slug"),
+        "completed": bool(row.get("completed")),
+        "last_position": int(row.get("last_position") or 0),
+        "updated_at": _serialize_value(row.get("updated_at")),
+    } for row in progress]
+    public_attempts = [{
+        "id": str(row.get("attempt_id") or ""),
+        "course_slug": row.get("course_slug"),
+        "lesson_slug": row.get("lesson_slug"),
+        "score_percent": int(row.get("score_percent") or 0),
+        "passed": bool(row.get("passed")),
+        "created_at": _serialize_value(row.get("created_at")),
+    } for row in attempts]
+    return jsonify({
+        "success": True,
+        "notes": public_notes,
+        "progress": public_progress,
+        "assessments": public_attempts,
+        "summary": {
+            "completed_lessons": sum(1 for row in public_progress if row["completed"]),
+            "notes_count": len(public_notes),
+            "assessment_attempts": len(public_attempts),
+        },
+    }), 200
+
+
+@study_bp.post("/faith/notes")
+@require_authenticated
+@_faith_require_entitlement("faith", "faith_workspace")
+def faith_save_note():
+    data = _json_body()
+    title = _faith_clean(data.get("title") or "Study note", 160)
+    content = _faith_clean(data.get("content"), 8000)
+    course_slug = _faith_clean(data.get("course_slug"), 100).lower()
+    lesson_slug = _faith_clean(data.get("lesson_slug"), 100).lower()
+    material_id = _faith_clean(data.get("material_id"), 128)
+    if not content:
+        return _faith_error("Write some note content before saving.", 400, "empty_note")
+    if course_slug or lesson_slug:
+        course, lesson = _faith_get_lesson(course_slug, lesson_slug)
+        if not course or not lesson:
+            return _faith_error("The linked course lesson does not exist.", 404, "lesson_not_found")
+    if material_id:
+        material = StudyService.get_material_by_id(material_id)
+        if not material or str(material.get("category") or "").lower() != "faith":
+            return _faith_error("The linked Faith study material was not found.", 404, "faith_material_not_found")
+    user_id = current_user_id()
+    _faith_indexes()
+    now = _faith_now()
+    note_id = _faith_clean(data.get("note_id"), 64) or _faith_uuid.uuid4().hex
+    query = {"user_id": user_id, "note_id": note_id}
+    rows = _faith_db()[_FAITH_NOTES]
+    existing = rows.find_one(query)
+    if existing:
+        rows.update_one(query, {"$set": {
+            "title": title, "content": content, "course_slug": course_slug,
+            "lesson_slug": lesson_slug, "material_id": material_id, "updated_at": now,
+        }})
+    else:
+        rows.insert_one({
+            "note_id": note_id, "user_id": user_id, "title": title, "content": content,
+            "course_slug": course_slug, "lesson_slug": lesson_slug, "material_id": material_id,
+            "created_at": now, "updated_at": now,
+        })
+    return jsonify({"success": True, "note": {
+        "id": note_id, "title": title, "content": content,
+        "course_slug": course_slug, "lesson_slug": lesson_slug,
+        "material_id": material_id, "updated_at": _serialize_value(now),
+    }}), 200
+
+
+@study_bp.delete("/faith/notes/<note_id>")
+@require_authenticated
+@_faith_require_entitlement("faith", "faith_workspace")
+def faith_delete_note(note_id):
+    user_id = current_user_id()
+    _faith_indexes()
+    result = _faith_db()[_FAITH_NOTES].delete_one({
+        "user_id": user_id, "note_id": _faith_clean(note_id, 64),
+    })
+    if result.deleted_count < 1:
+        return _faith_error("Study note not found.", 404, "note_not_found")
+    return jsonify({"success": True, "deleted": True}), 200
+
+
+@study_bp.post("/faith/assessments/submit")
+@require_authenticated
+def faith_submit_assessment():
+    data = _json_body()
+    course_slug = _faith_clean(data.get("course_slug"), 100).lower()
+    lesson_slug = _faith_clean(data.get("lesson_slug"), 100).lower()
+    answers = data.get("answers")
+    if not isinstance(answers, dict):
+        return _faith_error("Assessment answers must be an object.", 400, "invalid_answers")
+    course, lesson = _faith_get_lesson(course_slug, lesson_slug)
+    if not course or not lesson:
+        return _faith_error("Course or lesson not found.", 404, "lesson_not_found")
+    user_id, entitlement, failure = _faith_access("faith_courses")
+    if failure:
+        return failure
+    if not entitlement.get("allowed") and not lesson.get("preview"):
+        return _faith_locked(entitlement)
+    quiz = lesson.get("quiz") or []
+    if not quiz:
+        return _faith_error("This lesson has no assessment configured.", 409, "assessment_unavailable")
+    graded = []
+    correct_count = 0
+    for index, item in enumerate(quiz):
+        raw_answer = answers.get(str(index), answers.get(index))
+        try:
+            selected = int(raw_answer)
+        except (TypeError, ValueError):
+            selected = -1
+        is_correct = selected == int(item["answer_index"])
+        if is_correct:
+            correct_count += 1
+        graded.append({
+            "question": item["question"],
+            "selected_index": selected if 0 <= selected < len(item["options"]) else None,
+            "correct_index": int(item["answer_index"]),
+            "correct": is_correct,
+            "explanation": item.get("explanation") or "",
+        })
+    score = round(correct_count * 100 / len(quiz))
+    passed = score >= 70
+    attempt_id = _faith_uuid.uuid4().hex
+    now = _faith_now()
+    _faith_indexes()
+    _faith_db()[_FAITH_ASSESSMENTS].insert_one({
+        "attempt_id": attempt_id, "user_id": user_id,
+        "course_slug": course_slug, "lesson_slug": lesson_slug,
+        "answers": answers, "score_percent": score,
+        "correct_count": correct_count, "question_count": len(quiz),
+        "passed": passed, "created_at": now,
+    })
+    return jsonify({
+        "success": True, "attempt_id": attempt_id, "score_percent": score,
+        "correct_count": correct_count, "question_count": len(quiz), "passed": passed,
+        "feedback": graded,
+        "message": "Assessment passed." if passed else "Review the explanations and try again. A score of 70% is required to pass.",
+    }), 200
+
+
+@study_bp.post("/faith/companion")
+@require_authenticated
+@_faith_require_entitlement("faith", "faith_companion")
+def faith_study_companion():
+    data = _json_body()
+    course_slug = _faith_clean(data.get("course_slug"), 100).lower()
+    lesson_slug = _faith_clean(data.get("lesson_slug"), 100).lower()
+    question = _faith_clean(data.get("question"), 4000)
+    if not question:
+        return _faith_error("Enter a question for the Faith Study Companion.", 400, "empty_question")
+    course, lesson = _faith_get_lesson(course_slug, lesson_slug)
+    if not course or not lesson:
+        return _faith_error("Course or lesson not found.", 404, "lesson_not_found")
+    prompt = (
+        "You are RevelaCode's Faith Study Companion. Use the supplied lesson as the primary source. "
+        "Distinguish textual claims from interpretation and application. Do not invent citations or attribute beliefs to a denomination without evidence. "
+        "When traditions differ, represent each fairly and acknowledge uncertainty. Do not make sensational prophecy predictions or use fear to pressure religious decisions. "
+        "State when the lesson does not contain enough information. Use clear headings and evidence-conscious reasoning.\n\n"
+        "User question:\n" + question
+    )
+    context = {
+        "title": course["title"] + " — " + lesson["title"],
+        "category": "faith",
+        "subcategory": course["slug"],
+        "material_type": "structured_faith_lesson",
+        "reference": lesson.get("reference") or "",
+        "content": lesson.get("content") or "",
+        "sources": lesson.get("sources") or [],
+        "curriculum_sources": course.get("sources") or [],
+    }
+    try:
+        from backend.services.ai_router import ask_ai
+        response = ask_ai(prompt=prompt, domain="study", context=context)
+        answer = _extract_ai_answer(response)
+        if not answer:
+            return _faith_error("RevelaAI did not return a usable answer. Please retry.", 503, "study_ai_unavailable")
+        return jsonify({
+            "success": True, "course_slug": course_slug, "lesson_slug": lesson_slug,
+            "answer": answer, "sources": lesson.get("sources") or [],
+            "ai_available": not bool(response.get("fallback")) if isinstance(response, dict) else True,
+        }), 200
+    except Exception as exc:
+        logger.exception("Faith Study Companion request failed: %s", exc)
+        return _faith_error("The Study Companion is temporarily unavailable. Your lesson and notes remain available.", 503, "study_ai_unavailable")
+
+
+@study_bp.get("/faith/groups")
+@require_authenticated
+@_faith_require_entitlement("faith", "faith_group_tools")
+def faith_list_groups():
+    user_id = current_user_id()
+    _faith_indexes()
+    db = _faith_db()
+    memberships = list(db[_FAITH_GROUP_MEMBERS].find({"user_id": user_id}).sort("joined_at", _FAITH_DESCENDING).limit(100))
+    groups = []
+    for membership in memberships:
+        group = db[_FAITH_GROUPS].find_one({"group_id": membership.get("group_id")})
+        if not group:
+            continue
+        count = db[_FAITH_GROUP_MEMBERS].count_documents({"group_id": group["group_id"]})
+        owner = str(group.get("owner_id")) == user_id
+        item = _faith_public_group(group, can_manage=owner, member_count=count)
+        item["my_role"] = membership.get("role") or "member"
+        groups.append(item)
+    return jsonify({"success": True, "groups": groups}), 200
+
+
+@study_bp.post("/faith/groups")
+@require_authenticated
+@_faith_require_entitlement("faith", "faith_group_tools")
+def faith_create_group():
+    data = _json_body()
+    name = _faith_clean(data.get("name"), 120)
+    organization = _faith_clean(data.get("organization"), 120)
+    description = _faith_clean(data.get("description"), 500)
+    if len(name) < 3:
+        return _faith_error("Group name must contain at least 3 characters.", 400, "invalid_group_name")
+    user_id = current_user_id()
+    _faith_indexes()
+    db = _faith_db()
+    if db[_FAITH_GROUPS].count_documents({"owner_id": user_id}) >= 20:
+        return _faith_error("This account has reached the group creation limit.", 409, "group_limit_reached")
+    now = _faith_now()
+    group_id = _faith_uuid.uuid4().hex
+    group = None
+    for _ in range(5):
+        code = secrets.token_urlsafe(7).replace("-", "").replace("_", "").upper()[:10]
+        candidate = {
+            "group_id": group_id, "name": name, "organization": organization,
+            "description": description, "owner_id": user_id, "invite_code": code,
+            "created_at": now, "updated_at": now,
+        }
+        try:
+            db[_FAITH_GROUPS].insert_one(candidate)
+            group = candidate
+            break
+        except _FaithDuplicateKeyError:
+            continue
+    if not group:
+        return _faith_error("A secure invite code could not be generated. Please retry.", 503, "invite_code_generation_failed")
+    try:
+        db[_FAITH_GROUP_MEMBERS].insert_one({
+            "group_id": group_id, "user_id": user_id, "role": "owner", "joined_at": now,
+        })
+    except Exception:
+        logger.exception("Faith group created but owner membership insert failed; attempting repair.")
+        db[_FAITH_GROUP_MEMBERS].update_one(
+            {"group_id": group_id, "user_id": user_id},
+            {"$setOnInsert": {"role": "owner", "joined_at": now}}, upsert=True,
+        )
+    return jsonify({
+        "success": True,
+        "group": _faith_public_group(group, can_manage=True, member_count=1),
+        "message": "Group created. Share its invite code with your church or study group.",
+    }), 201
+
+
+@study_bp.post("/faith/groups/join")
+@require_authenticated
+@_faith_require_entitlement("faith", "faith_group_tools")
+def faith_join_group():
+    invite_code = _faith_clean(_json_body().get("invite_code"), 32).upper()
+    if not invite_code:
+        return _faith_error("Enter a group invite code.", 400, "invite_code_required")
+    user_id = current_user_id()
+    _faith_indexes()
+    db = _faith_db()
+    group = db[_FAITH_GROUPS].find_one({"invite_code": invite_code})
+    if not group:
+        return _faith_error("That invite code was not found. Check it with the group leader.", 404, "invalid_invite_code")
+    existing = db[_FAITH_GROUP_MEMBERS].find_one({"group_id": group["group_id"], "user_id": user_id})
+    if not existing:
+        try:
+            db[_FAITH_GROUP_MEMBERS].insert_one({
+                "group_id": group["group_id"], "user_id": user_id,
+                "role": "member", "joined_at": _faith_now(),
+            })
+        except _FaithDuplicateKeyError:
+            pass
+    count = db[_FAITH_GROUP_MEMBERS].count_documents({"group_id": group["group_id"]})
+    owner = str(group.get("owner_id")) == user_id
+    return jsonify({
+        "success": True,
+        "group": _faith_public_group(group, can_manage=owner, member_count=count),
+        "message": "You are a member of this study group.",
+    }), 200
+
+
+@study_bp.get("/faith/groups/<group_id>")
+@require_authenticated
+@_faith_require_entitlement("faith", "faith_group_tools")
+def faith_get_group(group_id):
+    user_id = current_user_id()
+    group_id = _faith_clean(group_id, 64)
+    _faith_indexes()
+    db = _faith_db()
+    group = db[_FAITH_GROUPS].find_one({"group_id": group_id})
+    if not group:
+        return _faith_error("Study group not found.", 404, "group_not_found")
+    membership = _faith_member(group_id, user_id)
+    if not membership:
+        return _faith_error("Join this study group before viewing assignments.", 403, "group_membership_required")
+    members = list(db[_FAITH_GROUP_MEMBERS].find({"group_id": group_id}).sort("joined_at", _FAITH_ASCENDING).limit(250))
+    assignments = list(db[_FAITH_GROUP_ASSIGNMENTS].find({"group_id": group_id}).sort("created_at", _FAITH_DESCENDING).limit(100))
+    public_assignments = []
+    for assignment in assignments:
+        mine = db[_FAITH_ASSIGNMENT_PROGRESS].find_one({
+            "assignment_id": assignment["assignment_id"], "user_id": user_id, "completed": True,
+        })
+        public_assignments.append({
+            "id": assignment.get("assignment_id"), "title": assignment.get("title") or "Study assignment",
+            "course_slug": assignment.get("course_slug"), "lesson_slug": assignment.get("lesson_slug"),
+            "due_date": assignment.get("due_date") or "", "created_at": _serialize_value(assignment.get("created_at")),
+            "created_by": assignment.get("created_by"), "my_completed": bool(mine),
+            "completed_count": db[_FAITH_ASSIGNMENT_PROGRESS].count_documents({
+                "assignment_id": assignment["assignment_id"], "completed": True,
+            }),
+        })
+    count = db[_FAITH_GROUP_MEMBERS].count_documents({"group_id": group_id})
+    owner = str(group.get("owner_id")) == user_id
+    output = _faith_public_group(group, can_manage=owner, member_count=count)
+    output["my_role"] = membership.get("role") or "member"
+    output["members"] = [{
+        "user_id": row.get("user_id"), "role": row.get("role") or "member",
+        "joined_at": _serialize_value(row.get("joined_at")),
+    } for row in members]
+    output["assignments"] = public_assignments
+    return jsonify({"success": True, "group": output}), 200
+
+
+@study_bp.post("/faith/groups/<group_id>/assignments")
+@require_authenticated
+@_faith_require_entitlement("faith", "faith_group_tools")
+def faith_create_group_assignment(group_id):
+    data = _json_body()
+    title = _faith_clean(data.get("title") or "Group study assignment", 140)
+    course_slug = _faith_clean(data.get("course_slug"), 100).lower()
+    lesson_slug = _faith_clean(data.get("lesson_slug"), 100).lower()
+    due_date = _faith_clean(data.get("due_date"), 10)
+    course, lesson = _faith_get_lesson(course_slug, lesson_slug)
+    if not course or not lesson:
+        return _faith_error("Select a valid curriculum course and lesson.", 404, "lesson_not_found")
+    if due_date and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", due_date):
+        return _faith_error("Due date must use YYYY-MM-DD.", 400, "invalid_due_date")
+    user_id = current_user_id()
+    _faith_indexes()
+    db = _faith_db()
+    group = db[_FAITH_GROUPS].find_one({"group_id": _faith_clean(group_id, 64)})
+    if not group:
+        return _faith_error("Study group not found.", 404, "group_not_found")
+    if not _faith_member(group["group_id"], user_id):
+        return _faith_error("You are not a member of this study group.", 403, "group_membership_required")
+    if str(group.get("owner_id")) != user_id:
+        return _faith_error("Only the group leader can create assignments.", 403, "group_leader_required")
+    now = _faith_now()
+    assignment_id = _faith_uuid.uuid4().hex
+    db[_FAITH_GROUP_ASSIGNMENTS].insert_one({
+        "assignment_id": assignment_id, "group_id": group["group_id"], "title": title,
+        "course_slug": course_slug, "lesson_slug": lesson_slug, "due_date": due_date,
+        "created_by": user_id, "created_at": now, "updated_at": now,
+    })
+    return jsonify({"success": True, "assignment": {
+        "id": assignment_id, "title": title, "course_slug": course_slug,
+        "lesson_slug": lesson_slug, "due_date": due_date, "created_at": _serialize_value(now),
+    }}), 201
+
+
+@study_bp.post("/faith/groups/<group_id>/assignments/<assignment_id>/complete")
+@require_authenticated
+@_faith_require_entitlement("faith", "faith_group_tools")
+def faith_complete_group_assignment(group_id, assignment_id):
+    user_id = current_user_id()
+    group_id = _faith_clean(group_id, 64)
+    assignment_id = _faith_clean(assignment_id, 64)
+    _faith_indexes()
+    db = _faith_db()
+    if not _faith_member(group_id, user_id):
+        return _faith_error("You are not a member of this study group.", 403, "group_membership_required")
+    assignment = db[_FAITH_GROUP_ASSIGNMENTS].find_one({"group_id": group_id, "assignment_id": assignment_id})
+    if not assignment:
+        return _faith_error("Assignment not found.", 404, "assignment_not_found")
+    now = _faith_now()
+    db[_FAITH_ASSIGNMENT_PROGRESS].update_one(
+        {"assignment_id": assignment_id, "user_id": user_id},
+        {"$set": {"completed": True, "completed_at": now, "updated_at": now},
+         "$setOnInsert": {"group_id": group_id, "created_at": now}},
+        upsert=True,
+    )
+    return jsonify({"success": True, "completed": True, "completed_at": _serialize_value(now)}), 200
+
