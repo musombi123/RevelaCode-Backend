@@ -349,7 +349,7 @@ def decide_need(user_id: Any, need_id: Any, data: dict) -> dict:
         if purpose:
             lines.append(f"Purpose: {purpose}")
         requester_id = _uid(current.get("requested_by_user_id")) or _uid(user_id)
-        request_tags = ["school-needs", item_name.lower(), "elimu", request_id_tag]
+        request_tags = ["school-needs", item_name.lower()[:40], "elimu", request_id_tag, "school-id-" + school_id]
         # Recover if Community inserted the post but its response was lost
         # before the Elimu request could save community_post_id.
         existing_post = collection(community_services.POSTS).find_one({
