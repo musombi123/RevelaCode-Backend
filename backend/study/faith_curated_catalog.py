@@ -476,7 +476,7 @@ def publish_faith_catalog() -> dict[str, Any]:
                 "tradition": entry["tradition"],
                 "estimated_minutes": entry["minutes"],
                 "sources": entry["sources"],
-                "editorial_review": "starter_editorial_review",
+                "editorial_review": "requires_theological_review",
                 "original_content": True,
                 "last_curated_at": now,
             }
