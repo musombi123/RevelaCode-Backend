@@ -196,8 +196,10 @@ PLANS = [
         "interval": "month",
         "status": "proposed",
         "features": [
-            "Expanded Faith & Scripture study experience",
-            "Additional personalization and study history",
+            "Full structured Faith courses and server-graded assessments",
+            "Saved personal notes, learning progress and study history",
+            "Source-linked RevelaAI Faith Study Companion",
+            "One account, synced across web and Android",
         ],
     },
     {
@@ -209,8 +211,10 @@ PLANS = [
         "interval": "month",
         "status": "proposed",
         "features": [
-            "Advanced faith-study capabilities where available",
-            "Expanded study history and personalization",
+            "Everything in Faith & Scripture Plus",
+            "Church and study-group workspaces",
+            "Shareable invite codes, group assignments and completion tracking",
+            "Facilitator tools for structured study programmes",
         ],
     },
     {
