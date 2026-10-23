@@ -3548,17 +3548,55 @@ def faith_study_companion():
     course_slug = _faith_clean(data.get("course_slug"), 100).lower()
     lesson_slug = _faith_clean(data.get("lesson_slug"), 100).lower()
     question = _faith_clean(data.get("question"), 4000)
+    discussion_mode = _faith_clean(data.get("discussion_mode"), 30).lower() or "interpret"
+    if discussion_mode not in {"interpret", "debate"}:
+        return _faith_error(
+            "discussion_mode must be 'interpret' or 'debate'.",
+            400,
+            "invalid_discussion_mode",
+        )
     if not question:
         return _faith_error("Enter a question for the Faith Study Companion.", 400, "empty_question")
     course, lesson = _faith_get_lesson(course_slug, lesson_slug)
     if not course or not lesson:
         return _faith_error("Course or lesson not found.", 404, "lesson_not_found")
+
+    shared_instructions = (
+        "You are RevelaCode's Faith Study Companion. Use the supplied lesson and source lists as context, "
+        "but do not assume the lesson settles every question. Distinguish primary-text wording, official denominational teaching, "
+        "scholarly interpretation, personal application, historical fact, and inference. Never invent quotations, sources, or official positions. "
+        "When you state a religious tradition's position, identify the tradition and ground the description in the provided sources; "
+        "if the sources do not support a claim, say so and ask for or recommend a relevant primary source. "
+        "Represent traditions as their informed adherents would recognize them, while noting internal diversity where it materially matters. "
+        "Do not use slurs, dehumanize believers, label an entire religion or its members evil, or claim that any religion's adherents are more powerful, valuable, intelligent, or worthy than another's. "
+        "Do not use fear to pressure religious decisions, assign apocalyptic labels to living people without evidence, or make sensational prophecy predictions or date-set Christ's return. "
+        "Avoid forced equivalence: clearly name real doctrinal disagreements instead of pretending all traditions say the same thing. "
+    )
+    if discussion_mode == "debate":
+        mode_instructions = (
+            "DISCUSSION MODE: BALANCED DEBATE. Structure the answer with these headings: "
+            "1) Question and scope; 2) Primary evidence and context; 3) Perspective A stated in its strongest fair form; "
+            "4) Perspective B stated in its strongest fair form; 5) Best objections and replies from both sides; "
+            "6) What is agreed, what genuinely conflicts, and what remains unresolved; 7) Sources and follow-up questions. "
+            "Give each relevant perspective comparable analytical depth and apply the same evidential standards. "
+            "For Adventist doctrine, explain the official Adventist reading and compare a credible alternative where relevant. "
+            "For Catholic-Muslim questions, give Catholic and Muslim perspectives equal space, use sources from each tradition, "
+            "and do not frame one as the default judge of the other. Do not announce a winner or rank the traditions' truth, power, or human worth. "
+            "You may assess whether a specific argument follows from its stated premises and cited evidence; explain that assessment without treating it as a verdict on an entire religion. "
+        )
+    else:
+        mode_instructions = (
+            "DISCUSSION MODE: INTERPRETATION. Explain the question in context, state the lesson's main reading, "
+            "identify relevant alternatives and the evidence each uses, and separate what the source explicitly says from inference. "
+            "When the question crosses traditions, give each relevant perspective a fair, clearly labelled account and identify unresolved questions. "
+        )
     prompt = (
-        "You are RevelaCode's Faith Study Companion. Use the supplied lesson as the primary source. "
-        "Distinguish textual claims from interpretation and application. Do not invent citations or attribute beliefs to a denomination without evidence. "
-        "When traditions differ, represent each fairly and acknowledge uncertainty. Do not make sensational prophecy predictions or use fear to pressure religious decisions. "
-        "State when the lesson does not contain enough information. Use clear headings and evidence-conscious reasoning.\n\n"
-        "User question:\n" + question
+        shared_instructions
+        + mode_instructions
+        + "\nCourse: " + course["title"]
+        + "\nLesson: " + lesson["title"]
+        + "\nLesson reference: " + str(lesson.get("reference") or "")
+        + "\nUser question:\n" + question
     )
     context = {
         "title": course["title"] + " — " + lesson["title"],
@@ -3569,6 +3607,14 @@ def faith_study_companion():
         "content": lesson.get("content") or "",
         "sources": lesson.get("sources") or [],
         "curriculum_sources": course.get("sources") or [],
+        "discussion_mode": discussion_mode,
+        "principles": {
+            "fair_representation": True,
+            "balanced_analytical_depth": True,
+            "no_religious_superiority_or_human_worth_ranking": True,
+            "sources_required_for_attributions": True,
+            "acknowledge_real_disagreements": True,
+        },
     }
     try:
         from backend.services.ai_router import ask_ai
@@ -3578,6 +3624,7 @@ def faith_study_companion():
             return _faith_error("RevelaAI did not return a usable answer. Please retry.", 503, "study_ai_unavailable")
         return jsonify({
             "success": True, "course_slug": course_slug, "lesson_slug": lesson_slug,
+            "discussion_mode": discussion_mode,
             "answer": answer, "sources": lesson.get("sources") or [],
             "ai_available": not bool(response.get("fallback")) if isinstance(response, dict) else True,
         }), 200
