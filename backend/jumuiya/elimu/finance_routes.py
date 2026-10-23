@@ -798,6 +798,7 @@ def list_student_fee_reminders():
             "whatsapp_delivery_status": whatsapp_status,
             "whatsapp_status_updated_at": _serialize(record.get("whatsapp_status_updated_at")),
             "whatsapp_status_history": _serialize(record.get("whatsapp_status_history") or []),
+            "whatsapp_last_error_title": _text(record.get("whatsapp_last_error_title"), 240),
             "manual_whatsapp_available": bool(record.get("manual_whatsapp_available")),
             "amount_required": _safe_money(record.get("amount_required")),
             "amount_paid": _safe_money(record.get("amount_paid")),
