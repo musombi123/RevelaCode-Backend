@@ -30,6 +30,7 @@ def account_client(monkeypatch):
     monkeypatch.setattr(documents, "db", db)
     monkeypatch.setattr(documents, "users_col", db["users"])
     monkeypatch.setattr(documents, "certificates_col", db["revelacode_account_certificates"])
+    monkeypatch.setattr(elimu_routes, "get_db", lambda: db)
     monkeypatch.setattr(documents, "JWT_SECRET", TEST_JWT_SECRET)
     monkeypatch.setenv("REVELACODE_CERTIFICATE_SIGNING_KEY", "test-only-certificate-key")
 
@@ -158,3 +159,39 @@ def test_only_current_database_admin_can_revoke_certificate(account_client):
     checked = client.get(f"/api/verify/certificate/{certificate_id}")
     assert checked.get_json()["valid"] is False
     assert checked.get_json()["reason"] == "certificate_revoked"
+
+
+
+def test_public_verification_route_accepts_elimu_certificate_qr_ids(account_client):
+    client, db = account_client
+    certificate_id = "RC-EL-0123456789ABCDEF"
+    claims = {
+        "certificate_id": certificate_id,
+        "user_id": "user-1",
+        "full_name": "Verified Test Learner",
+        "roles": ["student"],
+        "hub_id": "elimu-learning",
+        "hub_name": "Elimu Learning",
+        "completed_lessons": 2,
+        "total_lessons": 2,
+        "issued_at": "2026-10-23T10:00:00+00:00",
+        "issuer": "RevelaCode",
+        "scope": "recorded_elimu_learning_completion",
+        "verification_url": f"https://revelacode.co.ke/verify/certificate/{certificate_id}",
+    }
+    db[elimu_routes._ELIMU_LEARNING_CERTIFICATES].insert_one({
+        "certificate_id": certificate_id,
+        "user_id": "user-1",
+        "hub_id": "elimu-learning",
+        "status": "active",
+        "claims": claims,
+        "signature": elimu_routes._elimu_learning_signature(claims),
+        "signature_algorithm": "HMAC-SHA256",
+    })
+
+    response = client.get(f"/api/verify/certificate/{certificate_id}")
+    assert response.status_code == 200
+    body = response.get_json()
+    assert body["valid"] is True
+    assert body["certificate_id"] == certificate_id
+    assert body["certificate_scope"].startswith("Recorded Elimu learning completion")
