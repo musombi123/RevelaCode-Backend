@@ -750,7 +750,8 @@ def create_admin_invitation():
         return jsonify(success=False, message="Choose Support Agent or Support Administrator."), 400
 
     db = get_db()
-    existing_user = db["users"].find_one({"$or": [{"contact": contact}, {"email": contact}]})
+    email_match = {"$regex": f"^{re.escape(contact)}$", "$options": "i"}
+    existing_user = db["users"].find_one({"$or": [{"contact": email_match}, {"email": email_match}]})
     if existing_user:
         return jsonify(success=False, code="account_already_exists", message="An account already exists for this email. The invitation flow will not silently change an existing account's role."), 409
 
@@ -896,7 +897,8 @@ def accept_admin_invitation():
         return jsonify(success=False, code="invalid_invitation_role", message="This invitation does not contain an approved support role."), 409
 
     users = db["users"]
-    existing = users.find_one({"$or": [{"contact": contact}, {"email": contact}]})
+    email_match = {"$regex": f"^{re.escape(contact)}$", "$options": "i"}
+    existing = users.find_one({"$or": [{"contact": email_match}, {"email": email_match}]})
     if existing:
         return jsonify(success=False, code="account_already_exists", message="An account already exists for this email. Contact the administrator to handle existing-account access."), 409
 
