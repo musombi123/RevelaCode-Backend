@@ -18,13 +18,14 @@ from backend.jumuiya.core.permissions import current_user_id, require_authentica
 from backend.revenue import revenue_bp
 
 TRIALS_COLLECTION = "jumuiya_revenue_trials"
-# Keep existing hub durations compatible while letting larger workflows have
-# proportionately longer onboarding periods. Existing rows retain their stored duration.
+# Each hub receives one full month of free trial access. Existing trial
+# records retain the duration stored when they were created; new trials use
+# this common 30-day catalogue.
 TRIAL_DAYS = 30
 TRIAL_DAYS_BY_HUB = {
-    "elimu": 7,
-    "biashara": 10,
-    "shamba": 20,
+    "elimu": 30,
+    "biashara": 30,
+    "shamba": 30,
     "community": 30,
     "smart_ai": 30,
     "marketplace": 30,
@@ -210,7 +211,7 @@ def start_hub_trial():
         "trial_days": trial_days,
         "status": "active",
         "started_at": now,
-        "ends_at": now + timedelta(days=TRIAL_DAYS),
+        "ends_at": now + timedelta(days=trial_days),
         "created_at": now,
         "updated_at": now,
         "source": "self_service",
