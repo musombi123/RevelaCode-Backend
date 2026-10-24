@@ -501,6 +501,39 @@ def test_premium_entitlement_denies_cancelled_trial_even_before_end_date(monkeyp
     assert result["trial_status"] == "expired"
 
 
+def test_new_trial_uses_the_persisted_hub_trial_duration_for_its_end_date(monkeypatch, revenue_app):
+    now = datetime(2026, 10, 24, 12, 0, tzinfo=timezone.utc)
+    rows = Mock()
+    rows.find_one.return_value = None
+    rows.insert_one.return_value = Mock(inserted_id="trial-1")
+
+    monkeypatch.setattr(trials, "current_user_id", lambda: "user-1")
+    monkeypatch.setattr(trials, "now_utc", lambda: now)
+    monkeypatch.setattr(trials, "_trials", lambda: rows)
+    monkeypatch.setattr(trials, "log_action", lambda *args, **kwargs: None)
+    monkeypatch.setattr(subscriptions, "_active_subscription", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        mpesa,
+        "_checkout_rows",
+        lambda: Mock(find_one=lambda query: None),
+    )
+
+    with revenue_app.test_request_context(
+        "/api/revenue/trials/start",
+        method="POST",
+        json={"hub": "elimu"},
+    ):
+        response, status = trials.start_hub_trial.__wrapped__()
+
+    assert status == 201
+    trial = response.get_json()["trial"]
+    assert trial["hub"] == "elimu"
+    assert trial["trial_days"] == 30
+    assert trial["started_at"] == now.isoformat()
+    assert trial["ends_at"] == (now + timedelta(days=30)).isoformat()
+    stored = rows.insert_one.call_args.args[0]
+    assert stored["ends_at"] == now + timedelta(days=30)
+
 def test_trial_start_is_blocked_while_checkout_is_unresolved(monkeypatch, revenue_app):
     now = datetime(2026, 10, 22, tzinfo=timezone.utc)
     monkeypatch.setattr(trials, "current_user_id", lambda: "user-1")
