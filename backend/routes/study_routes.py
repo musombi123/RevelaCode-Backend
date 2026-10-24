@@ -3051,7 +3051,7 @@ def elimu_learning_generate_certificate():
         "issued_at": _elimu_learning_now().isoformat(),
         "issuer": "RevelaCode",
         "scope": "recorded_elimu_learning_completion",
-        "verification_url": f"{root.rstrip('/')}/verify/certificate/{certificate_id}",
+        "verification_url": f"{root.rstrip('/')}/api/verify/certificate/{certificate_id}",
     }
     record = {
         "certificate_id": certificate_id,

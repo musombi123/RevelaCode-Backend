@@ -386,7 +386,7 @@ def issue_account_certificate():
     public_root = os.getenv("REVELACODE_PUBLIC_URL", "https://revelacode.co.ke").strip().rstrip("/")
     if not public_root.startswith(("https://", "http://localhost", "http://127.0.0.1")):
         public_root = "https://revelacode.co.ke"
-    claims["verification_url"] = f"{public_root}/verify/certificate/{certificate_id}"
+    claims["verification_url"] = f"{public_root}/api/verify/certificate/{certificate_id}"
     signature = _canonical_signature(claims)
     record = {
         "certificate_id": certificate_id,
