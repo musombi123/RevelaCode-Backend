@@ -167,32 +167,6 @@ PLANS = [
         ],
     },
     {
-        "code": "community_starter",
-        "name": "Community Starter",
-        "hub": "community",
-        "amount": "99.00",
-        "currency": "KES",
-        "interval": "month",
-        "status": "proposed",
-        "features": [
-            "Community workspace enhancements",
-            "Expanded community discovery and management",
-        ],
-    },
-    {
-        "code": "community_pro",
-        "name": "Community Pro",
-        "hub": "community",
-        "amount": "299.00",
-        "currency": "KES",
-        "interval": "month",
-        "status": "proposed",
-        "features": [
-            "Advanced community management",
-            "Expanded community visibility and reporting",
-        ],
-    },
-    {
         "code": "faith_plus",
         "name": "Faith & Scripture Plus",
         "hub": "faith",
@@ -251,6 +225,20 @@ def _load_overrides():
     }
 
 
+def _is_paid_community_subscription(plan):
+    """Community membership and hub access must never have a subscription fee."""
+    if str(plan.get("hub") or "").strip().lower() != "community":
+        return False
+    if str(plan.get("interval") or "").strip().lower() not in {"month", "year"}:
+        return False
+    try:
+        from decimal import Decimal, InvalidOperation
+        amount = Decimal(str(plan.get("amount", "0")))
+    except (InvalidOperation, TypeError, ValueError):
+        return False
+    return amount > 0
+
+
 def list_plans(hub=None, *, include_retired=False):
     """Return merged plan defaults and database-managed plans.
 
@@ -275,6 +263,8 @@ def list_plans(hub=None, *, include_retired=False):
         item["features"] = list(item.get("features") or [])
         if not include_retired and item.get("status") == "retired":
             continue
+        if not include_retired and _is_paid_community_subscription(item):
+            continue
         if normalized_hub and item["hub"] not in {normalized_hub, "all"}:
             continue
         output.append(item)
@@ -295,6 +285,8 @@ def list_plans(hub=None, *, include_retired=False):
         }
         if not include_retired and item["status"] == "retired":
             continue
+        if not include_retired and _is_paid_community_subscription(item):
+            continue
         if normalized_hub and item["hub"] not in {normalized_hub, "all"}:
             continue
         output.append(item)
@@ -306,7 +298,7 @@ def get_pricing_status():
     """Report whether any payable hub subscription is published."""
     for plan in list_plans():
         if (
-            plan.get("hub") in {"shamba", "biashara", "elimu", "community", "smart_ai", "marketplace", "faith"}
+            plan.get("hub") in {"shamba", "biashara", "elimu", "smart_ai", "marketplace", "faith"}
             and plan.get("status") == "available"
             and str(plan.get("interval", "")).lower() in {"month", "year"}
             and str(plan.get("amount", "0")) not in {"0", "0.0", "0.00"}
