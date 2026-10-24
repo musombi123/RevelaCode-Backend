@@ -931,6 +931,48 @@ def test_new_trial_snapshot_uses_hub_specific_duration(hub, expected_days):
     assert public["trial_days"] == expected_days
     assert public["access"] == "trial"
 
+
+def test_legacy_paid_community_plans_are_hidden_from_public_catalogue():
+    from backend.revenue import plans
+
+    legacy_plan = {
+        "code": "community_pro",
+        "name": "Community Pro",
+        "hub": "community",
+        "amount": "299.00",
+        "currency": "KES",
+        "interval": "month",
+        "status": "available",
+        "features": ["Legacy paid membership"],
+    }
+    monkeypatch_rows = Mock(find=lambda _query: [legacy_plan])
+    # The stale database entry remains visible to admins for clean-up, but is
+    # never returned to the public subscription catalogue.
+    from unittest.mock import patch
+    with patch.object(plans, "collection", lambda _name: monkeypatch_rows):
+        public = plans.list_plans()
+        admin = plans.list_plans(include_retired=True)
+
+    assert not any(
+        item.get("hub") == "community"
+        and item.get("interval") in {"month", "year"}
+        and Decimal(str(item.get("amount", "0"))) > 0
+        for item in public
+    )
+    assert any(item.get("code") == "community_pro" for item in admin)
+    assert any(item.get("code") == "community_ads_campaign" for item in public)
+
+
+def test_community_trial_cannot_be_started():
+    with revenue_app.test_request_context(
+        "/api/revenue/trials/start", method="POST", json={"hub": "community"}
+    ):
+        response, status = trials.start_hub_trial.__wrapped__()
+
+    assert status == 400
+    assert response.get_json()["code"] == "unsupported_hub"
+
+
 def test_community_entitlements_are_permanently_free_without_subscription_or_trial(monkeypatch):
     def forbidden(*args, **kwargs):
         pytest.fail("Community must not query subscriptions or trials")
