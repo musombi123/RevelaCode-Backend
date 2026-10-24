@@ -74,7 +74,7 @@ def operations_data():
         document["_id"] = result.inserted_id
         return document
 
-    yield {"db": db, "make_user": make_user, "ticket_ids": ticket_ids, "legal_versions": legal_versions}
+    yield {"db": db, "make_user": make_user, "contacts": contacts, "ticket_ids": ticket_ids, "legal_versions": legal_versions}
 
     if user_ids:
         db["users"].delete_many({"_id": {"$in": user_ids}})
@@ -121,7 +121,7 @@ def test_platform_admin_can_invite_support_admin_and_invitee_sets_own_password(
 ):
     owner = operations_data["make_user"]("revelacode_admin")
     invitee_email = f"invitee-{uuid.uuid4().hex}@example.test"
-    operations_data["make_user"]  # Keep helper explicit; invitation user is created only on acceptance.
+    operations_data["contacts"].append(invitee_email)
     sent = {}
     monkeypatch.setattr(
         admin_routes,
