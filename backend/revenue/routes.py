@@ -65,11 +65,16 @@ def revenue_list_plans():
 
     from backend.revenue.mpesa import checkout_is_production_configured
 
+    billing_ready = checkout_is_production_configured()
+    # Checkout readiness is hub-scoped for the customer-facing catalogue.
+    # Community stays free even while M-Pesa is configured for other hubs.
     return jsonify({
         "success": True,
+        "hub": hub or None,
         "pricing_status": get_pricing_status(),
-        "billing_enabled": checkout_is_production_configured(),
-        "checkout_enabled": checkout_is_production_configured(),
+        "billing_enabled": billing_ready,
+        "checkout_enabled": billing_ready and hub != "community",
+        "subscription_enabled": hub != "community",
         "plans": list_plans(hub=hub or None),
     }), 200
 
