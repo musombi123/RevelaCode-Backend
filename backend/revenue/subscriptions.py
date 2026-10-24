@@ -307,6 +307,27 @@ def resolve_entitlement(user_id, hub, feature="essential"):
     if feature not in PREMIUM_FEATURES | {"essential"}:
         raise ValueError("Unsupported entitlement feature.")
 
+    # Community is permanently free: advertising funds the open community
+    # experience, so access never depends on a trial, subscription, or billing.
+    if hub == "community":
+        return {
+            "success": True,
+            "user_id": str(user_id),
+            "hub": hub,
+            "feature": feature,
+            "allowed": True,
+            "tier": "free",
+            "access": "free",
+            "reason": "permanent_free_hub",
+            "premium_access": True,
+            "paid_subscription": False,
+            "trial_status": "not_required",
+            "trial": None,
+            "subscription": None,
+            "billing_enabled": False,
+            "checkout_enabled": False,
+        }
+
     now = _as_utc(now_utc())
     subscription = _active_subscription(user_id, hub, now)
     trial = collection(TRIALS_COLLECTION).find_one({"user_id": str(user_id), "hub": hub})
