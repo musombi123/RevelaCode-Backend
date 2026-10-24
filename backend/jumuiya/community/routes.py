@@ -386,6 +386,7 @@ def health():
             "discovery",
             "groups",
             "threads",
+            "matter_messaging",
             "actions",
             "trust",
             "posts",
