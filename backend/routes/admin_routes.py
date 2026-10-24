@@ -810,7 +810,7 @@ def create_admin_invitation():
     )
     return jsonify(
         success=True,
-        message=f"Invitation sent to {contact}. It expires in 7 days.",
+        message=f"The email provider accepted the invitation for {contact}. The link expires in 7 days; provider acceptance does not guarantee inbox delivery.",
         invitation={
             "id": str(inserted.inserted_id),
             "full_name": full_name,
