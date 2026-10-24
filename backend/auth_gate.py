@@ -1330,6 +1330,21 @@ def login():
         ), 404
 
     # -----------------------------------------------------
+    # CURRENT ACCOUNT STATUS
+    # -----------------------------------------------------
+
+    account_status = str(user.get("status") or "active").strip().casefold()
+    if user.get("is_active") is False or account_status in {
+        "inactive", "disabled", "suspended", "blocked", "banned",
+        "deleted", "revoked", "pending_invitation",
+    }:
+        return jsonify(
+            success=False,
+            code="account_inactive",
+            message="This account is inactive or restricted. Contact RevelaCode Support.",
+        ), 403
+
+    # -----------------------------------------------------
     # VERIFICATION
     # -----------------------------------------------------
 
@@ -1382,23 +1397,15 @@ def login():
 
     redirect = "/dashboard"
 
-    api_key = ""
+    if str(role or "").strip().casefold() in PLATFORM_ADMIN_ROLES:
 
-    if role == "admin":
+        redirect = "/admin/dashboard"
+        # Platform admin browser APIs use the current-role JWT path. API keys
+        # remain server-side for trusted server-to-server integrations only.
 
-        redirect = (
-            "/admin/dashboard"
-        )
+    elif str(role or "").strip().casefold() in {"support", "support_admin"}:
 
-        api_key = ADMIN_API_KEY
-
-    elif role == "support":
-
-        redirect = (
-            "/support/dashboard"
-        )
-
-        api_key = SUPPORT_API_KEY
+        redirect = "/support/dashboard"
 
     # -----------------------------------------------------
     # JWT
@@ -1433,9 +1440,7 @@ def login():
 
         redirect=redirect,
 
-        # Admin legacy views still use their scoped key. Support clients use JWTs.
-        api_key=api_key if role == "admin" else "",
-
+        # All browser requests use the Bearer JWT; privileged API keys stay server-side.
         access_token=token,
 
         token_type="Bearer",

@@ -9,7 +9,21 @@ on:
 jobs:
   verify-admin-role:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
+    env:
+      JWT_SECRET: test-only-revelacode-admin-operations-secret
+      MONGO_URI: mongodb://127.0.0.1:27017/revelacode_admin_ops_test
+      MONGO_DB_NAME: revelacode_admin_ops_test
+    services:
+      mongodb:
+        image: mongo:7
+        ports:
+          - 27017:27017
+        options: >-
+          --health-cmd "mongosh --quiet --eval 'quit(0)'"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -18,7 +32,9 @@ jobs:
           cache: pip
       - name: Install minimal test dependencies
         run: python -m pip install --upgrade pip pytest flask python-dotenv pymongo PyJWT resend
-      - name: Compile the auth gate and regression tests
-        run: python -m compileall -q backend/auth_gate.py backend/tests/test_revelaai_admin_auth.py
-      - name: Run current-role authorization tests
-        run: python -m pytest -q backend/tests/test_revelaai_admin_auth.py
+      - name: Compile admin, support, auth and invitation modules
+        run: python -m compileall -q backend/auth_gate.py backend/utils/current_role_auth.py backend/utils/auth_keys.py backend/utils/admin_invitation_email.py backend/routes/admin_routes.py backend/routes/support_routes.py backend/routes/study_routes.py backend/tests/test_revelaai_admin_auth.py backend/tests/test_revelacode_admin_operations.py
+      - name: Run current-role and admin-operations regressions
+        env:
+          PYTHONPATH: backend:.
+        run: python -m pytest -q backend/tests/test_revelaai_admin_auth.py backend/tests/test_revelacode_admin_operations.py

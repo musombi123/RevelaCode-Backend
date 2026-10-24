@@ -232,6 +232,20 @@ def install_auth_bridge(app):
             )
             return None
 
+        # Ban, suspension and soft deletion must apply to an already-issued
+        # JWT too, not only to a fresh login attempt.
+        account_status = str(user.get("status") or "active").strip().casefold()
+        if user.get("is_active") is False or account_status in {
+            "inactive", "disabled", "suspended", "blocked", "banned",
+            "deleted", "revoked", "pending_invitation",
+        }:
+            app.logger.warning(
+                "Jumuiya rejected inactive account. user_id=%s status=%s",
+                user_id,
+                account_status,
+            )
+            return None
+
         # -------------------------------------------------
         # NORMALIZE IDENTITY
         # -------------------------------------------------
