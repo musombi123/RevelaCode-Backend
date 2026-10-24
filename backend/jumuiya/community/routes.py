@@ -1570,7 +1570,7 @@ def get_matters():
 @community_bp.post("/matters")
 @require_authenticated
 def create_matter():
-    """Create or reopen an existing direct/post-related conversation."""
+    """Create a direct/post-related conversation or return its existing thread."""
     return created(
         {"matter": messaging.create_matter(current_user_id(), body())},
         "Community conversation ready.",
