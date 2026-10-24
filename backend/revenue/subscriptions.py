@@ -61,6 +61,25 @@ FAITH_PLAN_FEATURES = {
     "faith_group_tools": {"faith_pro"},
 }
 
+# Paid tiers are allow-lists, not a global premium switch. Trial access is
+# intentionally full-featured for that hub; paid subscriptions receive only
+# the capabilities included in their exact plan.
+HUB_PLAN_FEATURES = {
+    "biashara": {
+        "biashara_starter": {"premium", "advanced_reports", "seller_tools"},
+        "biashara_pro": {"premium", "advanced_reports", "advanced_analytics", "automation", "expanded_history", "seller_tools"},
+    },
+    "elimu": {
+        "elimu_small": {"premium"},
+        "elimu_standard": {"premium", "advanced_reports"},
+        "elimu_advanced": {"premium", "advanced_reports", "automation", "expanded_history"},
+    },
+    "shamba": {
+        "shamba_plus": {"premium", "expanded_history"},
+        "shamba_pro": {"premium", "expanded_history", "advanced_analytics", "automation"},
+    },
+}
+
 
 def _as_utc(value):
     if value is None:
@@ -316,6 +335,22 @@ def resolve_entitlement(user_id, hub, feature="essential"):
             subscription_hub = str(subscription.get("hub") or hub).strip().lower()
             plan_code = str(subscription.get("plan_code") or "").strip().lower()
             allowed = subscription_hub == "all" or plan_code in FAITH_PLAN_FEATURES[feature]
+        else:
+            allowed = False
+
+    # Tiered Jumuiya plans are enforced server-side at each protected tool.
+    # A successful payment grants the selected plan, not every premium feature
+    # in the hub. Existing active trials still unlock the full hub trial.
+    if premium_feature and hub in HUB_PLAN_FEATURES:
+        if trial_active:
+            allowed = True
+        elif subscription:
+            subscription_hub = str(subscription.get("hub") or hub).strip().lower()
+            plan_code = str(subscription.get("plan_code") or "").strip().lower()
+            if subscription_hub == "all":
+                allowed = True
+            else:
+                allowed = feature in HUB_PLAN_FEATURES[hub].get(plan_code, set())
         else:
             allowed = False
 

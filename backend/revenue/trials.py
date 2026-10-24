@@ -1,4 +1,4 @@
-"""Per-user, per-hub 30-day trials for the shared Jumuiya Revenue Engine.
+"""Per-user, per-hub free trials for the shared Jumuiya Revenue Engine.
 
 Trials are entitlement records, not payment records. They use the existing
 RevelaCode MongoDB database and the jumuiya_ collection namespace.
@@ -18,7 +18,23 @@ from backend.jumuiya.core.permissions import current_user_id, require_authentica
 from backend.revenue import revenue_bp
 
 TRIALS_COLLECTION = "jumuiya_revenue_trials"
+# Each hub receives one full month of free trial access. Existing trial
+# records retain the duration stored when they were created; new trials use
+# this common 30-day catalogue.
 TRIAL_DAYS = 30
+TRIAL_DAYS_BY_HUB = {
+    "elimu": 30,
+    "biashara": 30,
+    "shamba": 30,
+    "community": 30,
+    "smart_ai": 30,
+    "marketplace": 30,
+    "faith": 30,
+}
+
+
+def trial_days_for_hub(hub):
+    return TRIAL_DAYS_BY_HUB.get(str(hub or "").strip().lower(), TRIAL_DAYS)
 
 # Each separately metered hub gets its own trial. Faith covers the RevelaCode
 # Theology/Faith experience; Smart AI is separately metered from the hubs.
@@ -79,7 +95,7 @@ def _public_trial(row, now=None):
         "hub": row.get("hub"),
         "hub_name": TRIAL_HUBS.get(row.get("hub"), row.get("hub")),
         "status": "active" if active else "expired",
-        "trial_days": row.get("trial_days", TRIAL_DAYS),
+        "trial_days": row.get("trial_days", trial_days_for_hub(row.get("hub"))),
         "started_at": _iso(started_at),
         "ends_at": _iso(ends_at),
         "days_remaining": max(0, (ends_at - now).days) if active else 0,
@@ -107,7 +123,7 @@ def list_my_hub_trials():
                 "hub": hub,
                 "hub_name": name,
                 "status": "not_started",
-                "trial_days": TRIAL_DAYS,
+                "trial_days": trial_days_for_hub(hub),
                 "started_at": None,
                 "ends_at": None,
                 "days_remaining": 0,
@@ -119,6 +135,7 @@ def list_my_hub_trials():
     return jsonify({
         "success": True,
         "trial_days": TRIAL_DAYS,
+        "trial_days_by_hub": dict(TRIAL_DAYS_BY_HUB),
         "trials": result,
         "billing_enabled": checkout_enabled,
         "checkout_enabled": checkout_enabled,
@@ -129,7 +146,7 @@ def list_my_hub_trials():
 @revenue_bp.post("/trials/start")
 @require_authenticated
 def start_hub_trial():
-    """Start a hub's one-time 30-day trial; repeated requests never reset it."""
+    """Start a hub's one-time trial; repeated requests never reset it."""
     payload = request.get_json(silent=True)
     if not isinstance(payload, dict):
         return _error("A JSON request body is required.", 400, "invalid_json_body")
@@ -187,13 +204,14 @@ def start_hub_trial():
             "trial_already_used",
         )
 
+    trial_days = trial_days_for_hub(hub)
     document = {
         "user_id": user_id,
         "hub": hub,
-        "trial_days": TRIAL_DAYS,
+        "trial_days": trial_days,
         "status": "active",
         "started_at": now,
-        "ends_at": now + timedelta(days=TRIAL_DAYS),
+        "ends_at": now + timedelta(days=trial_days),
         "created_at": now,
         "updated_at": now,
         "source": "self_service",
@@ -217,7 +235,7 @@ def start_hub_trial():
             action="revenue.hub_trial_started",
             resource="revenue_trial",
             resource_id=str(document["_id"]),
-            metadata={"hub": hub, "trial_days": TRIAL_DAYS},
+            metadata={"hub": hub, "trial_days": trial_days},
         )
     except Exception:
         # The durable trial record must not be lost because an audit sink is
@@ -229,7 +247,7 @@ def start_hub_trial():
         "success": True,
         "created": True,
         "trial": _public_trial(document, now),
-        "message": f"Your {TRIAL_DAYS}-day {TRIAL_HUBS[hub]} trial has started.",
+        "message": f"Your {trial_days}-day {TRIAL_HUBS[hub]} trial has started.",
     }), 201
 
 

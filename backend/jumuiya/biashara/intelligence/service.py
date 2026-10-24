@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 from backend.jumuiya.core.errors import APIError
@@ -2668,6 +2668,253 @@ def market_trends(
 # PRODUCT FORECAST DIRECT
 # =========================================================
 
+def forecast_business_data(
+    sales_documents: list[dict],
+    products: list[dict],
+    forecast_days: int = 7,
+    target_margin_percent: float = 25.0,
+    currency: str = DEFAULT_CURRENCY,
+    as_of: datetime | None = None,
+) -> dict:
+    """Forecast recorded business revenue/product demand and review active prices.
+
+    Projections are based only on sales records supplied by the authenticated
+    business API. Price guidance is an explicit cost-plus target-margin
+    calculation; it is not presented as a predicted market price.
+    """
+    try:
+        forecast_days = int(forecast_days)
+        target_margin_percent = float(target_margin_percent)
+    except (TypeError, ValueError):
+        raise ValueError("Forecast days and target margin must be numeric.") from None
+
+    if forecast_days < 7 or forecast_days > 90:
+        raise ValueError("Forecast days must be between 7 and 90.")
+    if target_margin_percent < 5 or target_margin_percent > 80:
+        raise ValueError("Target gross margin must be between 5 and 80 percent.")
+
+    now = as_of or now_utc()
+    today = now.date()
+    window_start = today - timedelta(days=89)
+    currency_code = as_string(currency, DEFAULT_CURRENCY).upper() or DEFAULT_CURRENCY
+    revenue_by_date: dict[str, float] = {}
+    transactions_by_date: dict[str, int] = {}
+    quantities_by_product: dict[str, dict[str, float]] = {}
+    valid_sales: list[tuple[date, dict]] = []
+
+    def record_date(value: Any):
+        if isinstance(value, datetime):
+            normalized = value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)
+            return normalized.date()
+        if isinstance(value, str) and value.strip():
+            raw = value.strip()
+            try:
+                parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+                normalized = parsed.replace(tzinfo=timezone.utc) if parsed.tzinfo is None else parsed.astimezone(timezone.utc)
+                return normalized.date()
+            except ValueError:
+                return None
+        return None
+
+    for row in sales_documents if isinstance(sales_documents, list) else []:
+        if not isinstance(row, dict):
+            continue
+        day = record_date(row.get("sold_at") or row.get("created_at") or row.get("updated_at"))
+        if not day or day < window_start or day > today:
+            continue
+        day_key = day.isoformat()
+        amount = max(0.0, as_float(row.get("amount"), 0.0))
+        revenue_by_date[day_key] = revenue_by_date.get(day_key, 0.0) + amount
+        transactions_by_date[day_key] = transactions_by_date.get(day_key, 0) + 1
+        valid_sales.append((day, row))
+
+        items = row.get("items") if isinstance(row.get("items"), list) else []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            product_id = str(item.get("product_id") or "").strip()
+            if not product_id:
+                continue
+            quantity = max(0.0, as_float(item.get("quantity"), 0.0))
+            if quantity <= 0:
+                continue
+            history = quantities_by_product.setdefault(product_id, {})
+            history[day_key] = history.get(day_key, 0.0) + quantity
+
+    observed_dates = sorted(revenue_by_date.keys())
+    if observed_dates:
+        first_day = max(window_start, min(datetime.fromisoformat(day).date() for day in observed_dates))
+    else:
+        first_day = today
+
+    daily_dates = []
+    cursor = first_day
+    while cursor <= today:
+        daily_dates.append(cursor.isoformat())
+        cursor += timedelta(days=1)
+
+    revenue_history = [
+        {"date": day, "value": round(revenue_by_date.get(day, 0.0), 2)}
+        for day in daily_dates
+    ]
+    positive_revenue_days = sum(1 for value in revenue_by_date.values() if value > 0)
+    actual_last_7_days = round(
+        sum(value for day, value in revenue_by_date.items()
+            if (today - timedelta(days=6)).isoformat() <= day <= today.isoformat()),
+        2,
+    )
+
+    revenue_model = None
+    if positive_revenue_days >= 3 and len(revenue_history) >= 3:
+        revenue_model = forecast_product(
+            {
+                "name": "Business revenue",
+                "category": "All recorded sales",
+                "sales_history": revenue_history,
+            },
+            forecast_days,
+        )
+
+    revenue_forecast = []
+    revenue_confidence = 0.0
+    revenue_direction = "insufficient_history"
+    projected_revenue = None
+    if revenue_model:
+        model = revenue_model.get("forecast") if isinstance(revenue_model.get("forecast"), dict) else {}
+        revenue_forecast = [
+            {
+                "date": item.get("date"),
+                "value": round(max(0.0, as_float(item.get("value"), 0.0)), 2),
+            }
+            for item in model.get("forecast", [])
+            if isinstance(item, dict)
+        ]
+        projected_revenue = round(sum(item["value"] for item in revenue_forecast), 2)
+        revenue_confidence = round(as_float(model.get("confidence"), 0.0), 3)
+        revenue_direction = str(revenue_model.get("label") or "stable")
+
+    priced_products = []
+    for product in products if isinstance(products, list) else []:
+        if not isinstance(product, dict):
+            continue
+        product_id = str(product.get("_id") or product.get("id") or "")
+        if not product_id:
+            continue
+        name = as_string(product.get("name"), "Unnamed product")
+        category = as_string(product.get("category"))
+        price = max(0.0, as_float(product.get("price"), 0.0))
+        cost_price = max(0.0, as_float(product.get("cost_price"), 0.0))
+        stock = max(0.0, as_float(product.get("stock_quantity"), 0.0))
+        low_stock_threshold = max(0.0, as_float(product.get("low_stock_threshold"), 5.0))
+        has_cost = cost_price > 0
+        has_price = price > 0
+        recommended_price = (
+            round(cost_price / (1.0 - target_margin_percent / 100.0), 2)
+            if has_cost else None
+        )
+        margin_percent = (
+            round(((price - cost_price) / price) * 100.0, 2)
+            if has_cost and has_price else None
+        )
+        if not has_cost:
+            pricing_status = "cost_required"
+        elif not has_price:
+            pricing_status = "selling_price_required"
+        elif price + 0.00001 < (recommended_price or 0):
+            pricing_status = "below_target_margin"
+        else:
+            pricing_status = "target_met"
+
+        product_history = [
+            {"date": day, "value": round(quantities_by_product.get(product_id, {}).get(day, 0.0), 3)}
+            for day in daily_dates
+        ]
+        product_positive_days = sum(
+            1 for value in quantities_by_product.get(product_id, {}).values() if value > 0
+        )
+        demand = None
+        if product_positive_days >= 2 and product_history:
+            try:
+                demand = forecast_product(
+                    {"name": name, "category": category, "sales_history": product_history},
+                    forecast_days,
+                )
+            except ValueError:
+                demand = None
+        demand_output = None
+        if demand:
+            demand_model = demand.get("forecast") if isinstance(demand.get("forecast"), dict) else {}
+            demand_points = [
+                {"date": item.get("date"), "value": round(max(0.0, as_float(item.get("value"), 0.0)), 3)}
+                for item in demand_model.get("forecast", [])
+                if isinstance(item, dict)
+            ]
+            demand_output = {
+                "available": True,
+                "reason": None,
+                "projected_units": round(sum(item["value"] for item in demand_points), 2),
+                "confidence": round(as_float(demand_model.get("confidence"), 0.0), 3),
+                "direction": str(demand.get("label") or "stable"),
+                "daily_forecast": demand_points,
+            }
+        else:
+            demand_output = {
+                "available": False,
+                "reason": "Record sales for this product on at least two different days to generate a demand forecast.",
+                "projected_units": None,
+                "confidence": 0.0,
+                "direction": "insufficient_history",
+                "daily_forecast": [],
+            }
+
+        priced_products.append({
+            "id": product_id,
+            "name": name,
+            "category": category,
+            "currency": as_string(product.get("currency"), DEFAULT_CURRENCY).upper() or DEFAULT_CURRENCY,
+            "current_price": round(price, 2),
+            "cost_price": round(cost_price, 2) if has_cost else None,
+            "gross_margin_percent": margin_percent,
+            "target_gross_margin_percent": target_margin_percent,
+            "recommended_price": recommended_price,
+            "pricing_status": pricing_status,
+            "stock_quantity": round(stock, 3),
+            "low_stock_threshold": round(low_stock_threshold, 3),
+            "low_stock": stock <= low_stock_threshold,
+            "demand": demand_output,
+        })
+
+    return {
+        "forecast_days": forecast_days,
+        "history_days": len(revenue_history),
+        "history_start": daily_dates[0] if daily_dates else today.isoformat(),
+        "history_end": today.isoformat(),
+        "sales_record_count": len(valid_sales),
+        "sales_days_with_revenue": positive_revenue_days,
+        "actual_last_7_days": actual_last_7_days,
+        "currency": currency_code,
+        "revenue": {
+            "available": revenue_model is not None,
+            "reason": None if revenue_model else "At least three different days with recorded revenue are needed before the dashboard will show a revenue projection.",
+            "projected_total": projected_revenue,
+            "projected_daily_average": (
+                round(projected_revenue / len(revenue_forecast), 2)
+                if projected_revenue is not None and revenue_forecast else None
+            ),
+            "confidence": revenue_confidence,
+            "direction": revenue_direction,
+            "daily_forecast": revenue_forecast,
+        },
+        "target_gross_margin_percent": target_margin_percent,
+        "products": priced_products,
+        "method_note": (
+            "Revenue and demand projections use the existing recency-weighted baseline and recent-growth model on the business's recorded sales. "
+            "Confidence is indicative, not a guarantee. Pricing guidance uses the current recorded cost and selected target gross margin; "
+            "tax, delivery, fees and competitor prices are not included."
+        ),
+    }
+
+
 def forecast_target(
     product: dict,
     forecast_days: int = DEFAULT_FORECAST_DAYS,
@@ -2811,5 +3058,6 @@ __all__ = [
     "get_market_area",
     "market_trends",
     "forecast_target",
+    "forecast_business_data",
     "dataset_status",
 ]

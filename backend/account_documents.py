@@ -440,11 +440,12 @@ def revoke_account_certificate(certificate_id: str):
 @account_documents_bp.route("/api/verify/certificate/<certificate_id>", methods=["GET"])
 def verify_account_certificate(certificate_id: str):
     certificate_id = str(certificate_id or "").strip()
-    # The public certificate verifier is also the canonical QR target for Elimu
-    # learning-completion certificates. Delegate RC-EL records to their own
-    # signed collection and verifier instead of looking them up as account records.
+    # The public QR route serves account certificates and Elimu learning
+    # certificates. Delegate the latter to its canonical verifier so the
+    # learning certificate's HMAC and revocation state are checked identically.
     if re.fullmatch(r"RC-EL-[A-F0-9]{16}", certificate_id):
         from backend.routes.study_routes import elimu_learning_verify_certificate
+
         return elimu_learning_verify_certificate(certificate_id)
     if not re.fullmatch(r"RC-AC-[A-F0-9]{16}", certificate_id):
         return jsonify(valid=False, certificate_id=certificate_id, reason="certificate_not_found"), 404
