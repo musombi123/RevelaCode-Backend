@@ -159,7 +159,12 @@ def view_tickets():
             "subject": ticket.get("subject"),
             "status": ticket.get("status", "open"),
             "assigned_to": ticket.get("assigned_to"),
+            "assigned_to_user_id": ticket.get("assigned_to_user_id"),
+            "assigned_to_name": ticket.get("assigned_to_name"),
+            "assigned_to_contact": ticket.get("assigned_to_contact"),
+            "priority": ticket.get("priority", "normal"),
             "created_at": str(ticket.get("created_at")),
+            "updated_at": str(ticket.get("updated_at")) if ticket.get("updated_at") else None,
             "resolved_at": (
                 str(ticket.get("resolved_at"))
                 if ticket.get("resolved_at")
