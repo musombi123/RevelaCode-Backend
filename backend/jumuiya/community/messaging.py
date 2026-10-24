@@ -95,7 +95,8 @@ def _require_recipient(user_id: str, recipient_id: str) -> dict:
     if not profile:
         post = collection(POSTS).find_one({
             "author_user_id": recipient_id,
-            "status": {"$nin": ["deleted", "hidden"]},
+            "status": "published",
+            "visibility": {"$in": ["public", "community"]},
         })
         if not post:
             raise APIError(
