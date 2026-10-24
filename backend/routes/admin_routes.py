@@ -545,7 +545,7 @@ def _email_value(value):
 
 
 def _valid_email(value):
-    return bool(re.fullmatch(r"[^@\\s]+@[^@\\s]+\\.[^@\\s]+", str(value or "").strip()))
+    return bool(re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", str(value or "").strip()))
 
 
 def _user_query_by_id(user_id):
