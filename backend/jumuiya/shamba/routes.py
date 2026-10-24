@@ -221,14 +221,14 @@ def save_farmer():
 
 @shamba_bp.get("/farmer/verification-queue")
 @require_authenticated
-@require_roles("admin", "super_admin")
+@require_roles("admin", "platform_admin", "super_admin", "revelacode_admin")
 def farmer_verification_queue():
     return ok({"items": services.list_farmer_verification_queue()})
 
 
 @shamba_bp.post("/farmer/<farmer_id>/review")
 @require_authenticated
-@require_roles("admin", "super_admin")
+@require_roles("admin", "platform_admin", "super_admin", "revelacode_admin")
 def review_farmer_profile(farmer_id):
     payload = validate(schemas.farmer_review_payload, body())
     result = services.review_farmer_profile(
