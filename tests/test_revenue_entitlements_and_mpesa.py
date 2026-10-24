@@ -931,22 +931,6 @@ def test_new_trial_snapshot_uses_hub_specific_duration(hub, expected_days):
     assert public["trial_days"] == expected_days
     assert public["access"] == "trial"
 
-@pytest.mark.parametrize(
-    ("hub", "plan_code", "feature", "expected"),
-    [
-        ("biashara", "biashara_starter", "advanced_reports", True),
-        ("biashara", "biashara_starter", "seller_tools", True),
-        ("biashara", "biashara_starter", "advanced_analytics", False),
-        ("biashara", "biashara_pro", "seller_tools", True),
-        ("biashara", "biashara_pro", "advanced_analytics", True),
-        ("elimu", "elimu_small", "advanced_reports", False),
-        ("elimu", "elimu_standard", "advanced_reports", True),
-        ("elimu", "elimu_advanced", "automation", True),
-        ("shamba", "shamba_plus", "advanced_analytics", False),
-        ("shamba", "shamba_pro", "advanced_analytics", True),
-    ],
-)
-
 def test_community_entitlements_are_permanently_free_without_subscription_or_trial(monkeypatch):
     def forbidden(*args, **kwargs):
         pytest.fail("Community must not query subscriptions or trials")
@@ -1009,6 +993,22 @@ def test_community_checkout_is_blocked_even_if_a_legacy_plan_is_available(
     assert status == 409
     assert response.get_json()["code"] == "community_permanently_free"
 
+
+@pytest.mark.parametrize(
+    ("hub", "plan_code", "feature", "expected"),
+    [
+        ("biashara", "biashara_starter", "advanced_reports", True),
+        ("biashara", "biashara_starter", "seller_tools", True),
+        ("biashara", "biashara_starter", "advanced_analytics", False),
+        ("biashara", "biashara_pro", "seller_tools", True),
+        ("biashara", "biashara_pro", "advanced_analytics", True),
+        ("elimu", "elimu_small", "advanced_reports", False),
+        ("elimu", "elimu_standard", "advanced_reports", True),
+        ("elimu", "elimu_advanced", "automation", True),
+        ("shamba", "shamba_plus", "advanced_analytics", False),
+        ("shamba", "shamba_pro", "advanced_analytics", True),
+    ],
+)
 
 def test_paid_hub_plan_only_unlocks_included_features(
     monkeypatch, hub, plan_code, feature, expected
