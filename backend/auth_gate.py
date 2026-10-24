@@ -1330,6 +1330,21 @@ def login():
         ), 404
 
     # -----------------------------------------------------
+    # CURRENT ACCOUNT STATUS
+    # -----------------------------------------------------
+
+    account_status = str(user.get("status") or "active").strip().casefold()
+    if user.get("is_active") is False or account_status in {
+        "inactive", "disabled", "suspended", "blocked", "banned",
+        "deleted", "revoked", "pending_invitation",
+    }:
+        return jsonify(
+            success=False,
+            code="account_inactive",
+            message="This account is inactive or restricted. Contact RevelaCode Support.",
+        ), 403
+
+    # -----------------------------------------------------
     # VERIFICATION
     # -----------------------------------------------------
 
@@ -1384,21 +1399,16 @@ def login():
 
     api_key = ""
 
-    if role == "admin":
+    if str(role or "").strip().casefold() in PLATFORM_ADMIN_ROLES:
 
-        redirect = (
-            "/admin/dashboard"
-        )
+        redirect = "/admin/dashboard"
+        # Platform admin browser APIs use the current-role JWT path. API keys
+        # remain server-side for trusted server-to-server integrations only.
 
-        api_key = ADMIN_API_KEY
+    elif str(role or "").strip().casefold() in {"support", "support_admin"}:
 
-    elif role == "support":
-
-        redirect = (
-            "/support/dashboard"
-        )
-
-        api_key = SUPPORT_API_KEY
+        redirect = "/support/dashboard"
+        api_key = ""
 
     # -----------------------------------------------------
     # JWT
