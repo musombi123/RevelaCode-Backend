@@ -963,7 +963,7 @@ def test_legacy_paid_community_plans_are_hidden_from_public_catalogue():
     assert any(item.get("code") == "community_ads_campaign" for item in public)
 
 
-def test_community_trial_cannot_be_started():
+def test_community_trial_cannot_be_started(revenue_app):
     with revenue_app.test_request_context(
         "/api/revenue/trials/start", method="POST", json={"hub": "community"}
     ):
