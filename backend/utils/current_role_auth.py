@@ -97,10 +97,10 @@ def resolve_current_actor(req):
     try:
         users = get_db()["users"]
         user = None
+        identifier_terms = [{"id": user_id}, {"user_id": user_id}]
         if ObjectId.is_valid(user_id):
-            user = users.find_one({"_id": ObjectId(user_id)})
-        if user is None:
-            user = users.find_one({"$or": [{"id": user_id}, {"user_id": user_id}]})
+            identifier_terms.insert(0, {"_id": ObjectId(user_id)})
+        user = users.find_one({"$or": identifier_terms})
     except Exception:
         return None, {
             "success": False,
