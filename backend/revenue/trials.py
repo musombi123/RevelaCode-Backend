@@ -18,9 +18,9 @@ from backend.jumuiya.core.permissions import current_user_id, require_authentica
 from backend.revenue import revenue_bp
 
 TRIALS_COLLECTION = "jumuiya_revenue_trials"
-# Each hub receives one full month of free trial access. Existing trial
-# records retain the duration stored when they were created; new trials use
-# this common 30-day catalogue.
+# Metered hubs receive one free 30-day trial. Community is permanently free
+# and deliberately has no trial record or expiry. Existing metered-hub trial
+# records retain their persisted duration.
 TRIAL_DAYS = 30
 TRIAL_DAYS_BY_HUB = {
     "elimu": 30,
