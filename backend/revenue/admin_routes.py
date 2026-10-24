@@ -159,6 +159,17 @@ def _validate_plan_values(data, *, creating, existing=None):
     values["features"] = _validate_features(features)
     values["currency"] = "KES"
 
+    plan_hub = str(values.get("hub", existing.get("hub", "")) or "").strip().lower()
+    if (
+        plan_hub == "community"
+        and values["interval"] in {"month", "year"}
+        and amount > 0
+        and values["status"] != "retired"
+    ):
+        raise ValueError(
+            "Community is permanently free. Use advertising campaign products instead of member subscriptions."
+        )
+
     if values["status"] == "available":
         # "Available" means genuinely purchasable, not merely visible in the
         # catalogue. Only configured monthly/yearly hub subscriptions are enabled.
