@@ -397,6 +397,12 @@ def revenue_start_checkout():
     if str(plan.get("status") or "").lower() != "available":
         return _error("This plan is not enabled for checkout. Choose a plan marked available.", 409, "plan_not_purchasable")
     hub = str(plan.get("hub") or "").strip().lower()
+    if hub == "community":
+        return _error(
+            "Community is permanently free and cannot be purchased as a subscription.",
+            409,
+            "community_permanently_free",
+        )
     if hub not in {"shamba", "biashara", "elimu", "community", "smart_ai", "marketplace", "faith"}:
         return _error("Only hub subscription plans can be purchased here.", 400, "subscription_plan_required")
     if str(plan.get("interval") or "").lower() not in {"month", "year"}:
