@@ -1397,8 +1397,6 @@ def login():
 
     redirect = "/dashboard"
 
-    api_key = ""
-
     if str(role or "").strip().casefold() in PLATFORM_ADMIN_ROLES:
 
         redirect = "/admin/dashboard"
@@ -1408,7 +1406,6 @@ def login():
     elif str(role or "").strip().casefold() in {"support", "support_admin"}:
 
         redirect = "/support/dashboard"
-        api_key = ""
 
     # -----------------------------------------------------
     # JWT
@@ -1443,7 +1440,7 @@ def login():
 
         redirect=redirect,
 
-        # Admin legacy views still use their scoped key. Support clients use JWTs.
+        # All browser requests use the Bearer JWT; privileged API keys stay server-side.
         access_token=token,
 
         token_type="Bearer",
