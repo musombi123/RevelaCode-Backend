@@ -6,6 +6,7 @@ from bson.objectid import ObjectId
 
 from backend.db import get_db
 from backend.utils.auth_keys import get_role
+from backend.utils.current_role_auth import current_platform_actor, require_current_roles, PLATFORM_ADMIN_ROLES
 from backend.utils.audit_logger import log_admin_action
 
 # ----------------------------
@@ -25,7 +26,7 @@ COLLECTIONS = {
 def support_dashboard():
     role = get_role(request)
 
-    if role != "support":
+    if role not in {"support", "support_admin"}:
         return jsonify({
             "success": False,
             "message": "Forbidden"
@@ -82,7 +83,7 @@ def support_dashboard():
 def view_tickets():
     role = get_role(request)
 
-    if role != "support":
+    if role not in {"support", "support_admin"}:
         return jsonify({
             "success": False,
             "message": "Forbidden"
@@ -159,7 +160,7 @@ def view_tickets():
 def resolve_ticket():
     role = get_role(request)
 
-    if role != "support":
+    if role not in {"support", "support_admin"}:
         return jsonify({
             "success": False,
             "message": "Forbidden"
@@ -261,7 +262,7 @@ def resolve_ticket():
 def search_tickets():
     role = get_role(request)
 
-    if role != "support":
+    if role not in {"support", "support_admin"}:
         return jsonify({
             "success": False,
             "message": "Forbidden"
@@ -320,7 +321,7 @@ def search_tickets():
 def support_history():
     role = get_role(request)
 
-    if role != "support":
+    if role not in {"support", "support_admin"}:
         return jsonify({
             "success": False,
             "message": "Forbidden"
@@ -380,7 +381,7 @@ def support_history():
 def support_analytics():
     role = get_role(request)
 
-    if role != "support":
+    if role not in {"support", "support_admin"}:
         return jsonify({
             "success": False,
             "message": "Forbidden"
@@ -456,7 +457,7 @@ def support_analytics():
 def get_ticket(ticket_id):
     role = get_role(request)
 
-    if role != "support":
+    if role not in {"support", "support_admin"}:
         return jsonify({
             "success": False,
             "message": "Forbidden"
@@ -511,7 +512,7 @@ def get_ticket(ticket_id):
 def assign_ticket():
     role = get_role(request)
 
-    if role != "support":
+    if role not in {"support", "support_admin"}:
         return jsonify({
             "success": False,
             "message": "Forbidden"
@@ -591,4 +592,193 @@ def assign_ticket():
             "assigned_to": updated.get("assigned_to"),
             "updated_at": str(updated.get("updated_at"))
         }
+    }), 200
+
+# =========================================================
+# SUPPORT ADMIN OPERATIONS
+# =========================================================
+
+SUPPORT_SUPERVISOR_ROLES = (*PLATFORM_ADMIN_ROLES, "support_admin")
+
+
+def _support_audit(db, *, action, resource, metadata=None):
+    actor = current_platform_actor()
+    try:
+        log_admin_action(
+            db,
+            action=action,
+            resource=str(resource or ""),
+            actor=str(actor.get("id") or actor.get("role") or "unknown"),
+            metadata=metadata or {},
+        )
+    except Exception:
+        from flask import current_app
+        current_app.logger.exception("Support operation succeeded but audit recording failed")
+
+
+@support_bp.route("/admin/overview", methods=["GET"])
+@require_current_roles(*SUPPORT_SUPERVISOR_ROLES)
+def support_admin_overview():
+    db = get_db()
+    tickets = db[COLLECTIONS["support_tickets"]]
+    users = db["users"]
+    total = tickets.count_documents({})
+    open_count = tickets.count_documents({"status": "open"})
+    pending_count = tickets.count_documents({"status": "pending"})
+    resolved_count = tickets.count_documents({"status": "resolved"})
+    unassigned = tickets.count_documents({
+        "$or": [{"assigned_to": None}, {"assigned_to": {"$exists": False}}, {"assigned_to": ""}]
+    })
+
+    team_roles = {"support", "support_admin"}
+    staff_count = users.count_documents({
+        "$or": [
+            {"role": {"$in": list(team_roles)}},
+            {"roles": {"$in": list(team_roles)}},
+        ],
+        "status": {"$nin": ["banned", "deleted", "disabled", "suspended"]},
+    })
+    latest = []
+    for ticket in tickets.find({}).sort("updated_at", -1).limit(15):
+        latest.append({
+            "id": str(ticket.get("_id") or ""),
+            "subject": str(ticket.get("subject") or "Support request"),
+            "user": str(ticket.get("user") or ""),
+            "status": str(ticket.get("status") or "open"),
+            "priority": str(ticket.get("priority") or "normal"),
+            "assigned_to": ticket.get("assigned_to"),
+            "assigned_to_name": ticket.get("assigned_to_name") or "",
+            "created_at": str(ticket.get("created_at") or ""),
+            "updated_at": str(ticket.get("updated_at") or ""),
+        })
+
+    return jsonify(success=True, stats={
+        "total": total,
+        "open": open_count,
+        "pending": pending_count,
+        "resolved": resolved_count,
+        "unassigned": unassigned,
+        "support_staff": staff_count,
+        "resolution_rate": round(resolved_count / total * 100, 1) if total else 0,
+    }, recent=latest), 200
+
+
+@support_bp.route("/admin/team", methods=["GET"])
+@require_current_roles(*SUPPORT_SUPERVISOR_ROLES)
+def support_admin_team():
+    db = get_db()
+    users = db["users"]
+    query = {
+        "$or": [
+            {"role": {"$in": ["support", "support_admin"]}},
+            {"roles": {"$in": ["support", "support_admin"]}},
+        ],
+        "status": {"$nin": ["banned", "deleted", "disabled", "suspended", "inactive"]},
+        "is_active": {"$ne": False},
+    }
+    team = []
+    for user in users.find(query).sort("created_at", -1).limit(300):
+        user_id = str(user.get("_id") or user.get("id") or user.get("user_id") or "")
+        role = str(user.get("role") or "support")
+        assigned = db[COLLECTIONS["support_tickets"]].count_documents({
+            "$or": [
+                {"assigned_to_user_id": user_id},
+                {"assigned_to": user_id},
+                {"assigned_to_contact": user.get("contact") or user.get("email")},
+            ],
+            "status": {"$ne": "resolved"},
+        })
+        team.append({
+            "id": user_id,
+            "full_name": user.get("full_name") or user.get("fullName") or user.get("name") or "",
+            "contact": user.get("contact") or user.get("email") or "",
+            "role": role,
+            "status": str(user.get("status") or "active"),
+            "verified": bool(user.get("verified", False)),
+            "open_assigned_tickets": assigned,
+        })
+    return jsonify(success=True, team=team, count=len(team)), 200
+
+
+@support_bp.route("/admin/activity", methods=["GET"])
+@require_current_roles(*SUPPORT_SUPERVISOR_ROLES)
+def support_admin_activity():
+    db = get_db()
+    limit = min(max(request.args.get("limit", default=50, type=int) or 50, 1), 100)
+    query = {"action": {"$in": [
+        "assign_ticket", "resolve_ticket", "support_ticket_assigned",
+        "user_account_banned", "user_account_unbanned",
+    ]}}
+    rows = []
+    for item in db[COLLECTIONS["admin_actions"]].find(query).sort("timestamp", -1).limit(limit):
+        rows.append({
+            "id": str(item.get("_id") or ""),
+            "action": str(item.get("action") or ""),
+            "resource": str(item.get("resource") or ""),
+            "actor": str(item.get("actor") or ""),
+            "metadata": item.get("metadata") if isinstance(item.get("metadata"), dict) else {},
+            "timestamp": str(item.get("timestamp") or item.get("created_at") or ""),
+        })
+    return jsonify(success=True, activity=rows, count=len(rows)), 200
+
+
+@support_bp.route("/admin/tickets/<ticket_id>/assign", methods=["POST"])
+@require_current_roles(*SUPPORT_SUPERVISOR_ROLES)
+def support_admin_assign_ticket(ticket_id):
+    if not ObjectId.is_valid(str(ticket_id or "")):
+        return jsonify(success=False, message="A valid ticket ID is required."), 400
+    data = request.get_json(silent=True) or {}
+    support_user_id = str(data.get("support_user_id") or "").strip()
+    if not support_user_id:
+        return jsonify(success=False, message="Choose an active support agent."), 400
+
+    db = get_db()
+    user_query = {"_id": ObjectId(support_user_id)} if ObjectId.is_valid(support_user_id) else {
+        "$or": [{"id": support_user_id}, {"user_id": support_user_id}]
+    }
+    staff = db["users"].find_one(user_query)
+    if not staff:
+        return jsonify(success=False, message="The chosen support account was not found."), 404
+    roles = set(staff.get("roles") if isinstance(staff.get("roles"), list) else [])
+    staff_role = str(staff.get("role") or "").strip().casefold()
+    if staff_role != "support" and "support" not in {str(value).casefold() for value in roles}:
+        return jsonify(success=False, message="Tickets may only be assigned to Support Agents, not a Support Administrator."), 422
+    if str(staff.get("status") or "active").casefold() not in {"active", "verified"} or staff.get("is_active") is False:
+        return jsonify(success=False, message="The selected support account is not active."), 409
+
+    ticket_oid = ObjectId(ticket_id)
+    tickets = db[COLLECTIONS["support_tickets"]]
+    ticket = tickets.find_one({"_id": ticket_oid})
+    if not ticket:
+        return jsonify(success=False, message="Ticket not found."), 404
+    if str(ticket.get("status") or "").casefold() == "resolved":
+        return jsonify(success=False, message="Resolved tickets cannot be reassigned."), 409
+
+    actor = current_platform_actor()
+    staff_id = str(staff.get("_id") or staff.get("id") or staff.get("user_id") or support_user_id)
+    staff_name = str(staff.get("full_name") or staff.get("fullName") or staff.get("name") or "")
+    now = datetime.utcnow()
+    tickets.update_one({"_id": ticket_oid}, {"$set": {
+        "assigned_to": staff_id,
+        "assigned_to_user_id": staff_id,
+        "assigned_to_name": staff_name,
+        "assigned_to_contact": str(staff.get("contact") or staff.get("email") or ""),
+        "assigned_by": str(actor.get("id") or ""),
+        "assigned_at": now,
+        "updated_at": now,
+    }})
+    _support_audit(db, action="support_ticket_assigned", resource=ticket_id, metadata={
+        "support_user_id": staff_id,
+        "support_name": staff_name,
+        "previous_assignment": ticket.get("assigned_to"),
+    })
+    updated = tickets.find_one({"_id": ticket_oid})
+    return jsonify(success=True, message=f"Ticket assigned to {staff_name or 'the selected support agent'}.", ticket={
+        "id": str(updated["_id"]),
+        "subject": updated.get("subject") or "",
+        "status": updated.get("status") or "open",
+        "assigned_to": updated.get("assigned_to"),
+        "assigned_to_user_id": updated.get("assigned_to_user_id"),
+        "assigned_to_name": updated.get("assigned_to_name"),
+        "updated_at": str(updated.get("updated_at") or ""),
     }), 200
