@@ -329,6 +329,20 @@ def handle_history_request():
                 "message": "No history entry provided",
             }), 400
 
+        # Stable client IDs make replay after offline retries idempotent.
+        # A lost HTTP response must not append the same activity twice.
+        entry_id = str(entry.get("id") or "").strip()
+        if entry_id and any(
+            isinstance(saved, dict)
+            and str(saved.get("id") or saved.get("_id") or "").strip() == entry_id
+            for saved in current_history
+        ):
+            return jsonify({
+                "success": True,
+                "history": current_history,
+                "idempotent_replay": True,
+            }), 200
+
         timestamp = (
             request.headers.get("X-Timestamp")
             or entry.get("timestamp")
@@ -402,6 +416,8 @@ def handle_history_request():
         "Authorization",
         "X-ADMIN-KEY",
         "X-Timestamp",
+        "Idempotency-Key",
+        "X-Offline-Mutation-Id",
     ],
 )
 def history_api():
@@ -445,6 +461,8 @@ def history_api():
         "Authorization",
         "X-ADMIN-KEY",
         "X-Timestamp",
+        "Idempotency-Key",
+        "X-Offline-Mutation-Id",
     ],
 )
 def history_legacy():
