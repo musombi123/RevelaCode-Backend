@@ -36,7 +36,7 @@ jobs:
           cache: pip
       - name: Install targeted backend test dependencies
         run: python -m pip install -r requirements.txt pytest
-      - name: Compile authentication, account document, Elimu, and Shamba modules
+      - name: Compile authentication, account document, Community, Elimu, and Shamba modules
         run: >-
           python -m py_compile
           main.py
@@ -49,8 +49,9 @@ jobs:
           backend/jumuiya/shamba/routes.py
           backend/jumuiya/shamba/trust_routes.py
           backend/jumuiya/community/services.py
+          backend/jumuiya/community/messaging.py
           backend/jumuiya/community/routes.py
-      - name: Verify account document and Elimu route registration contracts
+      - name: Verify account document, Elimu, and Community route registration contracts
         run: |
           python - <<'PY'
           import ast
@@ -103,10 +104,21 @@ jobs:
           missing_elimu = expected_elimu - elimu_routes
           assert not missing_elimu, f"Missing Elimu learning routes: {sorted(missing_elimu)}"
 
+          community_routes = decorated_routes("backend/jumuiya/community/routes.py", {"get", "post", "patch"})
+          expected_community = {
+              ("GET", "/matters", "get_matters"),
+              ("POST", "/matters", "create_matter"),
+              ("GET", "/matters/<matter_id>/messages", "get_matter_messages"),
+              ("POST", "/matters/<matter_id>/messages", "send_matter_message"),
+              ("PATCH", "/matters/<matter_id>/status", "update_matter_status"),
+          }
+          missing_community = expected_community - community_routes
+          assert not missing_community, f"Missing Community messaging routes: {sorted(missing_community)}"
+
           main_text = Path("main.py").read_text(encoding="utf-8-sig")
           assert "from backend.routes.study_routes import study_bp" in main_text, "Existing study blueprint is not imported by main.py"
           assert 'url_prefix="/api/study"' in main_text, "Existing study blueprint is not registered under /api/study"
-          print(f"Verified {len(expected_account)} account-document routes and {len(expected_elimu)} Elimu learning routes on the existing study blueprint.")
+          print(f"Verified {len(expected_account)} account-document routes, {len(expected_elimu)} Elimu learning routes, and {len(expected_community)} Community messaging routes.")
           PY
       - name: Run public Community share route tests
         run: python -m pytest -q tests/test_community_public_share_routes.py
