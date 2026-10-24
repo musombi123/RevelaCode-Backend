@@ -23,6 +23,7 @@ from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
 
 from backend.db import get_db
 from backend.utils.decorators import require_role
+from backend.utils.current_role_auth import require_current_roles, PLATFORM_ADMIN_ROLES
 from backend.jumuiya.core.permissions import current_user_id, require_authenticated
 
 from backend.study.study_service import (
@@ -622,7 +623,7 @@ def study_health():
     "/seed-faith-catalog",
     methods=["POST"],
 )
-@require_role("admin")
+@require_current_roles(*PLATFORM_ADMIN_ROLES, "support_admin")
 def seed_faith_catalog_route():
     """Publish/update the reviewed starter Faith lessons (admin-only)."""
     try:
