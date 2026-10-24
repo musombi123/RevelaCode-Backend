@@ -11,7 +11,7 @@ from functools import wraps
 
 import jwt
 from bson import ObjectId
-from flask import g, jsonify
+from flask import g, jsonify, request
 
 from backend.db import get_db
 
@@ -155,7 +155,7 @@ def require_current_roles(*allowed_roles):
     def decorator(fn):
         @wraps(fn)
         def wrapper(*args, **kwargs):
-            actor, error, status = resolve_current_actor(__import__("flask").request)
+            actor, error, status = resolve_current_actor(request)
             if error:
                 return jsonify(error), status
 
