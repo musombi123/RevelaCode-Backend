@@ -852,9 +852,9 @@ def test_every_trial_hub_has_a_proposed_paid_subscription_plan(monkeypatch):
 @pytest.mark.parametrize(
     ("hub", "expected_days"),
     [
-        ("elimu", 7),
-        ("biashara", 10),
-        ("shamba", 20),
+        ("elimu", 30),
+        ("biashara", 30),
+        ("shamba", 30),
         ("community", 30),
         ("smart_ai", 30),
         ("marketplace", 30),
@@ -867,7 +867,15 @@ def test_hub_trial_durations_are_configured(hub, expected_days):
 
 @pytest.mark.parametrize(
     ("hub", "expected_days"),
-    [("elimu", 7), ("biashara", 10), ("shamba", 20)],
+    [
+        ("elimu", 30),
+        ("biashara", 30),
+        ("shamba", 30),
+        ("community", 30),
+        ("smart_ai", 30),
+        ("marketplace", 30),
+        ("faith", 30),
+    ],
 )
 def test_new_trial_snapshot_uses_hub_specific_duration(hub, expected_days):
     now = datetime(2026, 10, 24, tzinfo=timezone.utc)
