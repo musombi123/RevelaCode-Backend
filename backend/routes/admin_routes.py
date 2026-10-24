@@ -120,29 +120,30 @@ def update_policy():
 
     policy_id = data.get("policy_id")
     content = data.get("content")
+    if not isinstance(policy_id, str) or not policy_id.strip() or not isinstance(content, str) or not content.strip():
+        return jsonify({"success": False, "message": "policy_id and non-empty content are required."}), 400
+    if len(policy_id) > 120 or len(content) > 250000:
+        return jsonify({"success": False, "message": "Policy ID or content exceeds the allowed size."}), 413
 
-    if not policy_id or not content:
-        return jsonify({
-            "message": "policy_id and content required"
-        }), 400
-
+    actor = current_platform_actor()
+    now = datetime.now(timezone.utc)
     db["policies"].update_one(
-        {"_id": policy_id},
+        {"_id": policy_id.strip()},
         {
             "$set": {
-                "content": content,
-                "updated_at": datetime.utcnow(),
-                "updated_by": "admin"
+                "content": content.strip(),
+                "updated_at": now,
+                "updated_by": actor.get("id"),
             }
         },
         upsert=True
     )
 
-    log_admin_action(
+    _log_admin_operation(
         db,
         action="update_policy",
-        resource=policy_id,
-        actor="admin"
+        resource=policy_id.strip(),
+        metadata={"updated_by": actor.get("id"), "revisioned_public_docs": "use /admin/legal/<type>"},
     )
 
     return jsonify({
@@ -153,7 +154,7 @@ def update_policy():
 # Scripture Management
 # ----------------------------
 @admin_bp.route("/admin/update-scripture", methods=["POST"])
-@require_current_roles(*PLATFORM_ADMIN_ROLES, "support_admin")
+@require_current_roles(*PLATFORM_ADMIN_ROLES)
 def update_scripture():
     db = get_db()
     data = request.get_json(silent=True) or {}
