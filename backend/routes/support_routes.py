@@ -6,7 +6,7 @@ from bson.objectid import ObjectId
 
 from backend.db import get_db
 from backend.utils.auth_keys import get_role
-from backend.utils.current_role_auth import current_platform_actor, require_current_roles, PLATFORM_ADMIN_ROLES
+from backend.utils.current_role_auth import current_platform_actor, require_current_roles, PLATFORM_ADMIN_ROLES, resolve_current_actor
 from backend.utils.audit_logger import log_admin_action
 
 # ----------------------------
@@ -18,6 +18,25 @@ COLLECTIONS = {
     "support_tickets": "support_tickets",
     "admin_actions": "admin_actions"
 }
+
+def _ticket_actor():
+    """Return the current database-backed identity for JWT callers, if available."""
+    actor, error, _status = resolve_current_actor(request)
+    return actor if actor and not error else {}
+
+
+def _ticket_assignment_query(actor, legacy_role="support"):
+    if not actor:
+        return {"assigned_to": legacy_role}
+    actor_id = str(actor.get("id") or "")
+    contact = str(actor.get("contact") or "")
+    terms = [{"assigned_to": legacy_role}]
+    if actor_id:
+        terms.extend([{"assigned_to_user_id": actor_id}, {"assigned_to": actor_id}])
+    if contact:
+        terms.append({"assigned_to_contact": contact})
+    return {"$or": terms}
+
 
 # ----------------------------
 # Dashboard
@@ -36,12 +55,15 @@ def support_dashboard():
 
     tickets = db[COLLECTIONS["support_tickets"]]
 
+    actor = _ticket_actor()
+    actor_query = _ticket_assignment_query(actor, role)
+
     stats = {
         "total": tickets.count_documents({}),
         "open": tickets.count_documents({"status": "open"}),
         "pending": tickets.count_documents({"status": "pending"}),
         "resolved": tickets.count_documents({"status": "resolved"}),
-        "assigned_to_me": tickets.count_documents({"assigned_to": role}),
+        "assigned_to_me": tickets.count_documents(actor_query),
         "unassigned": tickets.count_documents({
             "$or": [
                 {"assigned_to": None},
@@ -107,7 +129,8 @@ def view_tickets():
         query["status"] = status
 
     if mine:
-        query["assigned_to"] = role
+        actor = _ticket_actor()
+        query.update(_ticket_assignment_query(actor, role))
 
     if search:
         query["$or"] = [
@@ -208,23 +231,36 @@ def resolve_ticket():
             "message": "Ticket has already been resolved."
         }), 409
 
-    assigned_to = ticket.get("assigned_to")
-
-    if assigned_to not in [None, role]:
+    assigned_to = str(ticket.get("assigned_to") or "")
+    actor = _ticket_actor()
+    actor_id = str(actor.get("id") or "")
+    actor_contact = str(actor.get("contact") or "")
+    is_legacy_team_assignment = assigned_to in {"", "support"}
+    is_assigned_to_actor = assigned_to == actor_id or str(ticket.get("assigned_to_user_id") or "") == actor_id or (
+        bool(actor_contact) and str(ticket.get("assigned_to_contact") or "") == actor_contact
+    )
+    if role == "support" and not (is_legacy_team_assignment or is_assigned_to_actor):
         return jsonify({
             "success": False,
             "message": "This ticket is assigned to another support agent."
         }), 403
 
+    assignment_id = actor_id or role
+    assignment_name = str(actor.get("name") or "")
+    assignment_contact = str(actor.get("contact") or "")
+    now = datetime.utcnow()
     collection.update_one(
         {"_id": oid},
         {
             "$set": {
                 "status": "resolved",
                 "resolution": resolution,
-                "resolved_at": datetime.utcnow(),
-                "updated_at": datetime.utcnow(),
-                "assigned_to": role
+                "resolved_at": now,
+                "updated_at": now,
+                "assigned_to": assignment_id,
+                "assigned_to_user_id": assignment_id,
+                "assigned_to_name": assignment_name,
+                "assigned_to_contact": assignment_contact
             }
         }
     )
@@ -404,9 +440,7 @@ def support_analytics():
         "status": "resolved"
     })
 
-    assigned_count = collection.count_documents({
-        "assigned_to": role
-    })
+    assigned_count = collection.count_documents(_ticket_assignment_query(_ticket_actor(), role))
 
     unassigned_count = collection.count_documents({
         "$or": [
@@ -553,18 +587,27 @@ def assign_ticket():
             "message": "Resolved tickets cannot be assigned."
         }), 400
 
-    if ticket.get("assigned_to") == role:
+    actor = _ticket_actor()
+    actor_id = str(actor.get("id") or "")
+    assignment_id = actor_id or role
+    if str(ticket.get("assigned_to") or "") in {role, assignment_id}:
         return jsonify({
             "success": False,
             "message": "Ticket is already assigned to you."
         }), 409
 
+    now = datetime.utcnow()
+    assignment_name = str(actor.get("name") or "")
+    assignment_contact = str(actor.get("contact") or "")
     collection.update_one(
         {"_id": oid},
         {
             "$set": {
-                "assigned_to": role,
-                "updated_at": datetime.utcnow()
+                "assigned_to": assignment_id,
+                "assigned_to_user_id": assignment_id,
+                "assigned_to_name": assignment_name,
+                "assigned_to_contact": assignment_contact,
+                "updated_at": now
             }
         }
     )
@@ -573,9 +616,10 @@ def assign_ticket():
         db,
         action="assign_ticket",
         resource=ticket_id,
-        actor=role,
+        actor=assignment_id,
         metadata={
-            "assigned_to": role
+            "assigned_to": assignment_id,
+            "assigned_to_name": assignment_name
         }
     )
 
