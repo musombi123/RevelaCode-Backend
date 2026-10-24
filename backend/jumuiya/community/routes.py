@@ -31,13 +31,8 @@ from backend.jumuiya.core.responses import (
 
 from backend.jumuiya.community import (
     discovery,
-    schemas,
-    services,
-)
-
-from backend.jumuiya.community import (
-    discovery,
     group_services,
+    messaging,
     schemas,
     services,
 )
@@ -391,6 +386,7 @@ def health():
             "discovery",
             "groups",
             "threads",
+            "matter_messaging",
             "actions",
             "trust",
             "posts",
@@ -1553,3 +1549,62 @@ def get_member_whatsapp_contact(member_id):
         "available": True,
         "contact_url": f"https://wa.me/{digits}",
     })
+
+
+# ============================================================
+# PARTICIPANT-SCOPED COMMUNITY MATTERS AND MESSAGES
+# ============================================================
+
+@community_bp.get("/matters")
+@require_authenticated
+def get_matters():
+    """List only conversations in which the authenticated user participates."""
+    return ok(
+        messaging.list_matters(
+            current_user_id(),
+            limit=parse_limit(default=30, maximum=100),
+        )
+    )
+
+
+@community_bp.post("/matters")
+@require_authenticated
+def create_matter():
+    """Create a direct/post-related conversation or return its existing thread."""
+    return created(
+        {"matter": messaging.create_matter(current_user_id(), body())},
+        "Community conversation ready.",
+    )
+
+
+@community_bp.get("/matters/<matter_id>/messages")
+@require_authenticated
+def get_matter_messages(matter_id):
+    """List a bounded page of messages after participant authorization."""
+    return ok(
+        messaging.list_messages(
+            current_user_id(),
+            matter_id,
+            limit=parse_limit(default=100, maximum=200),
+        )
+    )
+
+
+@community_bp.post("/matters/<matter_id>/messages")
+@require_authenticated
+def send_matter_message(matter_id):
+    """Persist a message from the authenticated conversation participant."""
+    return created(
+        {"message": messaging.send_message(current_user_id(), matter_id, body())},
+        "Message sent.",
+    )
+
+
+@community_bp.patch("/matters/<matter_id>/status")
+@require_authenticated
+def update_matter_status(matter_id):
+    """Allow either participant to update the matter lifecycle."""
+    return ok(
+        {"matter": messaging.update_status(current_user_id(), matter_id, body())},
+        "Matter status updated.",
+    )
