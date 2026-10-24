@@ -1008,6 +1008,7 @@ def get_public_legal_document(doc_type):
         version=str(document.get("version") or ""),
         content=str(document.get("content") or ""),
         updated_at=_iso_utc(document.get("updated_at") or document.get("created_at")),
+        lastUpdated=_iso_utc(document.get("updated_at") or document.get("created_at")),
     ), 200
 
 
