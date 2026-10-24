@@ -872,15 +872,23 @@ def test_every_trial_hub_has_a_proposed_paid_subscription_plan(monkeypatch):
         ]
         assert matching, f"{hub} has a trial but no paid subscription plan"
 
-    for hub in ("community", "faith"):
-        matching = [
-            plan for plan in catalogue
-            if plan.get("hub") == hub
-            and plan.get("interval") == "month"
-            and Decimal(str(plan.get("amount", "0"))) > 0
-        ]
-        assert matching
-        assert all(plan.get("status") == "proposed" for plan in matching)
+    matching = [
+        plan for plan in catalogue
+        if plan.get("hub") == "faith"
+        and plan.get("interval") == "month"
+        and Decimal(str(plan.get("amount", "0"))) > 0
+    ]
+    assert matching
+    assert all(plan.get("status") == "proposed" for plan in matching)
+
+    community_paid_plans = [
+        plan for plan in catalogue
+        if plan.get("hub") == "community"
+        and plan.get("interval") in {"month", "year"}
+        and Decimal(str(plan.get("amount", "0"))) > 0
+    ]
+    assert community_paid_plans == []
+    assert "community" not in trials.TRIAL_HUBS
 
 @pytest.mark.parametrize(
     ("hub", "expected_days"),
@@ -888,7 +896,6 @@ def test_every_trial_hub_has_a_proposed_paid_subscription_plan(monkeypatch):
         ("elimu", 30),
         ("biashara", 30),
         ("shamba", 30),
-        ("community", 30),
         ("smart_ai", 30),
         ("marketplace", 30),
         ("faith", 30),
@@ -904,7 +911,6 @@ def test_hub_trial_durations_are_configured(hub, expected_days):
         ("elimu", 30),
         ("biashara", 30),
         ("shamba", 30),
-        ("community", 30),
         ("smart_ai", 30),
         ("marketplace", 30),
         ("faith", 30),
@@ -940,6 +946,70 @@ def test_new_trial_snapshot_uses_hub_specific_duration(hub, expected_days):
         ("shamba", "shamba_pro", "advanced_analytics", True),
     ],
 )
+
+def test_community_entitlements_are_permanently_free_without_subscription_or_trial(monkeypatch):
+    def forbidden(*args, **kwargs):
+        pytest.fail("Community must not query subscriptions or trials")
+
+    monkeypatch.setattr(subscriptions, "_active_subscription", forbidden)
+    monkeypatch.setattr(subscriptions, "collection", forbidden)
+
+    result = subscriptions.resolve_entitlement(
+        "user-1", "community", "advanced_analytics"
+    )
+
+    assert result["allowed"] is True
+    assert result["tier"] == "free"
+    assert result["access"] == "free"
+    assert result["reason"] == "permanent_free_hub"
+    assert result["premium_access"] is True
+    assert result["paid_subscription"] is False
+    assert result["trial_status"] == "not_required"
+    assert result["trial"] is None
+    assert result["subscription"] is None
+    assert result["billing_enabled"] is False
+    assert result["checkout_enabled"] is False
+
+
+def test_community_cannot_be_created_as_a_paid_subscription_plan():
+    with pytest.raises(ValueError, match="Community is permanently free"):
+        admin_routes._validate_plan_values({
+            "code": "community_growth",
+            "name": "Community Growth",
+            "hub": "community",
+            "amount": "99",
+            "interval": "month",
+            "status": "proposed",
+            "features": [],
+        }, creating=True)
+
+
+def test_community_checkout_is_blocked_even_if_a_legacy_plan_is_available(
+    monkeypatch, revenue_app
+):
+    monkeypatch.setattr(mpesa, "checkout_is_production_configured", lambda: True)
+    monkeypatch.setattr(mpesa, "current_user_id", lambda: "user-1")
+    monkeypatch.setattr(mpesa, "get_plan", lambda _code: {
+        "code": "community_pro",
+        "hub": "community",
+        "status": "available",
+        "interval": "month",
+        "amount": "299.00",
+        "currency": "KES",
+    })
+
+    with revenue_app.test_request_context(
+        "/api/revenue/checkout",
+        method="POST",
+        headers={"Idempotency-Key": "community-must-be-free-001"},
+        json={"plan_code": "community_pro", "phone": "0712345678"},
+    ):
+        response, status = mpesa.revenue_start_checkout.__wrapped__()
+
+    assert status == 409
+    assert response.get_json()["code"] == "community_permanently_free"
+
+
 def test_paid_hub_plan_only_unlocks_included_features(
     monkeypatch, hub, plan_code, feature, expected
 ):
