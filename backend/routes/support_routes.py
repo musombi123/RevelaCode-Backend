@@ -123,20 +123,22 @@ def view_tickets():
     mine = request.args.get("mine", "false").lower() == "true"
 
     search_pattern = re.escape(search)
-    query = {}
+    clauses = []
 
     if status:
-        query["status"] = status
+        clauses.append({"status": status})
 
     if mine:
         actor = _ticket_actor()
-        query.update(_ticket_assignment_query(actor, role))
+        clauses.append(_ticket_assignment_query(actor, role))
 
     if search:
-        query["$or"] = [
+        clauses.append({"$or": [
             {"subject": {"$regex": search_pattern, "$options": "i"}},
             {"user": {"$regex": search_pattern, "$options": "i"}}
-        ]
+        ]})
+
+    query = clauses[0] if len(clauses) == 1 else ({"$and": clauses} if clauses else {})
 
     total = collection.count_documents(query)
 
@@ -546,7 +548,9 @@ def get_ticket(ticket_id):
 def assign_ticket():
     role = get_role(request)
 
-    if role not in {"support", "support_admin"}:
+    # Agents can claim eligible queue work. Supervisors use the dedicated
+    # assignment endpoint to assign tickets to another named agent.
+    if role != "support":
         return jsonify({
             "success": False,
             "message": "Forbidden"
@@ -590,7 +594,13 @@ def assign_ticket():
     actor = _ticket_actor()
     actor_id = str(actor.get("id") or "")
     assignment_id = actor_id or role
-    if str(ticket.get("assigned_to") or "") in {role, assignment_id}:
+    current_assignment = str(ticket.get("assigned_to") or "")
+    if current_assignment and current_assignment not in {role, assignment_id}:
+        return jsonify({
+            "success": False,
+            "message": "This ticket is already assigned to another support agent. Ask the Support Administrator to reassign it."
+        }), 409
+    if current_assignment in {role, assignment_id}:
         return jsonify({
             "success": False,
             "message": "Ticket is already assigned to you."
