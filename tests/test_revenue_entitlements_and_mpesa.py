@@ -1010,6 +1010,30 @@ def test_community_cannot_be_created_as_a_paid_subscription_plan():
         }, creating=True)
 
 
+def test_community_public_catalog_disables_checkout_when_mpesa_is_ready(
+    monkeypatch, revenue_app
+):
+    from backend.revenue import routes
+
+    monkeypatch.setattr(
+        mpesa, "checkout_is_production_configured", lambda: True
+    )
+    monkeypatch.setattr(routes, "get_pricing_status", lambda: "published")
+    monkeypatch.setattr(routes, "list_plans", lambda hub=None: [
+        {"code": "free", "hub": "all", "amount": "0.00", "status": "available"}
+    ])
+
+    with revenue_app.test_request_context("/api/revenue/plans?hub=community"):
+        response, status = routes.revenue_list_plans()
+
+    payload = response.get_json()
+    assert status == 200
+    assert payload["billing_enabled"] is True
+    assert payload["checkout_enabled"] is False
+    assert payload["subscription_enabled"] is False
+    assert payload["hub"] == "community"
+
+
 def test_community_checkout_is_blocked_even_if_a_legacy_plan_is_available(
     monkeypatch, revenue_app
 ):
