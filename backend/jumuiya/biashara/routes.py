@@ -707,6 +707,14 @@ def get_website_inquiries():
     )
 
 
+@biashara_bp.post("/public/<slug>/orders")
+def create_public_website_order(slug):
+    return created(
+        services.create_public_biashara_order(slug, body()),
+        "Your order has been received and stock has been reserved.",
+    )
+
+
 @biashara_bp.get("/public/<slug>")
 def get_public_website(slug):
     return ok(services.get_public_biashara_website(slug))
