@@ -103,6 +103,12 @@ def profile_document(user):
 
         "avatar_url": "",
 
+        "cover_url": "",
+
+        "avatar_position": "50%",
+
+        "cover_position": "50%",
+
         "county": "",
 
         "town": "",
