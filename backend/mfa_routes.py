@@ -333,6 +333,73 @@ def _error_response(exc: MfaFailure):
     return jsonify(success=False, code=exc.code, message=exc.message), exc.status
 
 
+@mfa_bp.before_app_request
+def enforce_mfa_for_authenticated_api_requests():
+    """Reject pre-MFA sessions after an account turns MFA on.
+
+    Normal auth entry/challenge endpoints are exempt because they are the
+    mechanism used to complete the second factor; protected application APIs
+    are not. Invalid/expired tokens continue to be handled by each route's
+    existing authentication guard.
+    """
+    if not request.path.startswith("/api/") or request.method == "OPTIONS":
+        return None
+
+    exempt_paths = {
+        "/api/login", "/api/auth/login", "/api/register",
+        "/api/request-code", "/api/verify", "/api/request-reset",
+        "/api/verify-reset", "/api/reset-password",
+        "/api/auth/mfa/login-verify", "/api/auth/mfa/setup",
+        "/api/auth/mfa/enable",
+    }
+    if request.path in exempt_paths:
+        return None
+
+    authorization = (request.headers.get("Authorization") or "").strip()
+    if not authorization.lower().startswith("bearer "):
+        return None
+
+    raw_token = authorization[7:].strip()
+    if not raw_token:
+        return None
+    try:
+        claims = jwt.decode(
+            raw_token,
+            auth.JWT_SECRET,
+            algorithms=[auth.JWT_ALGORITHM],
+            options={"require": ["sub", "iat", "exp"]},
+        )
+    except jwt.InvalidTokenError:
+        # Keep error formatting in the route's existing auth guard.
+        return None
+
+    # Purpose-limited MFA challenges are not full API sessions.
+    if claims.get("purpose") is not None:
+        return None
+
+    user_id = str(claims.get("sub") or claims.get("user_id") or "").strip()
+    if not user_id:
+        return None
+    try:
+        user = _lookup_user(user_id)
+    except MfaFailure:
+        return jsonify(
+            success=False,
+            code="mfa_state_unavailable",
+            message="We could not validate this session's security state. Please retry.",
+        ), 503
+
+    if user and user.get("mfa_enabled") is True:
+        if claims.get("mfa_verified") is not True:
+            return jsonify(
+                success=False,
+                authenticated=False,
+                code="mfa_required",
+                message="This account now requires authenticator verification. Sign in again and complete the second step.",
+            ), 401
+    return None
+
+
 @mfa_bp.get("/api/auth/mfa/status")
 def mfa_status():
     try:
@@ -421,12 +488,24 @@ def mfa_enable():
             "mfa_setup_secret_enc", "mfa_setup_expires_at", "mfa_setup_issued_at",
             "mfa_challenge_id", "mfa_challenge_purpose", "mfa_challenge_attempts",
         ])
+        # For setup initiated from Account & Security, the password and new
+        # authenticator code have both been verified in this session. Rotate
+        # its JWT to a session that carries the verified-MFA claim. Privileged
+        # enrollment via login challenge deliberately returns no access token.
+        session_token = (
+            auth.create_access_token(user, mfa_verified=True)
+            if not is_enrollment_challenge
+            else None
+        )
         return jsonify(
             success=True,
             enabled=True,
             method="totp",
             recovery_codes=visible_codes,
             recovery_codes_remaining=len(visible_codes),
+            access_token=session_token,
+            token_type="Bearer" if session_token else None,
+            expires_in=auth.JWT_EXPIRES_HOURS * 60 * 60 if session_token else None,
             sign_in_again=is_enrollment_challenge,
             message=(
                 "Authenticator enabled. Sign in again and verify your first code."
@@ -457,7 +536,7 @@ def mfa_login_verify():
             user = _consume_recovery_code(user, recovery_index)
         _consume_challenge(user)
 
-        access_token = auth.create_access_token(user)
+        access_token = auth.create_access_token(user, mfa_verified=True)
         return jsonify(
             success=True,
             userId=_user_id(user),
