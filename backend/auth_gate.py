@@ -670,6 +670,7 @@ def save_user_to_file(
 
 def create_access_token(
     user,
+    mfa_verified: bool = False,
 ):
     """
     Create the access token used by the existing
@@ -757,6 +758,9 @@ def create_access_token(
                 False,
             )
         ),
+
+        # A true claim is granted only after successful TOTP/recovery verification.
+        "mfa_verified": bool(mfa_verified),
 
         "iat": issued_at,
 
