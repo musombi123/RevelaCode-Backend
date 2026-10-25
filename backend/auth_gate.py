@@ -6,6 +6,7 @@ import hmac
 import json
 import os
 import random
+import secrets
 import re
 import threading
 
@@ -669,6 +670,7 @@ def save_user_to_file(
 
 def create_access_token(
     user,
+    mfa_verified: bool = False,
 ):
     """
     Create the access token used by the existing
@@ -756,6 +758,9 @@ def create_access_token(
                 False,
             )
         ),
+
+        # A true claim is granted only after successful TOTP/recovery verification.
+        "mfa_verified": bool(mfa_verified),
 
         "iat": issued_at,
 
@@ -1390,6 +1395,66 @@ def login():
         "role",
         "user",
     )
+
+    # -----------------------------------------------------
+    # SECOND FACTOR / PRIVILEGED ACCOUNT ENROLLMENT
+    # -----------------------------------------------------
+    # TOTP is local and free: the browser receives only a short-lived, purpose-
+    # limited challenge until MFA is complete. A full access JWT is not issued
+    # before the second factor is verified.
+    actual_user_id = str(user.get("_id") or user.get("id") or user.get("user_id") or "").strip()
+    normalized_role = str(role or "user").strip().casefold()
+    privileged_mfa_role = (
+        normalized_role in PLATFORM_ADMIN_ROLES
+        or normalized_role in {"support", "support_admin"}
+    )
+    mfa_enabled = user.get("mfa_enabled") is True and bool(user.get("mfa_secret_enc"))
+
+    if mfa_enabled or (privileged_mfa_role and not mfa_enabled):
+        purpose = "mfa_login" if mfa_enabled else "mfa_enrollment"
+        challenge_id = secrets.token_urlsafe(32)
+        issued_at = int(now().timestamp())
+        challenge_payload = {
+            "sub": actual_user_id,
+            "user_id": actual_user_id,
+            "purpose": purpose,
+            "jti": challenge_id,
+            "iat": issued_at,
+            "exp": issued_at + 300,
+        }
+        challenge_fields = {
+            "mfa_challenge_id": challenge_id,
+            "mfa_challenge_purpose": purpose,
+            "mfa_challenge_attempts": 0,
+        }
+        if MONGO_AVAILABLE and users_col is not None:
+            user_query = (
+                {"_id": user["_id"]}
+                if user.get("_id") is not None
+                else {"$or": [{"id": actual_user_id}, {"user_id": actual_user_id}, {"contact": contact}]}
+            )
+            users_col.update_one(user_query, {"$set": challenge_fields})
+        else:
+            user.update(challenge_fields)
+            save_user_to_file(user)
+
+        challenge_token = jwt.encode(
+            challenge_payload,
+            JWT_SECRET,
+            algorithm=JWT_ALGORITHM,
+        )
+        return jsonify(
+            success=True,
+            mfa_required=mfa_enabled,
+            mfa_setup_required=not mfa_enabled,
+            challenge_token=challenge_token,
+            expires_in=300,
+            message=(
+                "Enter your authenticator code to finish signing in."
+                if mfa_enabled
+                else "Set up authenticator verification before accessing the privileged account."
+            ),
+        ), 200
 
     # -----------------------------------------------------
     # REDIRECT

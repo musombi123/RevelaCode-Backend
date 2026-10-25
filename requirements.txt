@@ -18,6 +18,7 @@ gunicorn==23.0.0
 # =====================================================
 requests==2.32.3
 PyJWT==2.10.1
+cryptography>=42.0.0
 
 # =====================================================
 # Database
@@ -63,3 +64,6 @@ tzdata
 cloudinary==1.46.3
 # PDF generation for account profile and certificate exports
 reportlab>=4.2,<5.0
+
+# QR generation for local TOTP authenticator enrollment (no external QR service)
+qrcode>=7.4,<9
