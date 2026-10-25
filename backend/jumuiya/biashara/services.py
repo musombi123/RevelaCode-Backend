@@ -1305,183 +1305,128 @@ def record_sale(
     user_id,
     payload,
 ):
+    business = _require_business(user_id, allowed_roles=set(["owner", "admin", "manager", "sales"]))
+    sales = collection("jumuiya_sales")
+    orders = collection("jumuiya_orders")
+    linked_order = None
+    deduct_stock = True
+    payload = dict(payload or {})
 
-    business = _require_business(user_id, allowed_roles=set(['owner', 'admin', 'manager', 'sales']))
+    order_id = payload.get("order_id")
+    if order_id:
+        linked_order = orders.find_one({
+            "_id": clean_id(order_id),
+            "business_id": business["id"],
+        })
+        if not linked_order:
+            raise APIError("The linked order does not belong to this business.", 404, "order_not_found")
+        if str(linked_order.get("status") or "").lower() == "cancelled":
+            raise APIError("A cancelled order cannot be recorded as a sale.", 409, "order_cancelled")
+        existing_sale = sales.find_one({
+            "business_id": business["id"],
+            "order_id": str(linked_order["_id"]),
+        })
+        if existing_sale:
+            raise APIError("A sale has already been recorded for this order.", 409, "sale_already_recorded")
+        payload["items"] = linked_order.get("items") or payload.get("items") or []
+        payload["customer_id"] = linked_order.get("customer_id") or payload.get("customer_id")
+        # Orders created in the current workflow reserve stock immediately.
+        # Recording their sale must never deduct the same units a second time.
+        deduct_stock = str(linked_order.get("inventory_status") or "") not in {"reserved", "deducted"}
 
-    # -----------------------------------------------------
-    # Validate customer
-    # -----------------------------------------------------
-
-    customer_id = payload.get(
-        "customer_id"
-    )
-
+    customer_id = payload.get("customer_id")
     if customer_id:
-
-        customer = collection(
-            "jumuiya_customers"
-        ).find_one({
-            "_id": clean_id(
-                customer_id
-            ),
+        customer = collection("jumuiya_customers").find_one({
+            "_id": clean_id(customer_id),
             "business_id": business["id"],
         })
-
         if not customer:
+            raise APIError("Customer does not belong to this business.", 422, "invalid_customer")
 
-            raise APIError(
-                "Customer does not belong to this business.",
-                422,
-                "invalid_customer",
-            )
+    items = payload.get("items") or []
+    if not isinstance(items, list):
+        raise APIError("Sale items must be a list.", 422, "invalid_sale_items")
 
-    # -----------------------------------------------------
-    # Validate stock
-    # -----------------------------------------------------
+    products = collection("jumuiya_products")
+    if deduct_stock:
+        for item in items:
+            product = products.find_one({
+                "_id": clean_id(item["product_id"]),
+                "business_id": business["id"],
+                "status": "active",
+            })
+            if not product:
+                raise APIError("One or more products were not found.", 422, "invalid_product")
+            requested = float(item["quantity"])
+            available = float(product.get("stock_quantity", 0) or 0)
+            if requested <= 0 or requested > available:
+                raise APIError(
+                    f"Insufficient stock for {product.get('name', 'product')}.",
+                    409,
+                    "insufficient_stock",
+                )
 
-    for item in payload.get(
-        "items",
-        [],
-    ):
+    document = sale_document(business["id"], payload)
+    result = sales.insert_one(document)
+    document["_id"] = result.inserted_id
 
-        product = collection(
-            "jumuiya_products"
-        ).find_one({
-            "_id": clean_id(
-                item["product_id"]
-            ),
-            "business_id": business["id"],
-            "status": "active",
-        })
-
-        if not product:
-
-            raise APIError(
-                "One or more products were not found.",
-                422,
-                "invalid_product",
-            )
-
-        requested = float(
-            item["quantity"]
-        )
-
-        available = float(
-            product.get(
-                "stock_quantity",
-                0,
-            )
-        )
-
-        if requested > available:
-
-            raise APIError(
-                f"Insufficient stock for {product.get('name', 'product')}.",
-                409,
-                "insufficient_stock",
-            )
-
-    # -----------------------------------------------------
-    # Create sale
-    # -----------------------------------------------------
-
-    document = sale_document(
-        business["id"],
-        payload,
-    )
-
-    result = collection(
-        "jumuiya_sales"
-    ).insert_one(
-        document
-    )
-
-    document["_id"] = (
-        result.inserted_id
-    )
-
-    # -----------------------------------------------------
-    # Deduct inventory
-    # -----------------------------------------------------
-
-    for item in payload.get(
-        "items",
-        [],
-    ):
-
-        product_id = clean_id(
-            item["product_id"]
-        )
-
-        quantity = float(
-            item["quantity"]
-        )
-
-        product = collection(
-            "jumuiya_products"
-        ).find_one({
-            "_id": product_id,
-            "business_id": business["id"],
-        })
-
-        if not product:
-            continue
-
-        previous_quantity = float(
-            product.get(
-                "stock_quantity",
-                0,
-            )
-        )
-
-        new_quantity = (
-            previous_quantity
-            - quantity
-        )
-
-        collection(
-            "jumuiya_products"
-        ).update_one(
-            {
+    if deduct_stock:
+        # A direct/walk-in sale still adjusts stock. Use a quantity guard so
+        # concurrent sales cannot drive the count below zero.
+        completed_movements = []
+        for item in items:
+            product_id = clean_id(item["product_id"])
+            quantity = float(item["quantity"])
+            product = products.find_one({
                 "_id": product_id,
                 "business_id": business["id"],
-            },
-            {
-                "$set": {
-                    "stock_quantity": new_quantity,
-                    "updated_at": now_utc(),
-                }
-            },
+                "status": "active",
+            })
+            if not product:
+                continue
+            previous_quantity = float(product.get("stock_quantity", 0) or 0)
+            updated_product = products.find_one_and_update(
+                {
+                    "_id": product_id,
+                    "business_id": business["id"],
+                    "status": "active",
+                    "stock_quantity": {"$gte": quantity},
+                },
+                {"$inc": {"stock_quantity": -quantity}, "$set": {"updated_at": now_utc()}},
+                return_document=ReturnDocument.AFTER,
+            )
+            if not updated_product:
+                # Roll back the quantities already deducted in this sale.
+                for movement in reversed(completed_movements):
+                    products.update_one(
+                        {"_id": movement["product_id"], "business_id": business["id"]},
+                        {"$inc": {"stock_quantity": movement["quantity"]}, "$set": {"updated_at": now_utc()}},
+                    )
+                sales.delete_one({"_id": result.inserted_id, "business_id": business["id"]})
+                raise APIError("Stock changed while recording this sale. Refresh and retry.", 409, "stock_conflict")
+
+            new_quantity = float(updated_product.get("stock_quantity", 0) or 0)
+            completed_movements.append({"product_id": product_id, "quantity": quantity})
+            try:
+                movement = inventory_movement_document(
+                    business["id"],
+                    product_id,
+                    {"movement_type": "remove", "quantity": quantity, "reason": "direct sale " + str(result.inserted_id)},
+                    previous_quantity,
+                    new_quantity,
+                )
+                collection("jumuiya_inventory_movements").insert_one(movement)
+            except Exception:
+                pass
+
+    if linked_order:
+        orders.update_one(
+            {"_id": linked_order["_id"], "business_id": business["id"]},
+            {"$set": {"sale_id": str(result.inserted_id), "sale_recorded_at": now_utc()}},
         )
 
-        movement = inventory_movement_document(
-            business["id"],
-            product_id,
-            {
-                "movement_type": "remove",
-                "quantity": quantity,
-                "reason": "sale",
-            },
-            previous_quantity,
-            new_quantity,
-        )
-
-        collection(
-            "jumuiya_inventory_movements"
-        ).insert_one(
-            movement
-        )
-
-    log_action(
-        user_id,
-        "sale.created",
-        "sale",
-        result.inserted_id,
-    )
-
-    return serialise(
-        document
-    )
+    log_action(user_id, "sale.created", "sale", result.inserted_id)
+    return serialise(document)
 
 
 # =========================================================
