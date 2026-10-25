@@ -1003,6 +1003,19 @@ def create_order(
             "currency": currency,
         })
 
+    # Reject obvious oversell attempts before any write. The guarded atomic
+    # updates below also protect against stock changing between this check and
+    # the reservation itself.
+    for product_key, requested in requested_by_product.items():
+        available = stock_by_product.get(product_key, Decimal("0"))
+        if requested > available:
+            product = product_cache[product_key]
+            raise APIError(
+                f"Insufficient stock for {product.get('name', 'product')}. Remaining: {available:g}.",
+                409,
+                "insufficient_stock",
+            )
+
     # Atomically reserve inventory when an order is accepted. This makes the
     # displayed remaining quantity authoritative even when two customers order
     # close together.
