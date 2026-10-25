@@ -788,6 +788,31 @@ def get_group(group_id):
     })
 
 
+@community_bp.get("/groups/<group_id>/files")
+@require_authenticated
+def get_group_files(group_id):
+    result = group_services.list_group_files(
+        current_user_id(),
+        group_id,
+        limit=parse_limit(default=50, maximum=100),
+    )
+    return ok(result)
+
+
+@community_bp.post("/groups/<group_id>/files")
+@require_authenticated
+def share_group_file(group_id):
+    result = group_services.share_group_file(
+        current_user_id(),
+        group_id,
+        body(),
+    )
+    return created(
+        {"file": result},
+        "PDF shared with the Community group.",
+    )
+
+
 @community_bp.post("/groups/<group_id>/join")
 @require_authenticated
 def join_group(group_id):
