@@ -21,6 +21,8 @@ jobs:
         run: python -m pip install Flask PyJWT pymongo python-dotenv requests werkzeug resend cryptography qrcode
       - name: Compile backend entry points
         run: python -m py_compile main.py backend/auth_gate.py backend/mfa_routes.py backend/db.py
+      - name: Test TOTP enrollment and protected login
+        run: python -m unittest discover -s tests -p 'test_totp_mfa.py'
       - name: Verify login route compatibility aliases
         run: |
           python - <<'PY'
