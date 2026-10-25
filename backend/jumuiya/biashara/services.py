@@ -1923,6 +1923,93 @@ def submit_public_biashara_inquiry(slug, payload):
     return {"accepted": True}
 
 
+def create_public_biashara_order(slug, payload):
+    """Create a customer order through a published business storefront."""
+    if not isinstance(payload, dict):
+        raise APIError("A JSON request body is required.", 400, "invalid_json")
+    if str(payload.get("website") or "").strip():
+        return {"accepted": True}
+
+    normalized_slug = str(slug or "").strip().lower()
+    if not normalized_slug or not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", normalized_slug):
+        raise APIError("Business website not found.", 404, "website_not_found")
+    business = collection("jumuiya_businesses").find_one({
+        "slug": normalized_slug,
+        "status": "active",
+        "verification_status": "verified",
+        "website.published": True,
+        "website.show_products": True,
+    })
+    if not business:
+        raise APIError("This business does not currently accept website orders.", 404, "website_not_found")
+
+    from backend.revenue.subscriptions import resolve_entitlement
+    entitlement = resolve_entitlement(str(business.get("owner_user_id") or ""), "biashara", "seller_tools")
+    if entitlement.get("allowed") is not True:
+        raise APIError("This business website is not currently available for orders.", 404, "website_not_found")
+
+    def clean_text(key, limit, required=False):
+        value = payload.get(key, "")
+        if not isinstance(value, str):
+            raise APIError(key.replace("_", " ").capitalize() + " must be text.", 422, "validation_error")
+        value = value.strip()
+        if required and not value:
+            raise APIError(key.replace("_", " ").capitalize() + " is required.", 422, "validation_error")
+        if len(value) > limit or "<" in value or ">" in value:
+            raise APIError(key.replace("_", " ").capitalize() + " is invalid or too long.", 422, "validation_error")
+        return value
+
+    name = clean_text("name", 160, True)
+    email = clean_text("email", 254)
+    phone = clean_text("phone", 40)
+    notes = clean_text("notes", 1000)
+    if not email and not phone:
+        raise APIError("Provide a phone number or email address so the business can contact you.", 422, "contact_required")
+    if email and not re.fullmatch(r"[^@\\s]+@[^@\\s]+\\.[^@\\s]+", email):
+        raise APIError("Enter a valid email address.", 422, "invalid_email")
+    if phone and not re.fullmatch(r"[+0-9() .-]{7,40}", phone):
+        raise APIError("Enter a valid phone number.", 422, "invalid_phone")
+    if not isinstance(payload.get("items"), list) or not payload.get("items"):
+        raise APIError("Add at least one product to your order.", 422, "invalid_order_items")
+
+    owner_user_id = str(business.get("owner_user_id") or "")
+    if not owner_user_id:
+        raise APIError("This business cannot receive orders right now.", 409, "business_owner_missing")
+
+    order = create_order(
+        owner_user_id,
+        {"items": payload["items"], "notes": notes},
+    )
+    order_id = clean_id(order.get("id"))
+    collection("jumuiya_orders").update_one(
+        {"_id": order_id, "business_id": str(business["_id"])},
+        {"$set": {
+            "source_channel": "public_website",
+            "customer_name": name,
+            "customer_email": email,
+            "customer_phone": phone,
+        }},
+    )
+    _notify_business_owner(
+        business,
+        "New website order",
+        f"{name} placed an order for {order.get('currency', 'KES')} {float(order.get('total_amount') or 0):,.2f}. Stock was reserved automatically.",
+        "order_created",
+        {"order_id": str(order.get("id") or ""), "business_slug": normalized_slug, "total_amount": order.get("total_amount"), "currency": order.get("currency", "KES")},
+    )
+    return {
+        "accepted": True,
+        "order": {
+            "id": order.get("id"),
+            "order_number": order.get("id"),
+            "status": order.get("status"),
+            "total_amount": order.get("total_amount"),
+            "currency": order.get("currency"),
+            "inventory_status": "reserved",
+        },
+    }
+
+
 def list_biashara_website_inquiries(user_id, limit=30):
     business = _require_business(user_id, allowed_roles=set(['owner', 'admin', 'manager', 'sales']))
     documents = collection("jumuiya_business_website_inquiries").find(
