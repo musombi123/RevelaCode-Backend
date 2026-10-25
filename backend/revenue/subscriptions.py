@@ -531,12 +531,13 @@ def _read_verified_payment():
 def revenue_billing_status():
     """Report configuration state without leaking secrets or claiming checkout is live."""
     secret_ready = len(os.getenv("REVENUE_PROVIDER_WEBHOOK_SECRET", "").strip()) >= 32
-    from backend.revenue.mpesa import checkout_is_configured, checkout_is_production_configured, _environment
+    from backend.revenue.mpesa import checkout_configuration_status, checkout_is_configured, checkout_is_production_configured, _environment
+    diagnostic = checkout_configuration_status()
     mpesa_ready = checkout_is_production_configured()
     mpesa_sandbox_ready = _environment() == "sandbox" and checkout_is_configured()
     providers = [
         item.strip().lower()
-        for item in os.getenv("REVENUE_PAYMENT_PROVIDERS", "mpesa").split(",")
+        for item in os.getenv("REVENUE_PAYMENT_PROVIDERS", "").split(",")
         if item.strip()
     ]
     return jsonify({
@@ -548,12 +549,14 @@ def revenue_billing_status():
         "provider_callback_enabled": secret_ready or mpesa_ready,
         "providers_allowed": providers,
         "activation_mode": "verified_provider_adapter_only",
+        "mpesa_readiness": diagnostic,
+        "blocking_reasons": diagnostic["blockers"],
         "message": (
             "Production Daraja checkout is configured. Only published, verified subscription prices can be charged."
             if mpesa_ready else
             "Daraja sandbox is configured for testing only; it cannot charge customers or activate live subscriptions."
             if mpesa_sandbox_ready else
-            "Configure production Daraja credentials and a registered public HTTPS callback before publishing paid plans."
+            "Production Daraja checkout is disabled. See mpesa_readiness.checks and blocking_reasons for the exact missing configuration gates."
         ),
     }), 200
 

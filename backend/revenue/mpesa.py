@@ -86,6 +86,76 @@ def checkout_is_configured() -> bool:
     )
 
 
+def checkout_configuration_status() -> dict:
+    """Return redacted, administrator-only diagnostics for each live checkout gate.
+
+    Never return credential values, passkeys, access tokens, or a callback URL
+    containing unexpected user information. This only validates configuration
+    shape; it does not test Daraja credentials against Safaricom or prove that
+    the public callback is reachable.
+    """
+    from urllib.parse import urlsplit
+
+    environment = _environment()
+    providers = {
+        item.strip().lower()
+        for item in _env("REVENUE_PAYMENT_PROVIDERS", "").split(",")
+        if item.strip()
+    }
+    callback = _env("MPESA_CALLBACK_URL")
+    parsed = None
+    try:
+        parsed = urlsplit(callback)
+    except ValueError:
+        parsed = None
+
+    checks = {
+        "production_environment": environment == "production",
+        "mpesa_provider_enabled": "mpesa" in providers,
+        "consumer_key_present": bool(_env("MPESA_CONSUMER_KEY")),
+        "consumer_secret_present": bool(_env("MPESA_CONSUMER_SECRET")),
+        "shortcode_numeric": bool(_env("MPESA_SHORTCODE")) and _env("MPESA_SHORTCODE").isdigit(),
+        "passkey_present": bool(_env("MPESA_PASSKEY")),
+        "callback_https": bool(parsed and parsed.scheme == "https"),
+        "callback_host_present": bool(parsed and parsed.hostname),
+        "callback_path_matches": bool(
+            parsed
+            and parsed.path.rstrip("/") == "/api/revenue/providers/mpesa/callback"
+        ),
+        "callback_has_no_credentials": bool(
+            parsed and parsed.username is None and parsed.password is None
+        ),
+        "callback_has_no_query_or_fragment": bool(
+            parsed and not parsed.query and not parsed.fragment
+        ),
+    }
+
+    labels = {
+        "production_environment": "Set MPESA_ENV=production for live charges.",
+        "mpesa_provider_enabled": "REVENUE_PAYMENT_PROVIDERS must include mpesa.",
+        "consumer_key_present": "MPESA_CONSUMER_KEY is missing from the backend environment.",
+        "consumer_secret_present": "MPESA_CONSUMER_SECRET is missing from the backend environment.",
+        "shortcode_numeric": "MPESA_SHORTCODE must be the numeric shortcode registered for the live Daraja account.",
+        "passkey_present": "MPESA_PASSKEY is missing from the backend environment.",
+        "callback_https": "MPESA_CALLBACK_URL must use HTTPS.",
+        "callback_host_present": "MPESA_CALLBACK_URL must contain a valid public hostname.",
+        "callback_path_matches": "MPESA_CALLBACK_URL must end with /api/revenue/providers/mpesa/callback.",
+        "callback_has_no_credentials": "MPESA_CALLBACK_URL must not embed a username or password.",
+        "callback_has_no_query_or_fragment": "MPESA_CALLBACK_URL must not contain a query string or fragment.",
+    }
+    blockers = [labels[key] for key, passed in checks.items() if not passed]
+    return {
+        "environment": environment or "invalid",
+        "expected_callback_url": "https://revelacode-backend.onrender.com/api/revenue/providers/mpesa/callback",
+        "checks": checks,
+        "blockers": blockers,
+        "checkout_enabled": checkout_is_production_configured(),
+        "configuration_shape_valid": checkout_is_configured(),
+        "provider_allowlist": sorted(providers),
+        "note": "Configuration shape only; credentials are not tested against Daraja and callback reachability is not verified.",
+    }
+
+
 def checkout_is_production_configured() -> bool:
     """Only live Daraja configuration explicitly enabled by policy can charge."""
     providers = {

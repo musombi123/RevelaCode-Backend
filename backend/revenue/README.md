@@ -20,7 +20,7 @@ Set these in the **RevelaCode-Backend** deployment environment, never in the fro
 
 Use the exact values supplied by Safaricom for the registered Daraja application and shortcode. Do not use sandbox credentials with production mode or expose keys in the browser. A real payment can be collected once production credentials, callback reachability and the matching registered short code are configured.
 
-The backend reports checkout readiness at `GET /api/revenue/admin/billing/status` and in the public plans response. Readiness only means the required environment values are present; it does **not** prove a live Daraja payment has succeeded.
+The backend reports checkout readiness at `GET /api/revenue/admin/billing/status` and in the public plans response. Readiness only means the required environment values are present; it does **not** prove a live Daraja payment has succeeded. The administrator-only billing status response includes `mpesa_readiness.checks` and `blocking_reasons`, which identify missing configuration gates without returning credential values. The diagnostic checks configuration shape only; it does not test the credentials with Safaricom or prove that the callback is reachable.
 
 A platform administrator can create a draft subscription plan with `POST /api/revenue/admin/plans` and update/publish it with `PUT /api/revenue/admin/plans/{plan_code}`. The Revenue Center includes the protected plan editor, active subscription/trial summaries, verified payment totals, and the M-Pesa checkout queue. Finance admins can reconcile one checkout with `POST /api/revenue/admin/checkouts/{checkoutRequestId}/refresh`. Pausing a plan remains possible when checkout is disabled; publishing requires production readiness.
 

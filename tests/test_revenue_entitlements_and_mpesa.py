@@ -1125,3 +1125,47 @@ def test_active_hub_trial_unlocks_all_hub_premium_features(monkeypatch, hub, fea
 
     assert result["allowed"] is True
     assert result["tier"] == "trial"
+
+
+def test_production_readiness_diagnostics_do_not_return_secret_values(monkeypatch):
+    from backend.revenue import mpesa
+
+    monkeypatch.setenv("MPESA_ENV", "production")
+    monkeypatch.setenv("REVENUE_PAYMENT_PROVIDERS", "mpesa")
+    monkeypatch.setenv("MPESA_CONSUMER_KEY", "sample-consumer-key")
+    monkeypatch.setenv("MPESA_CONSUMER_SECRET", "sample-consumer-secret")
+    monkeypatch.setenv("MPESA_SHORTCODE", "123456")
+    monkeypatch.setenv("MPESA_PASSKEY", "sample-passkey")
+    monkeypatch.setenv(
+        "MPESA_CALLBACK_URL",
+        "https://revelacode-backend.onrender.com/api/revenue/providers/mpesa/callback",
+    )
+    monkeypatch.delenv("MPESA_ENCRYPTION_KEY", raising=False)
+
+    status = mpesa.checkout_configuration_status()
+    assert status["checkout_enabled"] is True
+    assert all(status["checks"].values())
+    serialized = repr(status)
+    assert "sample-consumer-key" not in serialized
+    assert "sample-consumer-secret" not in serialized
+    assert "sample-passkey" not in serialized
+
+
+def test_readiness_diagnostics_name_missing_production_gates(monkeypatch):
+    from backend.revenue import mpesa
+
+    monkeypatch.setenv("MPESA_ENV", "sandbox")
+    monkeypatch.setenv("REVENUE_PAYMENT_PROVIDERS", "")
+    monkeypatch.delenv("MPESA_CONSUMER_KEY", raising=False)
+    monkeypatch.delenv("MPESA_CONSUMER_SECRET", raising=False)
+    monkeypatch.delenv("MPESA_SHORTCODE", raising=False)
+    monkeypatch.delenv("MPESA_PASSKEY", raising=False)
+    monkeypatch.delenv("MPESA_CALLBACK_URL", raising=False)
+
+    status = mpesa.checkout_configuration_status()
+    assert status["checkout_enabled"] is False
+    assert status["checks"]["production_environment"] is False
+    assert status["checks"]["mpesa_provider_enabled"] is False
+    assert status["checks"]["callback_path_matches"] is False
+    assert any("MPESA_ENV=production" in item for item in status["blockers"])
+    assert any("REVENUE_PAYMENT_PROVIDERS" in item for item in status["blockers"])
