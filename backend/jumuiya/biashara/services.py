@@ -408,7 +408,7 @@ def list_products(
 ):
     """List this business's products with filtering and a bounded limit."""
     business = _require_business(user_id, allowed_roles=set(['owner', 'admin', 'manager', 'sales', 'inventory', 'viewer']))
-    query = {"business_id": business["id"]}
+    query = {"business_id": business["id"], "status": {"$ne": "deleted"}}
 
     if status:
         query["status"] = status
