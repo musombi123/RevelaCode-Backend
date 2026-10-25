@@ -301,11 +301,15 @@ def _make_otpauth_uri(user: dict, secret: str) -> str:
 def _qr_data_url(uri: str) -> str:
     if qrcode is None:
         return ""
-    image = qrcode.make(uri)
-    buffer = io.BytesIO()
-    image.save(buffer, format="PNG")
-    import base64 as _base64
-    return "data:image/png;base64," + _base64.b64encode(buffer.getvalue()).decode("ascii")
+    try:
+        image = qrcode.make(uri)
+        buffer = io.BytesIO()
+        image.save(buffer, format="PNG")
+        import base64 as _base64
+        return "data:image/png;base64," + _base64.b64encode(buffer.getvalue()).decode("ascii")
+    except ImportError:
+        # Manual setup key and otpauth URI remain available without Pillow.
+        return ""
 
 
 def _require_password(user: dict, password: str) -> None:
