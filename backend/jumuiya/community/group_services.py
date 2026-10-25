@@ -421,3 +421,131 @@ def leave_group(
         updated,
         user_id,
     )
+
+
+# ============================================================
+# GROUP SHARED FILES
+# ============================================================
+
+GROUP_FILES = "jumuiya_community_group_files"
+COMMUNITY_MEDIA = "jumuiya_community_media"
+
+
+def _require_group_member(document: dict, user_id: str) -> None:
+    members = document.get("member_user_ids", [])
+    member_ids = [str(value) for value in members] if isinstance(members, list) else []
+    if user_id not in member_ids:
+        raise APIError(
+            "Join this group before viewing or sharing its files.",
+            403,
+            "group_membership_required",
+        )
+
+
+def _serialize_group_file(document: dict) -> dict:
+    created_at = document.get("created_at")
+    return {
+        "id": str(document.get("_id") or ""),
+        "group_id": str(document.get("group_id") or ""),
+        "file_name": str(document.get("file_name") or "Community document"),
+        "url": str(document.get("url") or ""),
+        "mime_type": str(document.get("mime_type") or "application/pdf"),
+        "size_bytes": int(document.get("size_bytes", 0) or 0),
+        "caption": str(document.get("caption") or ""),
+        "shared_by_user_id": str(document.get("shared_by_user_id") or ""),
+        "kind": "document",
+        "created_at": created_at.isoformat() if hasattr(created_at, "isoformat") else None,
+    }
+
+
+def list_group_files(
+    user_id: Any,
+    group_id: Any,
+    *,
+    limit: int = 50,
+) -> dict:
+    user_id = normalize_user_id(user_id)
+    group = _active_group(group_id)
+    _require_group_member(group, user_id)
+
+    safe_limit = max(1, min(int(limit or 50), 100))
+    query = {"group_id": str(group["_id"])}
+    rows = list(
+        collection(GROUP_FILES)
+        .find(query)
+        .sort([("created_at", -1), ("_id", -1)])
+        .limit(safe_limit)
+    )
+    return {
+        "files": [_serialize_group_file(row) for row in rows],
+        "total": collection(GROUP_FILES).count_documents(query),
+    }
+
+
+def share_group_file(
+    user_id: Any,
+    group_id: Any,
+    payload: dict,
+) -> dict:
+    user_id = normalize_user_id(user_id)
+    group = _active_group(group_id)
+    _require_group_member(group, user_id)
+
+    if not isinstance(payload, dict):
+        raise APIError("A JSON request body is required.", 400, "invalid_json")
+
+    media_id = payload.get("media_id") or payload.get("id")
+    if not isinstance(media_id, str) or not media_id.strip() or len(media_id.strip()) > 100:
+        raise APIError("A valid uploaded PDF is required.", 422, "invalid_media_id")
+
+    try:
+        media_object_id = ObjectId(media_id.strip())
+    except (InvalidId, TypeError, ValueError):
+        raise APIError("Invalid uploaded media ID.", 400, "invalid_media_id")
+
+    media = collection(COMMUNITY_MEDIA).find_one({
+        "_id": media_object_id,
+        "uploaded_by_user_id": user_id,
+    })
+    if not media:
+        raise APIError(
+            "The uploaded PDF was not found or was not uploaded by your account.",
+            403,
+            "media_attachment_access_denied",
+        )
+    if str(media.get("kind") or "").lower() != "document" or str(media.get("format") or "").lower() != "pdf":
+        raise APIError("Only validated PDF documents can be shared to a group.", 422, "pdf_required")
+
+    url = str(media.get("secure_url") or "")
+    if not url.startswith("https://"):
+        raise APIError("The PDF URL is invalid.", 422, "invalid_media_url")
+
+    caption = normalize_text(payload.get("caption", ""), "caption", maximum=500)
+    timestamp = now_utc()
+    document = {
+        "group_id": str(group["_id"]),
+        "media_id": str(media["_id"]),
+        "file_name": str(media.get("file_name") or "Community document"),
+        "url": url,
+        "mime_type": str(media.get("mime_type") or "application/pdf"),
+        "size_bytes": int(media.get("size_bytes", 0) or 0),
+        "caption": caption,
+        "shared_by_user_id": user_id,
+        "created_at": timestamp,
+        "updated_at": timestamp,
+    }
+    result = collection(GROUP_FILES).insert_one(document)
+    document["_id"] = result.inserted_id
+
+    log_action(
+        user_id,
+        "community_group_file_shared",
+        resource="community_group_file",
+        resource_id=result.inserted_id,
+        metadata={"group_id": str(group["_id"]), "file_name": document["file_name"]},
+    )
+    collection(GROUPS).update_one(
+        {"_id": group["_id"], "status": "active"},
+        {"$set": {"updated_at": timestamp}},
+    )
+    return _serialize_group_file(document)

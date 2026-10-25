@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
 
 from pymongo import ReturnDocument
@@ -184,6 +185,9 @@ def update_profile(
         "full_name": 160,
         "bio": 1000,
         "avatar_url": 500,
+        "cover_url": 500,
+        "avatar_position": 4,
+        "cover_position": 4,
         "county": 100,
         "town": 100,
     }
@@ -212,6 +216,16 @@ def update_profile(
         if len(value) > max_length:
             raise APIError(
                 f"{key} is too long.",
+                422,
+                "validation_error",
+            )
+
+        if key in {"avatar_position", "cover_position"} and not re.fullmatch(
+            r"(?:\d{1,2}|100)%",
+            value,
+        ):
+            raise APIError(
+                f"{key} must be a percentage between 0% and 100%.",
                 422,
                 "validation_error",
             )

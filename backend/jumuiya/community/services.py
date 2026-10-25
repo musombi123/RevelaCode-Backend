@@ -884,6 +884,9 @@ def _fallback_author(
         "id": user_id,
         "name": DEFAULT_AUTHOR_NAME,
         "avatar_url": None,
+        "cover_url": None,
+        "avatar_position": "50%",
+        "cover_position": "50%",
         "bio": None,
         "county": None,
         "town": None,
@@ -920,6 +923,9 @@ def _load_authors(
                 "user_id": 1,
                 "full_name": 1,
                 "avatar_url": 1,
+                "cover_url": 1,
+                "avatar_position": 1,
+                "cover_position": 1,
                 "bio": 1,
                 "county": 1,
                 "town": 1,
@@ -961,6 +967,9 @@ def _load_authors(
             "avatar_url": profile.get(
                 "avatar_url"
             ),
+            "cover_url": profile.get("cover_url"),
+            "avatar_position": profile.get("avatar_position", "50%"),
+            "cover_position": profile.get("cover_position", "50%"),
             "bio": profile.get(
                 "bio"
             ),
@@ -1561,7 +1570,7 @@ def _public_post_projection(document: dict[str, Any]) -> dict[str, Any]:
     raw_author = document.get("author") if isinstance(document.get("author"), dict) else {}
     output["author"] = {
         key: raw_author.get(key)
-        for key in ("id", "name", "avatar_url", "bio", "county", "town")
+        for key in ("id", "name", "avatar_url", "cover_url", "avatar_position", "cover_position", "bio", "county", "town")
         if key in raw_author
     }
 
@@ -1631,7 +1640,7 @@ def public_profile(profile_id: Any, *, limit: int = 20) -> dict[str, Any]:
     profiles = collection(PROFILES)
     profile = profiles.find_one(
         {"user_id": lookup_id},
-        {"_id": 1, "user_id": 1, "full_name": 1, "avatar_url": 1, "bio": 1, "county": 1, "town": 1},
+        {"_id": 1, "user_id": 1, "full_name": 1, "avatar_url": 1, "cover_url": 1, "avatar_position": 1, "cover_position": 1, "bio": 1, "county": 1, "town": 1},
     )
     if profile is None:
         try:
@@ -1666,7 +1675,7 @@ def public_profile(profile_id: Any, *, limit: int = 20) -> dict[str, Any]:
     return {
         "profile": {
             key: author.get(key)
-            for key in ("id", "name", "avatar_url", "bio", "county", "town")
+            for key in ("id", "name", "avatar_url", "cover_url", "avatar_position", "cover_position", "bio", "county", "town")
         },
         "posts": [_public_post_projection(item) for item in hydrated],
     }
