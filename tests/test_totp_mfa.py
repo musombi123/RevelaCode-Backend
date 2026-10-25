@@ -108,6 +108,44 @@ class TotpMfaIntegrationTests(unittest.TestCase):
         )
         self.assertEqual(replay.status_code, 401, replay.get_json())
 
+    def test_recovery_codes_are_single_use(self):
+        secret = mfa._new_secret()
+        visible_codes, stored_hashes = mfa._new_recovery_codes()
+        self.user.update({
+            "mfa_enabled": True,
+            "mfa_secret_enc": mfa._encrypt_secret(secret),
+            "mfa_recovery_code_hashes": stored_hashes,
+        })
+
+        first_login = self.client.post(
+            "/api/login",
+            json={"contact": self.user["contact"], "password": "correct horse battery staple"},
+        )
+        self.assertTrue(first_login.get_json()["mfa_required"])
+        first_verify = self.client.post(
+            "/api/auth/mfa/login-verify",
+            json={
+                "challenge_token": first_login.get_json()["challenge_token"],
+                "code": visible_codes[0],
+            },
+        )
+        self.assertEqual(first_verify.status_code, 200, first_verify.get_json())
+        self.assertNotIn(mfa._recovery_hash(visible_codes[0]), self.user["mfa_recovery_code_hashes"])
+
+        second_login = self.client.post(
+            "/api/login",
+            json={"contact": self.user["contact"], "password": "correct horse battery staple"},
+        )
+        self.assertTrue(second_login.get_json()["mfa_required"])
+        reused = self.client.post(
+            "/api/auth/mfa/login-verify",
+            json={
+                "challenge_token": second_login.get_json()["challenge_token"],
+                "code": visible_codes[0],
+            },
+        )
+        self.assertEqual(reused.status_code, 401, reused.get_json())
+
     def test_privileged_login_requires_enrollment_before_access_token(self):
         self.user["role"] = "admin"
         self.user["roles"] = ["admin"]
