@@ -570,7 +570,7 @@ def create_service(user_id, payload):
 
 def list_services(user_id, status=None, search=None, limit=50):
     business = _require_business(user_id, allowed_roles=set(["owner", "admin", "manager", "sales", "viewer"]))
-    query = {"business_id": business["id"]}
+    query = {"business_id": business["id"], "status": {"$ne": "deleted"}}
     if status:
         query["status"] = status
     search_text = str(search or "").strip()
@@ -1852,6 +1852,7 @@ def get_public_biashara_website(slug):
                 "price": product.get("price", 0),
                 "currency": product.get("currency") or public_business["currency"],
                 "image_url": product.get("image_url", ""),
+                "stock_quantity": float(product.get("stock_quantity", 0) or 0),
                 "available": float(product.get("stock_quantity", 0) or 0) > 0,
             })
 
