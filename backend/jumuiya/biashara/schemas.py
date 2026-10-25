@@ -565,6 +565,49 @@ def product_payload(
 
 
 # =========================================================
+# BUSINESS SERVICES
+# =========================================================
+
+def service_payload(data, partial=False):
+    _object(data)
+    result = {}
+    text_fields = {
+        "name": 160,
+        "description": 2000,
+        "category": 120,
+        "service_type": 80,
+        "currency": 8,
+        "unit": 40,
+    }
+    for key, max_len in text_fields.items():
+        if partial and key not in data:
+            continue
+        result[key] = _text(
+            data,
+            key,
+            required=(key == "name" and not partial),
+            max_len=max_len,
+        )
+    if not partial or "price" in data:
+        result["price"] = _money(data, "price", required=True, minimum=0)
+    if not partial or "duration_minutes" in data:
+        result["duration_minutes"] = _number(
+            data, "duration_minutes", required=False, minimum=0
+        )
+    if not partial or "status" in data:
+        result["status"] = _choice(
+            data, "status", {"active", "inactive"}, default="active"
+        )
+    if not partial:
+        result["currency"] = (result.get("currency") or DEFAULT_CURRENCY).upper()
+        result["unit"] = result.get("unit") or "service"
+        result["service_type"] = result.get("service_type") or "general"
+        result["duration_minutes"] = result.get("duration_minutes") or 0.0
+        result["status"] = result.get("status") or "active"
+    return result
+
+
+# =========================================================
 # CUSTOMERS
 # =========================================================
 
