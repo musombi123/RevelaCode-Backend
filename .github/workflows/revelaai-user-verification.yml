@@ -10,7 +10,7 @@ jobs:
   verify-user-endpoint:
     runs-on: ubuntu-latest
     env:
-      JWT_SECRET: "test-only-jwt-secret"
+      JWT_SECRET: "test-only-jwt-secret-with-enough-length-for-ci-tests"
       REVELAAI_SERVICE_KEY: "test-only-service-key"
     steps:
       - uses: actions/checkout@v4
