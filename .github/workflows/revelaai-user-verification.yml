@@ -18,7 +18,7 @@ jobs:
         with:
           python-version: "3.11"
       - name: Install auth test dependencies
-        run: python -m pip install Flask PyJWT pymongo python-dotenv requests werkzeug resend cryptography qrcode
+        run: python -m pip install Flask PyJWT pymongo python-dotenv requests werkzeug resend cryptography qrcode Pillow
       - name: Compile backend entry points
         run: python -m py_compile main.py backend/auth_gate.py backend/mfa_routes.py backend/db.py
       - name: Test TOTP enrollment and protected login
