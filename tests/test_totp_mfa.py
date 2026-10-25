@@ -32,6 +32,11 @@ class TotpMfaIntegrationTests(unittest.TestCase):
         auth.save_user_to_file = lambda user: self.users.__setitem__(user["contact"], user)
         self.access_token = auth.create_access_token(self.user)
         self.headers = {"Authorization": f"Bearer {self.access_token}"}
+        self.app.add_url_rule(
+            "/api/private-test",
+            "private_test",
+            lambda: {"success": True},
+        )
 
     def test_totp_enrollment_login_challenge_and_replay_protection(self):
         status = self.client.get("/api/auth/mfa/status", headers=self.headers)
@@ -59,6 +64,11 @@ class TotpMfaIntegrationTests(unittest.TestCase):
         self.assertTrue(self.user["mfa_enabled"])
         self.assertIn(mfa._recovery_hash(recovery_codes[0]), self.user["mfa_recovery_code_hashes"])
 
+        # A token issued before enrollment must not authorize protected APIs.
+        old_session = self.client.get("/api/private-test", headers=self.headers)
+        self.assertEqual(old_session.status_code, 401, old_session.get_json())
+        self.assertEqual(old_session.get_json()["code"], "mfa_required")
+
         login = self.client.post(
             "/api/login",
             json={"contact": self.user["contact"], "password": "correct horse battery staple"},
@@ -79,6 +89,15 @@ class TotpMfaIntegrationTests(unittest.TestCase):
         self.assertEqual(verified.status_code, 200, verified.get_json())
         self.assertTrue(verified.get_json()["mfa_verified"])
         self.assertTrue(verified.get_json()["access_token"])
+        claims = auth.jwt.decode(
+            verified.get_json()["access_token"],
+            auth.JWT_SECRET,
+            algorithms=[auth.JWT_ALGORITHM],
+        )
+        self.assertTrue(claims["mfa_verified"])
+        new_headers = {"Authorization": "Bearer " + verified.get_json()["access_token"]}
+        valid_session = self.client.get("/api/private-test", headers=new_headers)
+        self.assertEqual(valid_session.status_code, 200, valid_session.get_json())
 
         replay = self.client.post(
             "/api/auth/mfa/login-verify",
