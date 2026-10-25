@@ -374,6 +374,17 @@ INDEX_DEFINITIONS = {
         ),
     ],
 
+    "jumuiya_business_services": [
+        (
+            [
+                ("business_id", ASCENDING),
+                ("status", ASCENDING),
+                ("created_at", DESCENDING),
+            ],
+            {"name": "ix_business_services_business_status_created"},
+        ),
+    ],
+
     "jumuiya_customers": [
         (
             [

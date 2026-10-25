@@ -21,12 +21,14 @@ from backend.jumuiya.biashara.website import (
 from backend.jumuiya.biashara.models import (
     business_document,
     product_document,
+    service_document,
     customer_document,
     order_document,
     expense_document,
     sale_document,
     inventory_movement_document,
 )
+from backend.jumuiya.notifications.services import notify as notify_jumuiya
 
 
 # =========================================================
@@ -406,7 +408,7 @@ def list_products(
 ):
     """List this business's products with filtering and a bounded limit."""
     business = _require_business(user_id, allowed_roles=set(['owner', 'admin', 'manager', 'sales', 'inventory', 'viewer']))
-    query = {"business_id": business["id"]}
+    query = {"business_id": business["id"], "status": {"$ne": "deleted"}}
 
     if status:
         query["status"] = status
@@ -551,6 +553,88 @@ def delete_product(
     return serialise(
         document
     )
+
+
+# =========================================================
+# BUSINESS SERVICES CATALOGUE
+# =========================================================
+
+def create_service(user_id, payload):
+    business = _require_business(user_id, allowed_roles=set(["owner", "admin", "manager"]))
+    document = service_document(business["id"], payload)
+    result = collection("jumuiya_business_services").insert_one(document)
+    document["_id"] = result.inserted_id
+    log_action(user_id, "business_service.created", "business_service", result.inserted_id)
+    return serialise(document)
+
+
+def list_services(user_id, status=None, search=None, limit=50):
+    business = _require_business(user_id, allowed_roles=set(["owner", "admin", "manager", "sales", "viewer"]))
+    query = {"business_id": business["id"], "status": {"$ne": "deleted"}}
+    if status:
+        query["status"] = status
+    search_text = str(search or "").strip()
+    if search_text:
+        expression = {"$regex": re.escape(search_text), "$options": "i"}
+        query["$or"] = [
+            {"name": expression},
+            {"category": expression},
+            {"service_type": expression},
+            {"description": expression},
+        ]
+    documents = (
+        collection("jumuiya_business_services")
+        .find(query)
+        .sort("created_at", -1)
+        .limit(_bounded_list_limit(limit))
+    )
+    return serialise_many(documents)
+
+
+def update_service(user_id, service_id, payload):
+    business = _require_business(user_id, allowed_roles=set(["owner", "admin", "manager"]))
+    allowed = {"name", "description", "category", "service_type", "price", "currency", "unit", "duration_minutes", "status"}
+    update = {key: payload[key] for key in allowed if key in payload}
+    if not update:
+        raise APIError("No service fields were provided.", 422, "empty_update")
+    document = collection("jumuiya_business_services").find_one_and_update(
+        {"_id": clean_id(service_id), "business_id": business["id"]},
+        {"$set": {**update, "updated_at": now_utc()}},
+        return_document=ReturnDocument.AFTER,
+    )
+    if not document:
+        raise APIError("Service not found.", 404, "service_not_found")
+    log_action(user_id, "business_service.updated", "business_service", document["_id"])
+    return serialise(document)
+
+
+def delete_service(user_id, service_id):
+    business = _require_business(user_id, allowed_roles=set(["owner", "admin", "manager"]))
+    document = collection("jumuiya_business_services").find_one_and_update(
+        {"_id": clean_id(service_id), "business_id": business["id"]},
+        {"$set": {"status": "deleted", "updated_at": now_utc()}},
+        return_document=ReturnDocument.AFTER,
+    )
+    if not document:
+        raise APIError("Service not found.", 404, "service_not_found")
+    log_action(user_id, "business_service.deleted", "business_service", document["_id"])
+    return serialise(document)
+
+
+def _notify_business_owner(business, title, message, notification_type, data=None):
+    owner_user_id = str(business.get("owner_user_id") or "").strip()
+    if not owner_user_id:
+        return None
+    try:
+        return notify_jumuiya(owner_user_id, {
+            "title": title,
+            "message": message,
+            "type": notification_type,
+            "data": data if isinstance(data, dict) else {},
+        })
+    except Exception:
+        # Notification persistence must not undo an accepted business operation.
+        return None
 
 
 # =========================================================
@@ -803,12 +887,10 @@ def create_order(
     user_id,
     payload,
 ):
-    """Create a pending order using server-authoritative catalogue prices.
+    """Create an order from server-authoritative prices and reserve stock atomically.
 
-    Submitted line names/prices/totals are never trusted. The current stock
-    check is advisory because pending orders do not reserve inventory yet;
-    that limitation is recorded on the order until reservation/fulfilment is
-    implemented as a separate, idempotent workflow.
+    Submitted names, unit prices and totals are never trusted. A successful
+    order reserves every line item before it becomes visible in the order list.
     """
     business = _require_business(user_id, allowed_roles=set(['owner', 'admin', 'manager', 'sales']))
 
@@ -921,18 +1003,61 @@ def create_order(
             "currency": currency,
         })
 
-    # A pending order does not reduce stock yet. This is an advisory check only;
-    # two concurrent pending orders can still request the same units until a
-    # durable reservation workflow is implemented.
+    # Reject obvious oversell attempts before any write. The guarded atomic
+    # updates below also protect against stock changing between this check and
+    # the reservation itself.
     for product_key, requested in requested_by_product.items():
-        product = product_cache[product_key]
         available = stock_by_product.get(product_key, Decimal("0"))
         if requested > available:
+            product = product_cache[product_key]
             raise APIError(
-                f"Insufficient stock for {product.get('name', 'product')}.",
+                f"Insufficient stock for {product.get('name', 'product')}. Remaining: {available:g}.",
                 409,
                 "insufficient_stock",
             )
+
+    # Atomically reserve inventory when an order is accepted. This makes the
+    # displayed remaining quantity authoritative even when two customers order
+    # close together.
+    products_collection = collection("jumuiya_products")
+    reserved = []
+    for product_key, requested in requested_by_product.items():
+        product = product_cache[product_key]
+        requested_float = float(requested)
+        updated_product = products_collection.find_one_and_update(
+            {
+                "_id": product["_id"],
+                "business_id": business["id"],
+                "status": "active",
+                "stock_quantity": {"$gte": requested_float},
+            },
+            {
+                "$inc": {"stock_quantity": -requested_float},
+                "$set": {"updated_at": now_utc()},
+            },
+            return_document=ReturnDocument.AFTER,
+        )
+        if not updated_product:
+            for reservation in reversed(reserved):
+                products_collection.update_one(
+                    {"_id": reservation["product_id"], "business_id": business["id"]},
+                    {"$inc": {"stock_quantity": reservation["quantity"]}, "$set": {"updated_at": now_utc()}},
+                )
+            current = products_collection.find_one({"_id": product["_id"], "business_id": business["id"]})
+            remaining = float((current or {}).get("stock_quantity", 0) or 0)
+            raise APIError(
+                f"Insufficient stock for {product.get('name', 'product')}. Remaining: {remaining:g}.",
+                409,
+                "insufficient_stock",
+            )
+        reserved.append({
+            "product_id": product["_id"],
+            "product_name": str(product.get("name") or "Product"),
+            "quantity": requested_float,
+            "previous_quantity": float(updated_product.get("stock_quantity", 0) or 0) + requested_float,
+            "new_quantity": float(updated_product.get("stock_quantity", 0) or 0),
+            "low_stock_threshold": float(product.get("low_stock_threshold", 0) or 0),
+        })
 
     subtotal = subtotal.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
     total = subtotal
@@ -959,7 +1084,8 @@ def create_order(
         "total_amount_minor": int(total * 100),
         "currency": currency,
         "source_channel": "manual",
-        "inventory_status": "not_reserved",
+        "inventory_status": "reserved",
+        "inventory_reserved_at": now,
         "status_history": [{
             "from": None,
             "to": "pending",
@@ -968,8 +1094,43 @@ def create_order(
         }],
     })
 
-    result = collection("jumuiya_orders").insert_one(document)
+    try:
+        result = collection("jumuiya_orders").insert_one(document)
+    except Exception:
+        for reservation in reversed(reserved):
+            products_collection.update_one(
+                {"_id": reservation["product_id"], "business_id": business["id"]},
+                {"$inc": {"stock_quantity": reservation["quantity"]}, "$set": {"updated_at": now_utc()}},
+            )
+        raise
     document["_id"] = result.inserted_id
+
+    for reservation in reserved:
+        movement_payload = {
+            "movement_type": "remove",
+            "quantity": reservation["quantity"],
+            "reason": "Order " + str(result.inserted_id) + " reserved stock",
+        }
+        try:
+            movement = inventory_movement_document(
+                business["id"],
+                reservation["product_id"],
+                movement_payload,
+                reservation["previous_quantity"],
+                reservation["new_quantity"],
+            )
+            collection("jumuiya_inventory_movements").insert_one(movement)
+        except Exception:
+            pass
+        threshold = reservation["low_stock_threshold"]
+        if reservation["new_quantity"] <= threshold and reservation["previous_quantity"] > threshold:
+            _notify_business_owner(
+                business,
+                "Low stock: " + reservation["product_name"],
+                f"{reservation['product_name']} has {reservation['new_quantity']:g} units remaining after an order.",
+                "inventory_low",
+                {"product_id": str(reservation["product_id"]), "remaining_stock": reservation["new_quantity"], "order_id": str(result.inserted_id)},
+            )
 
     log_action(user_id, "order.created", "order", result.inserted_id)
     return serialise(document)
@@ -1092,6 +1253,57 @@ def update_order_status(
             "order_state_conflict",
         )
 
+    # Stock is reserved at order creation. If an uncompleted order is cancelled,
+    # release that reservation exactly once after the successful state transition.
+    if status == "cancelled" and str(document.get("inventory_status") or "") == "reserved":
+        for item in document.get("items") or []:
+            if not isinstance(item, dict):
+                continue
+            product_id = item.get("product_id")
+            try:
+                quantity = float(item.get("quantity") or 0)
+            except (TypeError, ValueError):
+                quantity = 0
+            if not product_id or quantity <= 0:
+                continue
+            product_before = collection("jumuiya_products").find_one({
+                "_id": clean_id(product_id),
+                "business_id": business["id"],
+            })
+            if not product_before:
+                continue
+            previous_quantity = float(product_before.get("stock_quantity", 0) or 0)
+            product_after = collection("jumuiya_products").find_one_and_update(
+                {"_id": product_before["_id"], "business_id": business["id"]},
+                {"$inc": {"stock_quantity": quantity}, "$set": {"updated_at": now_utc()}},
+                return_document=ReturnDocument.AFTER,
+            )
+            if product_after:
+                movement_payload = {
+                    "movement_type": "add",
+                    "quantity": quantity,
+                    "reason": "Order " + str(document["_id"]) + " cancellation released reservation",
+                }
+                try:
+                    movement = inventory_movement_document(
+                        business["id"], product_before["_id"], movement_payload,
+                        previous_quantity, float(product_after.get("stock_quantity", 0) or 0),
+                    )
+                    collection("jumuiya_inventory_movements").insert_one(movement)
+                except Exception:
+                    pass
+        orders.update_one(
+            {"_id": document["_id"], "business_id": business["id"], "status": "cancelled"},
+            {"$set": {"inventory_status": "released", "inventory_released_at": now_utc()}},
+        )
+        updated["inventory_status"] = "released"
+    elif status == "completed" and str(document.get("inventory_status") or "") == "reserved":
+        orders.update_one(
+            {"_id": document["_id"], "business_id": business["id"], "status": "completed"},
+            {"$set": {"inventory_status": "deducted", "inventory_deducted_at": now_utc()}},
+        )
+        updated["inventory_status"] = "deducted"
+
     log_action(user_id, "order.status_updated", "order", document["_id"])
     return serialise(updated)
 
@@ -1104,183 +1316,128 @@ def record_sale(
     user_id,
     payload,
 ):
+    business = _require_business(user_id, allowed_roles=set(["owner", "admin", "manager", "sales"]))
+    sales = collection("jumuiya_sales")
+    orders = collection("jumuiya_orders")
+    linked_order = None
+    deduct_stock = True
+    payload = dict(payload or {})
 
-    business = _require_business(user_id, allowed_roles=set(['owner', 'admin', 'manager', 'sales']))
+    order_id = payload.get("order_id")
+    if order_id:
+        linked_order = orders.find_one({
+            "_id": clean_id(order_id),
+            "business_id": business["id"],
+        })
+        if not linked_order:
+            raise APIError("The linked order does not belong to this business.", 404, "order_not_found")
+        if str(linked_order.get("status") or "").lower() == "cancelled":
+            raise APIError("A cancelled order cannot be recorded as a sale.", 409, "order_cancelled")
+        existing_sale = sales.find_one({
+            "business_id": business["id"],
+            "order_id": str(linked_order["_id"]),
+        })
+        if existing_sale:
+            raise APIError("A sale has already been recorded for this order.", 409, "sale_already_recorded")
+        payload["items"] = linked_order.get("items") or payload.get("items") or []
+        payload["customer_id"] = linked_order.get("customer_id") or payload.get("customer_id")
+        # Orders created in the current workflow reserve stock immediately.
+        # Recording their sale must never deduct the same units a second time.
+        deduct_stock = str(linked_order.get("inventory_status") or "") not in {"reserved", "deducted"}
 
-    # -----------------------------------------------------
-    # Validate customer
-    # -----------------------------------------------------
-
-    customer_id = payload.get(
-        "customer_id"
-    )
-
+    customer_id = payload.get("customer_id")
     if customer_id:
-
-        customer = collection(
-            "jumuiya_customers"
-        ).find_one({
-            "_id": clean_id(
-                customer_id
-            ),
+        customer = collection("jumuiya_customers").find_one({
+            "_id": clean_id(customer_id),
             "business_id": business["id"],
         })
-
         if not customer:
+            raise APIError("Customer does not belong to this business.", 422, "invalid_customer")
 
-            raise APIError(
-                "Customer does not belong to this business.",
-                422,
-                "invalid_customer",
-            )
+    items = payload.get("items") or []
+    if not isinstance(items, list):
+        raise APIError("Sale items must be a list.", 422, "invalid_sale_items")
 
-    # -----------------------------------------------------
-    # Validate stock
-    # -----------------------------------------------------
+    products = collection("jumuiya_products")
+    if deduct_stock:
+        for item in items:
+            product = products.find_one({
+                "_id": clean_id(item["product_id"]),
+                "business_id": business["id"],
+                "status": "active",
+            })
+            if not product:
+                raise APIError("One or more products were not found.", 422, "invalid_product")
+            requested = float(item["quantity"])
+            available = float(product.get("stock_quantity", 0) or 0)
+            if requested <= 0 or requested > available:
+                raise APIError(
+                    f"Insufficient stock for {product.get('name', 'product')}.",
+                    409,
+                    "insufficient_stock",
+                )
 
-    for item in payload.get(
-        "items",
-        [],
-    ):
+    document = sale_document(business["id"], payload)
+    result = sales.insert_one(document)
+    document["_id"] = result.inserted_id
 
-        product = collection(
-            "jumuiya_products"
-        ).find_one({
-            "_id": clean_id(
-                item["product_id"]
-            ),
-            "business_id": business["id"],
-            "status": "active",
-        })
-
-        if not product:
-
-            raise APIError(
-                "One or more products were not found.",
-                422,
-                "invalid_product",
-            )
-
-        requested = float(
-            item["quantity"]
-        )
-
-        available = float(
-            product.get(
-                "stock_quantity",
-                0,
-            )
-        )
-
-        if requested > available:
-
-            raise APIError(
-                f"Insufficient stock for {product.get('name', 'product')}.",
-                409,
-                "insufficient_stock",
-            )
-
-    # -----------------------------------------------------
-    # Create sale
-    # -----------------------------------------------------
-
-    document = sale_document(
-        business["id"],
-        payload,
-    )
-
-    result = collection(
-        "jumuiya_sales"
-    ).insert_one(
-        document
-    )
-
-    document["_id"] = (
-        result.inserted_id
-    )
-
-    # -----------------------------------------------------
-    # Deduct inventory
-    # -----------------------------------------------------
-
-    for item in payload.get(
-        "items",
-        [],
-    ):
-
-        product_id = clean_id(
-            item["product_id"]
-        )
-
-        quantity = float(
-            item["quantity"]
-        )
-
-        product = collection(
-            "jumuiya_products"
-        ).find_one({
-            "_id": product_id,
-            "business_id": business["id"],
-        })
-
-        if not product:
-            continue
-
-        previous_quantity = float(
-            product.get(
-                "stock_quantity",
-                0,
-            )
-        )
-
-        new_quantity = (
-            previous_quantity
-            - quantity
-        )
-
-        collection(
-            "jumuiya_products"
-        ).update_one(
-            {
+    if deduct_stock:
+        # A direct/walk-in sale still adjusts stock. Use a quantity guard so
+        # concurrent sales cannot drive the count below zero.
+        completed_movements = []
+        for item in items:
+            product_id = clean_id(item["product_id"])
+            quantity = float(item["quantity"])
+            product = products.find_one({
                 "_id": product_id,
                 "business_id": business["id"],
-            },
-            {
-                "$set": {
-                    "stock_quantity": new_quantity,
-                    "updated_at": now_utc(),
-                }
-            },
+                "status": "active",
+            })
+            if not product:
+                continue
+            previous_quantity = float(product.get("stock_quantity", 0) or 0)
+            updated_product = products.find_one_and_update(
+                {
+                    "_id": product_id,
+                    "business_id": business["id"],
+                    "status": "active",
+                    "stock_quantity": {"$gte": quantity},
+                },
+                {"$inc": {"stock_quantity": -quantity}, "$set": {"updated_at": now_utc()}},
+                return_document=ReturnDocument.AFTER,
+            )
+            if not updated_product:
+                # Roll back the quantities already deducted in this sale.
+                for movement in reversed(completed_movements):
+                    products.update_one(
+                        {"_id": movement["product_id"], "business_id": business["id"]},
+                        {"$inc": {"stock_quantity": movement["quantity"]}, "$set": {"updated_at": now_utc()}},
+                    )
+                sales.delete_one({"_id": result.inserted_id, "business_id": business["id"]})
+                raise APIError("Stock changed while recording this sale. Refresh and retry.", 409, "stock_conflict")
+
+            new_quantity = float(updated_product.get("stock_quantity", 0) or 0)
+            completed_movements.append({"product_id": product_id, "quantity": quantity})
+            try:
+                movement = inventory_movement_document(
+                    business["id"],
+                    product_id,
+                    {"movement_type": "remove", "quantity": quantity, "reason": "direct sale " + str(result.inserted_id)},
+                    previous_quantity,
+                    new_quantity,
+                )
+                collection("jumuiya_inventory_movements").insert_one(movement)
+            except Exception:
+                pass
+
+    if linked_order:
+        orders.update_one(
+            {"_id": linked_order["_id"], "business_id": business["id"]},
+            {"$set": {"sale_id": str(result.inserted_id), "sale_recorded_at": now_utc()}},
         )
 
-        movement = inventory_movement_document(
-            business["id"],
-            product_id,
-            {
-                "movement_type": "remove",
-                "quantity": quantity,
-                "reason": "sale",
-            },
-            previous_quantity,
-            new_quantity,
-        )
-
-        collection(
-            "jumuiya_inventory_movements"
-        ).insert_one(
-            movement
-        )
-
-    log_action(
-        user_id,
-        "sale.created",
-        "sale",
-        result.inserted_id,
-    )
-
-    return serialise(
-        document
-    )
+    log_action(user_id, "sale.created", "sale", result.inserted_id)
+    return serialise(document)
 
 
 # =========================================================
@@ -1651,13 +1808,34 @@ def get_public_biashara_website(slug):
                 "price": product.get("price", 0),
                 "currency": product.get("currency") or public_business["currency"],
                 "image_url": product.get("image_url", ""),
+                "stock_quantity": float(product.get("stock_quantity", 0) or 0),
                 "available": float(product.get("stock_quantity", 0) or 0) > 0,
+            })
+
+    public_services = []
+    if public_website["show_services"]:
+        service_docs = collection("jumuiya_business_services").find({
+            "business_id": str(business["_id"]),
+            "status": "active",
+        }).sort("created_at", -1).limit(60)
+        for service in service_docs:
+            public_services.append({
+                "id": str(service.get("_id", "")),
+                "name": service.get("name", ""),
+                "description": service.get("description", ""),
+                "category": service.get("category", ""),
+                "service_type": service.get("service_type", "general"),
+                "price": service.get("price", 0),
+                "currency": service.get("currency") or public_business["currency"],
+                "unit": service.get("unit", "service"),
+                "duration_minutes": service.get("duration_minutes", 0),
             })
 
     return {
         "business": public_business,
         "website": public_website,
         "products": products,
+        "services": public_services,
     }
 
 
@@ -1720,6 +1898,93 @@ def submit_public_biashara_inquiry(slug, payload):
     }
     collection("jumuiya_business_website_inquiries").insert_one(document)
     return {"accepted": True}
+
+
+def create_public_biashara_order(slug, payload):
+    """Create a customer order through a published business storefront."""
+    if not isinstance(payload, dict):
+        raise APIError("A JSON request body is required.", 400, "invalid_json")
+    if str(payload.get("website") or "").strip():
+        return {"accepted": True}
+
+    normalized_slug = str(slug or "").strip().lower()
+    if not normalized_slug or not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", normalized_slug):
+        raise APIError("Business website not found.", 404, "website_not_found")
+    business = collection("jumuiya_businesses").find_one({
+        "slug": normalized_slug,
+        "status": "active",
+        "verification_status": "verified",
+        "website.published": True,
+        "website.show_products": True,
+    })
+    if not business:
+        raise APIError("This business does not currently accept website orders.", 404, "website_not_found")
+
+    from backend.revenue.subscriptions import resolve_entitlement
+    entitlement = resolve_entitlement(str(business.get("owner_user_id") or ""), "biashara", "seller_tools")
+    if entitlement.get("allowed") is not True:
+        raise APIError("This business website is not currently available for orders.", 404, "website_not_found")
+
+    def clean_text(key, limit, required=False):
+        value = payload.get(key, "")
+        if not isinstance(value, str):
+            raise APIError(key.replace("_", " ").capitalize() + " must be text.", 422, "validation_error")
+        value = value.strip()
+        if required and not value:
+            raise APIError(key.replace("_", " ").capitalize() + " is required.", 422, "validation_error")
+        if len(value) > limit or "<" in value or ">" in value:
+            raise APIError(key.replace("_", " ").capitalize() + " is invalid or too long.", 422, "validation_error")
+        return value
+
+    name = clean_text("name", 160, True)
+    email = clean_text("email", 254)
+    phone = clean_text("phone", 40)
+    notes = clean_text("notes", 1000)
+    if not email and not phone:
+        raise APIError("Provide a phone number or email address so the business can contact you.", 422, "contact_required")
+    if email and not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email):
+        raise APIError("Enter a valid email address.", 422, "invalid_email")
+    if phone and not re.fullmatch(r"[+0-9() .-]{7,40}", phone):
+        raise APIError("Enter a valid phone number.", 422, "invalid_phone")
+    if not isinstance(payload.get("items"), list) or not payload.get("items"):
+        raise APIError("Add at least one product to your order.", 422, "invalid_order_items")
+
+    owner_user_id = str(business.get("owner_user_id") or "")
+    if not owner_user_id:
+        raise APIError("This business cannot receive orders right now.", 409, "business_owner_missing")
+
+    order = create_order(
+        owner_user_id,
+        {"items": payload["items"], "notes": notes},
+    )
+    order_id = clean_id(order.get("id"))
+    collection("jumuiya_orders").update_one(
+        {"_id": order_id, "business_id": str(business["_id"])},
+        {"$set": {
+            "source_channel": "public_website",
+            "customer_name": name,
+            "customer_email": email,
+            "customer_phone": phone,
+        }},
+    )
+    _notify_business_owner(
+        business,
+        "New website order",
+        f"{name} placed an order for {order.get('currency', 'KES')} {float(order.get('total_amount') or 0):,.2f}. Stock was reserved automatically.",
+        "order_created",
+        {"order_id": str(order.get("id") or ""), "business_slug": normalized_slug, "total_amount": order.get("total_amount"), "currency": order.get("currency", "KES")},
+    )
+    return {
+        "accepted": True,
+        "order": {
+            "id": order.get("id"),
+            "order_number": order.get("id"),
+            "status": order.get("status"),
+            "total_amount": order.get("total_amount"),
+            "currency": order.get("currency"),
+            "inventory_status": "reserved",
+        },
+    }
 
 
 def list_biashara_website_inquiries(user_id, limit=30):

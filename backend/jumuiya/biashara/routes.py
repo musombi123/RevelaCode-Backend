@@ -325,6 +325,55 @@ def delete_product(
 
 
 # =========================================================
+# BUSINESS SERVICES CATALOGUE
+# =========================================================
+
+@biashara_bp.get("/services")
+@require_authenticated
+def get_services():
+    return ok(
+        services.list_services(
+            user_id(),
+            request.args.get("status"),
+            request.args.get("search"),
+            query_limit(),
+        )
+    )
+
+
+@biashara_bp.post("/services")
+@require_authenticated
+def add_service():
+    payload = validate(schemas.service_payload, body())
+    return created(
+        services.create_service(user_id(), payload),
+        "Business service created.",
+    )
+
+
+@biashara_bp.put("/services/<service_id>")
+@require_authenticated
+def edit_service(service_id):
+    payload = validate(
+        lambda data: schemas.service_payload(data, partial=True),
+        body(),
+    )
+    return ok(
+        services.update_service(user_id(), service_id, payload),
+        "Business service updated.",
+    )
+
+
+@biashara_bp.delete("/services/<service_id>")
+@require_authenticated
+def remove_service(service_id):
+    return ok(
+        services.delete_service(user_id(), service_id),
+        "Business service archived.",
+    )
+
+
+# =========================================================
 # INVENTORY
 # =========================================================
 
@@ -704,6 +753,14 @@ def get_website_inquiries():
             user_id(),
             query_limit(default=30),
         )
+    )
+
+
+@biashara_bp.post("/public/<slug>/orders")
+def create_public_website_order(slug):
+    return created(
+        services.create_public_biashara_order(slug, body()),
+        "Your order has been received and stock has been reserved.",
     )
 
 

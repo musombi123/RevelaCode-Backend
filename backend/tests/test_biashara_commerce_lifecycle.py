@@ -33,12 +33,19 @@ class FakeCollection:
 
     def find_one_and_update(self, query, update, return_document=None):
         for doc in self.documents:
-            if str(doc.get("_id")) != str(query.get("_id")):
+            matches = True
+            for key, expected in query.items():
+                if isinstance(expected, dict) and "$gte" in expected:
+                    if float(doc.get(key, 0) or 0) < float(expected["$gte"]):
+                        matches = False
+                        break
+                elif str(doc.get(key)) != str(expected):
+                    matches = False
+                    break
+            if not matches:
                 continue
-            if str(doc.get("business_id")) != str(query.get("business_id")):
-                continue
-            if doc.get("status") != query.get("status"):
-                continue
+            for key, value in update.get("$inc", {}).items():
+                doc[key] = float(doc.get(key, 0) or 0) + float(value)
             doc.update(deepcopy(update.get("$set", {})))
             for key, value in update.get("$push", {}).items():
                 doc.setdefault(key, []).append(deepcopy(value))
@@ -103,10 +110,10 @@ def test_order_uses_server_catalogue_price_and_ignores_client_total(commerce_db)
     assert result["items"][0]["unit_price"] == 150.25
     assert result["items"][0]["line_total_minor"] == 30050
     assert result["payment_status"] == "unpaid"
-    assert result["inventory_status"] == "not_reserved"
+    assert result["inventory_status"] == "reserved"
     assert result["status_history"][0]["to"] == "pending"
-    # Creating a pending order must not silently mutate stock.
-    assert commerce_db["product"]["stock_quantity"] == 5
+    # Accepted pending orders reserve stock immediately.
+    assert commerce_db["products"].documents[0]["stock_quantity"] == 3
 
 
 def test_order_rejects_quantity_above_current_stock(commerce_db):

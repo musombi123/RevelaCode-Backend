@@ -355,6 +355,28 @@ def customer_document(
 
 
 # =========================================================
+# BUSINESS SERVICES
+# =========================================================
+
+def service_document(business_id, payload):
+    now = now_utc()
+    return {
+        "business_id": str(business_id),
+        "name": str(payload.get("name") or "").strip(),
+        "description": str(payload.get("description") or "").strip(),
+        "category": str(payload.get("category") or "").strip(),
+        "service_type": str(payload.get("service_type") or "general").strip(),
+        "price": float(payload.get("price", 0) or 0),
+        "currency": str(payload.get("currency") or DEFAULT_CURRENCY).upper(),
+        "unit": str(payload.get("unit") or "service").strip(),
+        "duration_minutes": float(payload.get("duration_minutes", 0) or 0),
+        "status": str(payload.get("status") or "active").lower(),
+        "created_at": now,
+        "updated_at": now,
+    }
+
+
+# =========================================================
 # ORDERS
 # =========================================================
 
