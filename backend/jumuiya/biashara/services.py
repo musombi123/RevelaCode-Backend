@@ -21,12 +21,14 @@ from backend.jumuiya.biashara.website import (
 from backend.jumuiya.biashara.models import (
     business_document,
     product_document,
+    service_document,
     customer_document,
     order_document,
     expense_document,
     sale_document,
     inventory_movement_document,
 )
+from backend.jumuiya.notifications.services import notify as notify_jumuiya
 
 
 # =========================================================
@@ -554,6 +556,88 @@ def delete_product(
 
 
 # =========================================================
+# BUSINESS SERVICES CATALOGUE
+# =========================================================
+
+def create_service(user_id, payload):
+    business = _require_business(user_id, allowed_roles=set(["owner", "admin", "manager"]))
+    document = service_document(business["id"], payload)
+    result = collection("jumuiya_business_services").insert_one(document)
+    document["_id"] = result.inserted_id
+    log_action(user_id, "business_service.created", "business_service", result.inserted_id)
+    return serialise(document)
+
+
+def list_services(user_id, status=None, search=None, limit=50):
+    business = _require_business(user_id, allowed_roles=set(["owner", "admin", "manager", "sales", "viewer"]))
+    query = {"business_id": business["id"]}
+    if status:
+        query["status"] = status
+    search_text = str(search or "").strip()
+    if search_text:
+        expression = {"$regex": re.escape(search_text), "$options": "i"}
+        query["$or"] = [
+            {"name": expression},
+            {"category": expression},
+            {"service_type": expression},
+            {"description": expression},
+        ]
+    documents = (
+        collection("jumuiya_business_services")
+        .find(query)
+        .sort("created_at", -1)
+        .limit(_bounded_list_limit(limit))
+    )
+    return serialise_many(documents)
+
+
+def update_service(user_id, service_id, payload):
+    business = _require_business(user_id, allowed_roles=set(["owner", "admin", "manager"]))
+    allowed = {"name", "description", "category", "service_type", "price", "currency", "unit", "duration_minutes", "status"}
+    update = {key: payload[key] for key in allowed if key in payload}
+    if not update:
+        raise APIError("No service fields were provided.", 422, "empty_update")
+    document = collection("jumuiya_business_services").find_one_and_update(
+        {"_id": clean_id(service_id), "business_id": business["id"]},
+        {"$set": {**update, "updated_at": now_utc()}},
+        return_document=ReturnDocument.AFTER,
+    )
+    if not document:
+        raise APIError("Service not found.", 404, "service_not_found")
+    log_action(user_id, "business_service.updated", "business_service", document["_id"])
+    return serialise(document)
+
+
+def delete_service(user_id, service_id):
+    business = _require_business(user_id, allowed_roles=set(["owner", "admin", "manager"]))
+    document = collection("jumuiya_business_services").find_one_and_update(
+        {"_id": clean_id(service_id), "business_id": business["id"]},
+        {"$set": {"status": "deleted", "updated_at": now_utc()}},
+        return_document=ReturnDocument.AFTER,
+    )
+    if not document:
+        raise APIError("Service not found.", 404, "service_not_found")
+    log_action(user_id, "business_service.deleted", "business_service", document["_id"])
+    return serialise(document)
+
+
+def _notify_business_owner(business, title, message, notification_type, data=None):
+    owner_user_id = str(business.get("owner_user_id") or "").strip()
+    if not owner_user_id:
+        return None
+    try:
+        return notify_jumuiya(owner_user_id, {
+            "title": title,
+            "message": message,
+            "type": notification_type,
+            "data": data if isinstance(data, dict) else {},
+        })
+    except Exception:
+        # Notification persistence must not undo an accepted business operation.
+        return None
+
+
+# =========================================================
 # INVENTORY
 # =========================================================
 
@@ -921,18 +1005,48 @@ def create_order(
             "currency": currency,
         })
 
-    # A pending order does not reduce stock yet. This is an advisory check only;
-    # two concurrent pending orders can still request the same units until a
-    # durable reservation workflow is implemented.
+    # Atomically reserve inventory when an order is accepted. This makes the
+    # displayed remaining quantity authoritative even when two customers order
+    # close together.
+    products_collection = collection("jumuiya_products")
+    reserved = []
     for product_key, requested in requested_by_product.items():
         product = product_cache[product_key]
-        available = stock_by_product.get(product_key, Decimal("0"))
-        if requested > available:
+        requested_float = float(requested)
+        updated_product = products_collection.find_one_and_update(
+            {
+                "_id": product["_id"],
+                "business_id": business["id"],
+                "status": "active",
+                "stock_quantity": {"$gte": requested_float},
+            },
+            {
+                "$inc": {"stock_quantity": -requested_float},
+                "$set": {"updated_at": now_utc()},
+            },
+            return_document=ReturnDocument.AFTER,
+        )
+        if not updated_product:
+            for reservation in reversed(reserved):
+                products_collection.update_one(
+                    {"_id": reservation["product_id"], "business_id": business["id"]},
+                    {"$inc": {"stock_quantity": reservation["quantity"]}, "$set": {"updated_at": now_utc()}},
+                )
+            current = products_collection.find_one({"_id": product["_id"], "business_id": business["id"]})
+            remaining = float((current or {}).get("stock_quantity", 0) or 0)
             raise APIError(
-                f"Insufficient stock for {product.get('name', 'product')}.",
+                f"Insufficient stock for {product.get('name', 'product')}. Remaining: {remaining:g}.",
                 409,
                 "insufficient_stock",
             )
+        reserved.append({
+            "product_id": product["_id"],
+            "product_name": str(product.get("name") or "Product"),
+            "quantity": requested_float,
+            "previous_quantity": float(updated_product.get("stock_quantity", 0) or 0) + requested_float,
+            "new_quantity": float(updated_product.get("stock_quantity", 0) or 0),
+            "low_stock_threshold": float(product.get("low_stock_threshold", 0) or 0),
+        })
 
     subtotal = subtotal.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
     total = subtotal
@@ -959,7 +1073,8 @@ def create_order(
         "total_amount_minor": int(total * 100),
         "currency": currency,
         "source_channel": "manual",
-        "inventory_status": "not_reserved",
+        "inventory_status": "reserved",
+        "inventory_reserved_at": now,
         "status_history": [{
             "from": None,
             "to": "pending",
@@ -968,8 +1083,43 @@ def create_order(
         }],
     })
 
-    result = collection("jumuiya_orders").insert_one(document)
+    try:
+        result = collection("jumuiya_orders").insert_one(document)
+    except Exception:
+        for reservation in reversed(reserved):
+            products_collection.update_one(
+                {"_id": reservation["product_id"], "business_id": business["id"]},
+                {"$inc": {"stock_quantity": reservation["quantity"]}, "$set": {"updated_at": now_utc()}},
+            )
+        raise
     document["_id"] = result.inserted_id
+
+    for reservation in reserved:
+        movement_payload = {
+            "movement_type": "remove",
+            "quantity": reservation["quantity"],
+            "reason": "Order " + str(result.inserted_id) + " reserved stock",
+        }
+        try:
+            movement = inventory_movement_document(
+                business["id"],
+                reservation["product_id"],
+                movement_payload,
+                reservation["previous_quantity"],
+                reservation["new_quantity"],
+            )
+            collection("jumuiya_inventory_movements").insert_one(movement)
+        except Exception:
+            pass
+        threshold = reservation["low_stock_threshold"]
+        if reservation["new_quantity"] <= threshold and reservation["previous_quantity"] > threshold:
+            _notify_business_owner(
+                business,
+                "Low stock: " + reservation["product_name"],
+                f"{reservation['product_name']} has {reservation['new_quantity']:g} units remaining after an order.",
+                "inventory_low",
+                {"product_id": str(reservation["product_id"]), "remaining_stock": reservation["new_quantity"], "order_id": str(result.inserted_id)},
+            )
 
     log_action(user_id, "order.created", "order", result.inserted_id)
     return serialise(document)
