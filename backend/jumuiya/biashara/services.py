@@ -1242,6 +1242,57 @@ def update_order_status(
             "order_state_conflict",
         )
 
+    # Stock is reserved at order creation. If an uncompleted order is cancelled,
+    # release that reservation exactly once after the successful state transition.
+    if status == "cancelled" and str(document.get("inventory_status") or "") == "reserved":
+        for item in document.get("items") or []:
+            if not isinstance(item, dict):
+                continue
+            product_id = item.get("product_id")
+            try:
+                quantity = float(item.get("quantity") or 0)
+            except (TypeError, ValueError):
+                quantity = 0
+            if not product_id or quantity <= 0:
+                continue
+            product_before = collection("jumuiya_products").find_one({
+                "_id": clean_id(product_id),
+                "business_id": business["id"],
+            })
+            if not product_before:
+                continue
+            previous_quantity = float(product_before.get("stock_quantity", 0) or 0)
+            product_after = collection("jumuiya_products").find_one_and_update(
+                {"_id": product_before["_id"], "business_id": business["id"]},
+                {"$inc": {"stock_quantity": quantity}, "$set": {"updated_at": now_utc()}},
+                return_document=ReturnDocument.AFTER,
+            )
+            if product_after:
+                movement_payload = {
+                    "movement_type": "add",
+                    "quantity": quantity,
+                    "reason": "Order " + str(document["_id"]) + " cancellation released reservation",
+                }
+                try:
+                    movement = inventory_movement_document(
+                        business["id"], product_before["_id"], movement_payload,
+                        previous_quantity, float(product_after.get("stock_quantity", 0) or 0),
+                    )
+                    collection("jumuiya_inventory_movements").insert_one(movement)
+                except Exception:
+                    pass
+        orders.update_one(
+            {"_id": document["_id"], "business_id": business["id"], "status": "cancelled"},
+            {"$set": {"inventory_status": "released", "inventory_released_at": now_utc()}},
+        )
+        updated["inventory_status"] = "released"
+    elif status == "completed" and str(document.get("inventory_status") or "") == "reserved":
+        orders.update_one(
+            {"_id": document["_id"], "business_id": business["id"], "status": "completed"},
+            {"$set": {"inventory_status": "deducted", "inventory_deducted_at": now_utc()}},
+        )
+        updated["inventory_status"] = "deducted"
+
     log_action(user_id, "order.status_updated", "order", document["_id"])
     return serialise(updated)
 
