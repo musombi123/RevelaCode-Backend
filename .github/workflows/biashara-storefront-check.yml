@@ -12,6 +12,8 @@ on:
       - "backend/jumuiya/elimu/staff/**"
       - "backend/jumuiya/core/database.py"
       - "backend/tests/**"
+      - "tests/test_biashara_services_order_routes.py"
+      - "tests/test_jumuiya_notifications_routes.py"
       - "requirements.txt"
       - ".github/workflows/biashara-storefront-check.yml"
 
@@ -41,4 +43,4 @@ jobs:
         env:
           PYTHONPATH: backend
           MONGO_URI: mongodb://localhost:27017/biashara_test
-        run: python -m compileall -q backend/jumuiya/biashara backend/jumuiya/elimu/staff backend/jumuiya/core && python -m pytest -q backend/tests/test_biashara_website.py backend/tests/test_schemas.py backend/tests/test_biashara_verification.py backend/tests/test_biashara_commerce_lifecycle.py backend/tests/test_biashara_membership_access.py backend/tests/test_staff_invitation_delivery.py
+        run: python -m compileall -q backend/jumuiya/biashara backend/jumuiya/notifications backend/jumuiya/core && python -m pytest -q backend/tests/test_biashara_website.py backend/tests/test_schemas.py backend/tests/test_biashara_verification.py backend/tests/test_biashara_commerce_lifecycle.py backend/tests/test_biashara_membership_access.py backend/tests/test_staff_invitation_delivery.py tests/test_biashara_services_order_routes.py tests/test_jumuiya_notifications_routes.py
