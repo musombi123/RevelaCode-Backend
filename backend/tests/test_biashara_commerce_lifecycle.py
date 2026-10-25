@@ -113,7 +113,7 @@ def test_order_uses_server_catalogue_price_and_ignores_client_total(commerce_db)
     assert result["inventory_status"] == "reserved"
     assert result["status_history"][0]["to"] == "pending"
     # Accepted pending orders reserve stock immediately.
-    assert commerce_db["product"]["stock_quantity"] == 3
+    assert commerce_db["products"].documents[0]["stock_quantity"] == 3
 
 
 def test_order_rejects_quantity_above_current_stock(commerce_db):
