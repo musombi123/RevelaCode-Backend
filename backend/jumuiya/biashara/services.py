@@ -1856,10 +1856,30 @@ def get_public_biashara_website(slug):
                 "available": float(product.get("stock_quantity", 0) or 0) > 0,
             })
 
+    public_services = []
+    if public_website["show_services"]:
+        service_docs = collection("jumuiya_business_services").find({
+            "business_id": str(business["_id"]),
+            "status": "active",
+        }).sort("created_at", -1).limit(60)
+        for service in service_docs:
+            public_services.append({
+                "id": str(service.get("_id", "")),
+                "name": service.get("name", ""),
+                "description": service.get("description", ""),
+                "category": service.get("category", ""),
+                "service_type": service.get("service_type", "general"),
+                "price": service.get("price", 0),
+                "currency": service.get("currency") or public_business["currency"],
+                "unit": service.get("unit", "service"),
+                "duration_minutes": service.get("duration_minutes", 0),
+            })
+
     return {
         "business": public_business,
         "website": public_website,
         "products": products,
+        "services": public_services,
     }
 
 
