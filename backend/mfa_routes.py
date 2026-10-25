@@ -283,8 +283,32 @@ def _consume_recovery_code(user: dict, index: int | None) -> dict:
     if index is None:
         return user
     hashes = list(user.get("mfa_recovery_code_hashes") or [])
-    if 0 <= index < len(hashes):
-        hashes.pop(index)
+    if not 0 <= index < len(hashes):
+        raise MfaFailure("recovery_code_used", "That recovery code has already been used.", 401)
+
+    # Mongo's conditional update makes the one-time guarantee atomic, even if
+    # a client sends concurrent requests with the same recovery code.
+    recovery_hash = hashes[index]
+    if auth.MONGO_AVAILABLE and auth.users_col is not None:
+        query = _query_for_user(user)
+        query["mfa_recovery_code_hashes"] = recovery_hash
+        try:
+            result = auth.users_col.update_one(
+                query,
+                {"$pull": {"mfa_recovery_code_hashes": recovery_hash}},
+            )
+            if result.matched_count != 1:
+                raise MfaFailure("recovery_code_used", "That recovery code has already been used.", 401)
+            return auth.users_col.find_one(_query_for_user(user)) or {
+                **user,
+                "mfa_recovery_code_hashes": [value for value in hashes if value != recovery_hash],
+            }
+        except MfaFailure:
+            raise
+        except Exception as exc:
+            raise MfaFailure("security_update_unavailable", "Could not update recovery codes.", 503) from exc
+
+    hashes.pop(index)
     return _save_user(user, {"mfa_recovery_code_hashes": hashes})
 
 
@@ -480,6 +504,8 @@ def mfa_enable():
         if not secret or datetime.now(timezone.utc) >= expires:
             raise MfaFailure("setup_expired", "Authenticator setup expired. Start setup again.", 410)
         if not _verify_totp(secret, str(data.get("code") or "")):
+            if is_enrollment_challenge:
+                _record_failed_attempt(user)
             raise MfaFailure("invalid_code", "That authenticator code is incorrect. Check the code and try again.", 400)
 
         visible_codes, stored_codes = _new_recovery_codes()
