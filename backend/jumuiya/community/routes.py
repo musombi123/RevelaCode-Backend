@@ -505,8 +505,10 @@ def get_pulse():
 COMMUNITY_MEDIA_COLLECTION = "jumuiya_community_media"
 COMMUNITY_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
 COMMUNITY_VIDEO_EXTENSIONS = {".mp4", ".mov", ".m4v", ".webm"}
+COMMUNITY_DOCUMENT_EXTENSIONS = {".pdf"}
 COMMUNITY_IMAGE_MAX_BYTES = 12 * 1024 * 1024
 COMMUNITY_VIDEO_MAX_BYTES = 50 * 1024 * 1024
+COMMUNITY_DOCUMENT_MAX_BYTES = 25 * 1024 * 1024
 
 
 def _configure_community_cloudinary():
@@ -568,9 +570,13 @@ def upload_community_media():
         kind = "video"
         resource_type = "video"
         max_bytes = COMMUNITY_VIDEO_MAX_BYTES
+    elif extension in COMMUNITY_DOCUMENT_EXTENSIONS:
+        kind = "document"
+        resource_type = "raw"
+        max_bytes = COMMUNITY_DOCUMENT_MAX_BYTES
     else:
         raise APIError(
-            "Supported files are JPG, PNG, WEBP, GIF, MP4, MOV, M4V and WEBM.",
+            "Supported files are JPG, PNG, WEBP, GIF, MP4, MOV, M4V, WEBM and PDF.",
             422,
             "unsupported_media_type",
         )
@@ -628,6 +634,24 @@ def upload_community_media():
                 raise
             except (UnidentifiedImageError, OSError, ValueError):
                 raise APIError("The uploaded image is invalid.", 422, "invalid_image_file")
+        elif kind == "document":
+            try:
+                with open(temp_path, "rb") as pdf_file:
+                    signature = pdf_file.read(5)
+                if signature != b"%PDF-":
+                    raise APIError(
+                        "The selected file is not a valid PDF document.",
+                        422,
+                        "invalid_pdf_file",
+                    )
+            except APIError:
+                raise
+            except OSError as exc:
+                raise APIError(
+                    "The PDF document could not be validated.",
+                    422,
+                    "invalid_pdf_file",
+                ) from exc
 
         cloud_result = uploader.upload(
             temp_path,
