@@ -382,6 +382,7 @@ def register_bp(import_path: str, bp_name: str):
 # =========================================================
 
 register_bp("backend.auth_gate", "auth_bp")
+register_bp("backend.mfa_routes", "mfa_bp")
 register_bp("backend.user_data", "user_bp")
 register_bp("backend.account_management", "accounts_bp")
 register_bp("backend.account_documents", "account_documents_bp")
