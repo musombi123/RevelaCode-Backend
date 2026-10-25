@@ -887,12 +887,10 @@ def create_order(
     user_id,
     payload,
 ):
-    """Create a pending order using server-authoritative catalogue prices.
+    """Create an order from server-authoritative prices and reserve stock atomically.
 
-    Submitted line names/prices/totals are never trusted. The current stock
-    check is advisory because pending orders do not reserve inventory yet;
-    that limitation is recorded on the order until reservation/fulfilment is
-    implemented as a separate, idempotent workflow.
+    Submitted names, unit prices and totals are never trusted. A successful
+    order reserves every line item before it becomes visible in the order list.
     """
     business = _require_business(user_id, allowed_roles=set(['owner', 'admin', 'manager', 'sales']))
 
@@ -1931,7 +1929,7 @@ def create_public_biashara_order(slug, payload):
     notes = clean_text("notes", 1000)
     if not email and not phone:
         raise APIError("Provide a phone number or email address so the business can contact you.", 422, "contact_required")
-    if email and not re.fullmatch(r"[^@\\s]+@[^@\\s]+\\.[^@\\s]+", email):
+    if email and not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email):
         raise APIError("Enter a valid email address.", 422, "invalid_email")
     if phone and not re.fullmatch(r"[+0-9() .-]{7,40}", phone):
         raise APIError("Enter a valid phone number.", 422, "invalid_phone")
