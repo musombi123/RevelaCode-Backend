@@ -57,7 +57,7 @@ class TotpMfaIntegrationTests(unittest.TestCase):
         recovery_codes = enabled.get_json()["recovery_codes"]
         self.assertEqual(len(recovery_codes), 10)
         self.assertTrue(self.user["mfa_enabled"])
-        self.assertNotIn(recovery_codes[0], self.user["mfa_recovery_code_hashes"])
+        self.assertIn(mfa._recovery_hash(recovery_codes[0]), self.user["mfa_recovery_code_hashes"])
 
         login = self.client.post(
             "/api/login",
