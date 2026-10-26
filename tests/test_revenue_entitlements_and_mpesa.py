@@ -1204,3 +1204,71 @@ def test_daraja_query_4xx_is_not_misclassified_as_stk_initiation_rejection(monke
 
     with pytest.raises(RuntimeError, match="did not confirm"):
         mpesa._daraja_post("/mpesa/stkpushquery/v1/query", {"CheckoutRequestID": "test-id"})
+
+
+def test_sandbox_stk_diagnostic_uses_only_sandbox_host_and_fixed_one_kes(monkeypatch, revenue_app):
+    captured = {}
+
+    config = {
+        "enabled": True,
+        "consumer_key": "sandbox-key",
+        "consumer_secret": "sandbox-secret",
+        "passkey": "sandbox-passkey",
+        "shortcode": "174379",
+        "callback_url": "https://revelacode-backend.onrender.com/api/revenue/providers/mpesa/callback",
+        "callback_ok": True,
+    }
+    monkeypatch.setattr(mpesa, "_sandbox_config", lambda: config)
+    monkeypatch.setattr(mpesa, "_sandbox_stk_token", lambda _config: "sandbox-access-token")
+
+    def fake_post(url, **kwargs):
+        captured["url"] = url
+        captured["payload"] = kwargs["json"]
+        return Mock(
+            status_code=200,
+            json=lambda: {
+                "ResponseCode": "0",
+                "ResponseDescription": "Accepted",
+                "CheckoutRequestID": "ws_CO_SANDBOX",
+                "MerchantRequestID": "merchant-sandbox",
+            },
+        )
+
+    monkeypatch.setattr(mpesa.requests, "post", fake_post)
+    with revenue_app.test_request_context(
+        "/api/revenue/admin/sandbox-stk-push",
+        method="POST",
+        json={"phone": "0712345678"},
+    ):
+        response, status = mpesa.revenue_admin_sandbox_stk_push.__wrapped__.__wrapped__()
+
+    assert status == 200
+    body = response.get_json()
+    assert body["success"] is True
+    assert body["environment"] == "sandbox"
+    assert body["billing_record_created"] is False
+    assert captured["url"] == "https://sandbox.safaricom.co.ke/mpesa/stkpush/v1/processrequest"
+    assert captured["payload"]["Amount"] == 1
+    assert captured["payload"]["BusinessShortCode"] == "174379"
+    assert captured["payload"]["PhoneNumber"] == "254712345678"
+
+
+def test_sandbox_stk_diagnostic_is_disabled_without_explicit_sandbox_config(monkeypatch, revenue_app):
+    monkeypatch.setattr(mpesa, "_sandbox_config", lambda: {
+        "enabled": False,
+        "consumer_key": "",
+        "consumer_secret": "",
+        "passkey": "",
+        "shortcode": "",
+        "callback_url": "",
+        "callback_ok": False,
+    })
+    with revenue_app.test_request_context(
+        "/api/revenue/admin/sandbox-stk-push",
+        method="POST",
+        json={"phone": "0712345678"},
+    ):
+        response, status = mpesa.revenue_admin_sandbox_stk_push.__wrapped__.__wrapped__()
+
+    assert status == 503
+    assert response.get_json()["code"] == "mpesa_sandbox_test_not_configured"

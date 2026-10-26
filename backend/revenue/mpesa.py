@@ -777,6 +777,166 @@ def _validated_callback_receipt(checkout, callback_meta):
     return receipt
 
 
+
+
+def _sandbox_config():
+    """Read only dedicated sandbox credentials; never fall back to live secrets."""
+    from urllib.parse import urlsplit
+
+    callback = _env("MPESA_SANDBOX_CALLBACK_URL")
+    try:
+        parsed = urlsplit(callback)
+        callback_ok = (
+            parsed.scheme == "https"
+            and bool(parsed.hostname)
+            and parsed.path.rstrip("/") == "/api/revenue/providers/mpesa/callback"
+            and parsed.username is None
+            and parsed.password is None
+            and not parsed.query
+            and not parsed.fragment
+        )
+    except ValueError:
+        callback_ok = False
+
+    return {
+        "enabled": _env("MPESA_SANDBOX_ENABLED").lower() == "true",
+        "consumer_key": _env("MPESA_SANDBOX_CONSUMER_KEY"),
+        "consumer_secret": _env("MPESA_SANDBOX_CONSUMER_SECRET"),
+        "passkey": _env("MPESA_SANDBOX_PASSKEY"),
+        "shortcode": _env("MPESA_SANDBOX_SHORTCODE"),
+        "callback_url": callback,
+        "callback_ok": callback_ok,
+    }
+
+
+def _sandbox_stk_token(config):
+    """Obtain a token from the hard-coded sandbox host using sandbox-only secrets."""
+    try:
+        response = requests.get(
+            "https://sandbox.safaricom.co.ke/oauth/v1/generate",
+            params={"grant_type": "client_credentials"},
+            auth=(config["consumer_key"], config["consumer_secret"]),
+            headers={"Accept": "application/json"},
+            timeout=HTTP_TIMEOUT,
+            allow_redirects=False,
+            proxies={"http": "", "https": ""},
+        )
+    except requests.RequestException:
+        raise RuntimeError("Daraja Sandbox authentication service is unavailable.") from None
+    if response.status_code != 200:
+        raise RuntimeError("Daraja Sandbox authentication request was rejected.")
+    try:
+        data = response.json()
+    except ValueError:
+        raise RuntimeError("Daraja Sandbox returned an invalid authentication response.") from None
+    token = str(data.get("access_token") or "").strip() if isinstance(data, dict) else ""
+    if not token:
+        raise RuntimeError("Daraja Sandbox did not return an access token.")
+    return token
+
+
+@revenue_bp.post("/admin/sandbox-stk-push")
+@require_authenticated
+@require_roles(*ADMIN_ROLES)
+def revenue_admin_sandbox_stk_push():
+    """Send a fixed KES 1 STK request to Sandbox only; never creates billing records."""
+    config = _sandbox_config()
+    if not (
+        config["enabled"]
+        and config["consumer_key"]
+        and config["consumer_secret"]
+        and config["passkey"]
+        and config["shortcode"] == "174379"
+        and config["callback_ok"]
+    ):
+        return _error(
+            "Sandbox STK testing is disabled or incompletely configured. Set the dedicated MPESA_SANDBOX_* variables; live checkout settings are not used.",
+            503,
+            "mpesa_sandbox_test_not_configured",
+        )
+
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict) or set(payload) != {"phone"}:
+        return _error("Provide only the Sandbox test phone number as phone.", 400, "invalid_sandbox_request")
+    try:
+        phone = _phone(payload.get("phone"))
+    except ValueError as exc:
+        return _error(str(exc), 400, "invalid_phone_number")
+
+    timestamp = _timestamp()
+    password = base64.b64encode(
+        f'{config["shortcode"]}{config["passkey"]}{timestamp}'.encode("utf-8")
+    ).decode("ascii")
+    try:
+        token = _sandbox_stk_token(config)
+        response = requests.post(
+            "https://sandbox.safaricom.co.ke/mpesa/stkpush/v1/processrequest",
+            json={
+                "BusinessShortCode": config["shortcode"],
+                "Password": password,
+                "Timestamp": timestamp,
+                "TransactionType": "CustomerPayBillOnline",
+                "Amount": 1,
+                "PartyA": phone,
+                "PartyB": config["shortcode"],
+                "PhoneNumber": phone,
+                "CallBackURL": config["callback_url"],
+                "AccountReference": "RC-SANDBOX",
+                "TransactionDesc": "Sandbox test",
+            },
+            headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
+            timeout=HTTP_TIMEOUT,
+            allow_redirects=False,
+            proxies={"http": "", "https": ""},
+        )
+    except requests.RequestException:
+        return _error(
+            "Daraja Sandbox did not return a confirmed response. Check Sandbox logs before retrying.",
+            503,
+            "mpesa_sandbox_submission_unknown",
+        )
+    if response.status_code != 200:
+        # A Sandbox test never touches live checkout state. Do not echo provider
+        # bodies, credentials, access tokens, or request payloads to the client.
+        return _error(
+            f"Daraja Sandbox rejected the test request (HTTP {response.status_code}). Check Sandbox product access and test inputs.",
+            502,
+            "mpesa_sandbox_request_rejected",
+        )
+    try:
+        result = response.json()
+    except ValueError:
+        return _error("Daraja Sandbox returned an invalid response.", 502, "mpesa_sandbox_invalid_response")
+    if not isinstance(result, dict):
+        return _error("Daraja Sandbox returned an invalid response.", 502, "mpesa_sandbox_invalid_response")
+    response_code = str(result.get("ResponseCode") or "")
+    if response_code != "0":
+        return jsonify({
+            "success": False,
+            "code": "mpesa_sandbox_request_rejected",
+            "message": str(result.get("ResponseDescription") or result.get("errorMessage") or "Daraja Sandbox rejected the test request.")[:300],
+        }), 502
+
+    checkout_id = str(result.get("CheckoutRequestID") or "").strip()
+    merchant_id = str(result.get("MerchantRequestID") or "").strip()
+    if not checkout_id or not merchant_id:
+        return _error(
+            "Sandbox accepted the request but did not return both request identifiers. Check Daraja Sandbox logs before retrying.",
+            503,
+            "mpesa_sandbox_reference_missing",
+        )
+    return jsonify({
+        "success": True,
+        "message": "Daraja Sandbox accepted the KES 1 test STK request. No production checkout, subscription, or revenue record was created.",
+        "checkout_request_id": checkout_id,
+        "merchant_request_id": merchant_id,
+        "environment": "sandbox",
+        "amount": 1,
+        "currency": "KES",
+        "billing_record_created": False,
+    }), 200
+
+
 @revenue_bp.post("/providers/mpesa/callback")
 def revenue_mpesa_callback():
     """Receive Daraja's asynchronous callback; callback data alone never activates access."""
