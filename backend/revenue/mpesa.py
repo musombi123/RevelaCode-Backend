@@ -306,7 +306,11 @@ def _daraja_post(path, payload):
         # rejection, not an ambiguous network failure. Return a safe rejection
         # result so the checkout handler can mark initiation_failed and release
         # its slot instead of incorrectly locking the user in submission_unknown.
-        if 400 <= response.status_code < 500 and response.status_code != 408:
+        if (
+            path == "/mpesa/stkpush/v1/processrequest"
+            and 400 <= response.status_code < 500
+            and response.status_code != 408
+        ):
             description = (
                 f"Daraja rejected the STK Push request (HTTP {response.status_code}). "
                 "Check the live shortcode, transaction type and Daraja request configuration."
