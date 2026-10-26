@@ -1193,3 +1193,14 @@ def test_daraja_stk_5xx_remains_ambiguous(monkeypatch):
 
     with pytest.raises(RuntimeError, match="did not confirm"):
         mpesa._daraja_post("/mpesa/stkpush/v1/processrequest", {"Amount": 199})
+
+
+
+def test_daraja_query_4xx_is_not_misclassified_as_stk_initiation_rejection(monkeypatch):
+    response = Mock(status_code=400)
+    monkeypatch.setattr(mpesa, "_access_token", lambda: "test-token")
+    monkeypatch.setattr(mpesa, "_base_url", lambda: "https://api.safaricom.co.ke")
+    monkeypatch.setattr(mpesa.requests, "post", lambda *args, **kwargs: response)
+
+    with pytest.raises(RuntimeError, match="did not confirm"):
+        mpesa._daraja_post("/mpesa/stkpushquery/v1/query", {"CheckoutRequestID": "test-id"})
