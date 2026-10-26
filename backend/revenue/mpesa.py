@@ -347,8 +347,8 @@ def _access_token():
 
 
 def _daraja_post(path, payload):
-    token = _access_token()
     resolved_path = _daraja_path_for(path)
+    token = _access_token()
     try:
         response = requests.post(
             _base_url() + resolved_path,
