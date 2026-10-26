@@ -297,9 +297,27 @@ def _daraja_post(path, payload):
         )
     except requests.RequestException:
         raise RuntimeError("Daraja payment service is unavailable.") from None
-    if 300 <= response.status_code < 400 or response.status_code != 200:
-        logger.warning("Daraja request rejected | path=%s status=%s", path, response.status_code)
-        raise RuntimeError("Daraja did not accept the payment request.")
+    if 300 <= response.status_code < 400:
+        logger.warning("Daraja request redirected | path=%s status=%s", path, response.status_code)
+        raise RuntimeError("Daraja returned an unexpected redirect.")
+    if response.status_code != 200:
+        logger.warning("Daraja request returned HTTP error | path=%s status=%s", path, response.status_code)
+        # A normal 4xx response (except timeout) is an explicit provider-side
+        # rejection, not an ambiguous network failure. Return a safe rejection
+        # result so the checkout handler can mark initiation_failed and release
+        # its slot instead of incorrectly locking the user in submission_unknown.
+        if 400 <= response.status_code < 500 and response.status_code != 408:
+            description = (
+                f"Daraja rejected the STK Push request (HTTP {response.status_code}). "
+                "Check the live shortcode, transaction type and Daraja request configuration."
+            )
+            return {
+                "ResponseCode": "HTTP_REJECTED",
+                "ResponseDescription": description,
+            }
+        # Timeouts and server-side failures can occur after the provider has
+        # accepted a request. Keep them ambiguous; never permit an unsafe retry.
+        raise RuntimeError("Daraja did not confirm the payment request.")
     try:
         data = response.json()
     except ValueError:
@@ -673,7 +691,13 @@ def revenue_start_checkout():
                 "updated_at": now_utc(),
             }, "$unset": {"active_checkout_slot": ""}},
         )
-        return _error("Daraja rejected the STK Push request. No checkout was accepted.", 502, "mpesa_request_rejected")
+        rejected = rows.find_one({"_id": document["_id"]}) or document
+        return jsonify({
+            "success": False,
+            "code": "mpesa_request_rejected",
+            "message": str(rejected.get("message") or "Daraja rejected the STK Push request. No checkout was accepted."),
+            "checkout": _public_checkout(rejected),
+        }), 502
 
     if not response.get("CheckoutRequestID") or not response.get("MerchantRequestID"):
         # ResponseCode 0 means Daraja accepted the request. Missing correlation

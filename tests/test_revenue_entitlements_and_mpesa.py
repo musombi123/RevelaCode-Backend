@@ -1169,3 +1169,27 @@ def test_readiness_diagnostics_name_missing_production_gates(monkeypatch):
     assert status["checks"]["callback_path_matches"] is False
     assert any("MPESA_ENV=production" in item for item in status["blockers"])
     assert any("REVENUE_PAYMENT_PROVIDERS" in item for item in status["blockers"])
+
+
+
+def test_daraja_explicit_stk_4xx_is_a_definitive_rejection(monkeypatch):
+    response = Mock(status_code=400)
+    monkeypatch.setattr(mpesa, "_access_token", lambda: "test-token")
+    monkeypatch.setattr(mpesa, "_base_url", lambda: "https://api.safaricom.co.ke")
+    monkeypatch.setattr(mpesa.requests, "post", lambda *args, **kwargs: response)
+
+    result = mpesa._daraja_post("/mpesa/stkpush/v1/processrequest", {"Amount": 199})
+
+    assert result["ResponseCode"] == "HTTP_REJECTED"
+    assert "HTTP 400" in result["ResponseDescription"]
+    assert "test-token" not in result["ResponseDescription"]
+
+
+def test_daraja_stk_5xx_remains_ambiguous(monkeypatch):
+    response = Mock(status_code=500)
+    monkeypatch.setattr(mpesa, "_access_token", lambda: "test-token")
+    monkeypatch.setattr(mpesa, "_base_url", lambda: "https://api.safaricom.co.ke")
+    monkeypatch.setattr(mpesa.requests, "post", lambda *args, **kwargs: response)
+
+    with pytest.raises(RuntimeError, match="did not confirm"):
+        mpesa._daraja_post("/mpesa/stkpush/v1/processrequest", {"Amount": 199})
