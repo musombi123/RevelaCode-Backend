@@ -1131,6 +1131,9 @@ def test_production_readiness_diagnostics_do_not_return_secret_values(monkeypatc
     from backend.revenue import mpesa
 
     monkeypatch.setenv("MPESA_ENV", "production")
+    monkeypatch.setenv("MPESA_STK_URL", "https://api.safaricom.co.ke")
+    monkeypatch.setenv("MPESA_STK_PATH", "/mpesa/stkpush/v1/processrequest")
+    monkeypatch.setenv("MPESA_STK_QUERY_PATH", "/mpesa/stkpushquery/v1/query")
     monkeypatch.setenv("REVENUE_PAYMENT_PROVIDERS", "mpesa")
     monkeypatch.setenv("MPESA_CONSUMER_KEY", "sample-consumer-key")
     monkeypatch.setenv("MPESA_CONSUMER_SECRET", "sample-consumer-secret")
@@ -1155,6 +1158,9 @@ def test_readiness_diagnostics_name_missing_production_gates(monkeypatch):
     from backend.revenue import mpesa
 
     monkeypatch.setenv("MPESA_ENV", "sandbox")
+    monkeypatch.delenv("MPESA_STK_URL", raising=False)
+    monkeypatch.delenv("MPESA_STK_PATH", raising=False)
+    monkeypatch.delenv("MPESA_STK_QUERY_PATH", raising=False)
     monkeypatch.setenv("REVENUE_PAYMENT_PROVIDERS", "")
     monkeypatch.delenv("MPESA_CONSUMER_KEY", raising=False)
     monkeypatch.delenv("MPESA_CONSUMER_SECRET", raising=False)
@@ -1176,6 +1182,8 @@ def test_daraja_explicit_stk_4xx_is_a_definitive_rejection(monkeypatch):
     response = Mock(status_code=400)
     monkeypatch.setattr(mpesa, "_access_token", lambda: "test-token")
     monkeypatch.setattr(mpesa, "_base_url", lambda: "https://api.safaricom.co.ke")
+    monkeypatch.setenv("MPESA_STK_PATH", "/mpesa/stkpush/v1/processrequest")
+    monkeypatch.setenv("MPESA_STK_QUERY_PATH", "/mpesa/stkpushquery/v1/query")
     monkeypatch.setattr(mpesa.requests, "post", lambda *args, **kwargs: response)
 
     result = mpesa._daraja_post("/mpesa/stkpush/v1/processrequest", {"Amount": 199})
