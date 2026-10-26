@@ -1154,6 +1154,22 @@ def test_production_readiness_diagnostics_do_not_return_secret_values(monkeypatc
     assert "sample-passkey" not in serialized
 
 
+def test_daraja_endpoint_configuration_must_match_selected_environment(monkeypatch):
+    monkeypatch.setenv("MPESA_ENV", "production")
+    monkeypatch.setenv("MPESA_STK_URL", "https://sandbox.safaricom.co.ke")
+    monkeypatch.setenv("MPESA_STK_PATH", "/mpesa/stkpush/v1/processrequest")
+    monkeypatch.setenv("MPESA_STK_QUERY_PATH", "/mpesa/stkpushquery/v1/query")
+    assert mpesa._base_url() == ""
+
+    monkeypatch.setenv("MPESA_STK_URL", "https://api.safaricom.co.ke/unexpected")
+    assert mpesa._base_url() == ""
+
+    monkeypatch.setenv("MPESA_STK_URL", "https://api.safaricom.co.ke")
+    monkeypatch.setenv("MPESA_STK_PATH", "/wrong/path")
+    assert mpesa._endpoint_path("MPESA_STK_PATH") == ""
+    with pytest.raises(RuntimeError, match="MPESA_STK_PATH"):
+        mpesa._daraja_path_for("/mpesa/stkpush/v1/processrequest")
+
 def test_readiness_diagnostics_name_missing_production_gates(monkeypatch):
     from backend.revenue import mpesa
 
