@@ -9,6 +9,9 @@ Set these in the **RevelaCode-Backend** deployment environment, never in the fro
 | Variable | Purpose |
 |---|---|
 | `MPESA_ENV` | `sandbox` for tests or `production` for live payments |
+| `MPESA_STK_URL` | Required base URL: `https://sandbox.safaricom.co.ke` for sandbox or `https://api.safaricom.co.ke` for production. Must match `MPESA_ENV`. |
+| `MPESA_STK_PATH` | Required exact path: `/mpesa/stkpush/v1/processrequest` |
+| `MPESA_STK_QUERY_PATH` | Required exact path: `/mpesa/stkpushquery/v1/query` |
 | `REVENUE_PAYMENT_PROVIDERS` | Must include `mpesa` to enable production checkout (for example `mpesa`) |
 | `MPESA_CONSUMER_KEY` | Daraja app consumer key |
 | `MPESA_CONSUMER_SECRET` | Daraja app consumer secret |
@@ -18,7 +21,7 @@ Set these in the **RevelaCode-Backend** deployment environment, never in the fro
 | `MPESA_TRANSACTION_TYPE` | Optional: `CustomerPayBillOnline` by default or `CustomerBuyGoodsOnline` |
 | `MPESA_PARTY_B` | Optional: destination shortcode; defaults to `MPESA_SHORTCODE` |
 
-Use the exact values supplied by Safaricom for the registered Daraja application and shortcode. Do not use sandbox credentials with production mode or expose keys in the browser. A real payment can be collected once production credentials, callback reachability and the matching registered short code are configured.
+Use the exact values supplied by Safaricom for the registered Daraja application and shortcode. Do not use sandbox credentials with production mode or expose keys in the browser. The endpoint URL must be only the official base host (no API path, query, or fragment); the two endpoint path variables must match the paths listed above. The backend rejects missing or mismatched endpoint configuration before enabling checkout. A real payment can be collected once production credentials, callback reachability and the matching registered shortcode are configured.
 
 The backend reports checkout readiness at `GET /api/revenue/admin/billing/status` and in the public plans response. Readiness only means the required environment values are present; it does **not** prove a live Daraja payment has succeeded. The administrator-only billing status response includes `mpesa_readiness.checks` and `blocking_reasons`, which identify missing configuration gates without returning credential values. The diagnostic checks configuration shape only; it does not test the credentials with Safaricom or prove that the callback is reachable.
 
