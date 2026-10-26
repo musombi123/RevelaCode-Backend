@@ -50,13 +50,63 @@ def _environment() -> str:
     return value if value in {"sandbox", "production"} else ""
 
 
-def _base_url() -> str:
+def _expected_base_url() -> str:
     environment = _environment()
     if environment == "sandbox":
         return "https://sandbox.safaricom.co.ke"
     if environment == "production":
         return "https://api.safaricom.co.ke"
     return ""
+
+
+def _base_url() -> str:
+    """Return a validated Daraja host; never allow env config to switch environments."""
+    expected = _expected_base_url()
+    configured = _env("MPESA_STK_URL")
+    if not expected or not configured:
+        return ""
+    try:
+        parsed = urlsplit(configured)
+        expected_host = urlsplit(expected).hostname
+        if (
+            parsed.scheme != "https"
+            or parsed.hostname != expected_host
+            or parsed.port not in (None, 443)
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.path not in ("", "/")
+            or parsed.query
+            or parsed.fragment
+        ):
+            return ""
+    except ValueError:
+        return ""
+    return expected
+
+
+_STK_PATHS = {
+    "MPESA_STK_PATH": "/mpesa/stkpush/v1/processrequest",
+    "MPESA_STK_QUERY_PATH": "/mpesa/stkpushquery/v1/query",
+}
+
+
+def _endpoint_path(name: str) -> str:
+    """Resolve a configured Daraja path, requiring the documented endpoint."""
+    expected = _STK_PATHS.get(name)
+    configured = _env(name)
+    if not expected or not configured:
+        return ""
+    return configured if configured == expected else ""
+
+
+def _daraja_path_for(path: str) -> str:
+    for variable, expected in _STK_PATHS.items():
+        if path == expected:
+            resolved = _endpoint_path(variable)
+            if not resolved:
+                raise RuntimeError(f"{variable} is missing or invalid.")
+            return resolved
+    raise RuntimeError("Unsupported Daraja endpoint path.")
 
 
 def checkout_is_configured() -> bool:
@@ -78,6 +128,8 @@ def checkout_is_configured() -> bool:
         callback_ok = False
     return bool(
         _base_url()
+        and _endpoint_path("MPESA_STK_PATH")
+        and _endpoint_path("MPESA_STK_QUERY_PATH")
         and _env("MPESA_CONSUMER_KEY")
         and _env("MPESA_CONSUMER_SECRET")
         and _env("MPESA_SHORTCODE").isdigit()
@@ -109,8 +161,14 @@ def checkout_configuration_status() -> dict:
     except ValueError:
         parsed = None
 
+    configured_stk_url = _env("MPESA_STK_URL")
+    expected_stk_url = _expected_base_url()
     checks = {
         "production_environment": environment == "production",
+        "stk_url_present": bool(configured_stk_url),
+        "stk_url_matches_environment": bool(_base_url() and expected_stk_url),
+        "stk_path_valid": bool(_endpoint_path("MPESA_STK_PATH")),
+        "stk_query_path_valid": bool(_endpoint_path("MPESA_STK_QUERY_PATH")),
         "mpesa_provider_enabled": "mpesa" in providers,
         "consumer_key_present": bool(_env("MPESA_CONSUMER_KEY")),
         "consumer_secret_present": bool(_env("MPESA_CONSUMER_SECRET")),
@@ -132,6 +190,10 @@ def checkout_configuration_status() -> dict:
 
     labels = {
         "production_environment": "Set MPESA_ENV=production for live charges.",
+        "stk_url_present": "MPESA_STK_URL is missing; set it to https://api.safaricom.co.ke for production or https://sandbox.safaricom.co.ke for sandbox.",
+        "stk_url_matches_environment": "MPESA_STK_URL must use the official Safaricom host matching MPESA_ENV, with no path, query, or fragment.",
+        "stk_path_valid": "MPESA_STK_PATH must be /mpesa/stkpush/v1/processrequest.",
+        "stk_query_path_valid": "MPESA_STK_QUERY_PATH must be /mpesa/stkpushquery/v1/query.",
         "mpesa_provider_enabled": "REVENUE_PAYMENT_PROVIDERS must include mpesa.",
         "consumer_key_present": "MPESA_CONSUMER_KEY is missing from the backend environment.",
         "consumer_secret_present": "MPESA_CONSUMER_SECRET is missing from the backend environment.",
@@ -286,9 +348,10 @@ def _access_token():
 
 def _daraja_post(path, payload):
     token = _access_token()
+    resolved_path = _daraja_path_for(path)
     try:
         response = requests.post(
-            _base_url() + path,
+            _base_url() + resolved_path,
             json=payload,
             headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
             timeout=HTTP_TIMEOUT,
@@ -298,16 +361,40 @@ def _daraja_post(path, payload):
     except requests.RequestException:
         raise RuntimeError("Daraja payment service is unavailable.") from None
     if 300 <= response.status_code < 400:
-        logger.warning("Daraja request redirected | path=%s status=%s", path, response.status_code)
+        logger.warning("Daraja request redirected | path=%s status=%s", resolved_path, response.status_code)
         raise RuntimeError("Daraja returned an unexpected redirect.")
     if response.status_code != 200:
-        logger.warning("Daraja request returned HTTP error | path=%s status=%s", path, response.status_code)
+        provider_code = ""
+        provider_message = ""
+        try:
+            error_body = response.json()
+            if isinstance(error_body, dict):
+                provider_code = str(
+                    error_body.get("errorCode")
+                    or error_body.get("ResponseCode")
+                    or error_body.get("requestId")
+                    or ""
+                )[:80]
+                provider_message = str(
+                    error_body.get("errorMessage")
+                    or error_body.get("ResponseDescription")
+                    or error_body.get("ResultDesc")
+                    or ""
+                )[:240]
+        except (ValueError, TypeError):
+            pass
+        # Log only whitelisted, length-limited provider diagnostic fields; never
+        # log request payloads, tokens, passkeys, phone numbers, or full bodies.
+        logger.warning(
+            "Daraja request returned HTTP error | path=%s status=%s provider_code=%s provider_message=%s",
+            resolved_path, response.status_code, provider_code, provider_message,
+        )
         # A normal 4xx response (except timeout) is an explicit provider-side
         # rejection, not an ambiguous network failure. Return a safe rejection
         # result so the checkout handler can mark initiation_failed and release
         # its slot instead of incorrectly locking the user in submission_unknown.
         if (
-            path == "/mpesa/stkpush/v1/processrequest"
+            resolved_path == _STK_PATHS["MPESA_STK_PATH"]
             and 400 <= response.status_code < 500
             and response.status_code != 408
         ):
