@@ -1359,7 +1359,8 @@ def login():
 
         return jsonify(
             success=False,
-            message="Account not verified",
+            code="account_not_verified",
+            message="Account not verified. Request a new email verification code to activate your account.",
         ), 403
 
     # -----------------------------------------------------
