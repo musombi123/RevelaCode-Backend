@@ -87,10 +87,21 @@ try:
         "users"
     )
 
-except Exception:
+except Exception as exc:
+    # Production account creation must never silently fall back to a local
+    # JSON file: that creates accounts which do not exist in MongoDB and
+    # cannot be found by other instances or services.
+    if (
+        os.getenv("RENDER", "").strip().casefold() == "true"
+        or os.getenv("FLASK_ENV", "").strip().casefold() == "production"
+        or os.getenv("ENVIRONMENT", "").strip().casefold() == "production"
+    ):
+        raise RuntimeError(
+            "MongoDB is required in production; refusing to start authentication "
+            "with file-based user storage."
+        ) from exc
 
     MONGO_AVAILABLE = False
-
     users_col = None
 
 
