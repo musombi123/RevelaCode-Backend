@@ -1213,6 +1213,8 @@ def test_daraja_stk_5xx_remains_ambiguous(monkeypatch):
     response = Mock(status_code=500)
     monkeypatch.setattr(mpesa, "_access_token", lambda: "test-token")
     monkeypatch.setattr(mpesa, "_base_url", lambda: "https://api.safaricom.co.ke")
+    monkeypatch.setenv("MPESA_STK_PATH", "/mpesa/stkpush/v1/processrequest")
+    monkeypatch.setenv("MPESA_STK_QUERY_PATH", "/mpesa/stkpushquery/v1/query")
     monkeypatch.setattr(mpesa.requests, "post", lambda *args, **kwargs: response)
 
     with pytest.raises(RuntimeError, match="did not confirm"):
@@ -1224,6 +1226,8 @@ def test_daraja_query_4xx_is_not_misclassified_as_stk_initiation_rejection(monke
     response = Mock(status_code=400)
     monkeypatch.setattr(mpesa, "_access_token", lambda: "test-token")
     monkeypatch.setattr(mpesa, "_base_url", lambda: "https://api.safaricom.co.ke")
+    monkeypatch.setenv("MPESA_STK_PATH", "/mpesa/stkpush/v1/processrequest")
+    monkeypatch.setenv("MPESA_STK_QUERY_PATH", "/mpesa/stkpushquery/v1/query")
     monkeypatch.setattr(mpesa.requests, "post", lambda *args, **kwargs: response)
 
     with pytest.raises(RuntimeError, match="did not confirm"):
