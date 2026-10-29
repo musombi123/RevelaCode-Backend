@@ -270,6 +270,8 @@ def _normalize_whatsapp_phone(value: Any) -> str:
         normalized = "+" + digits
     elif digits.startswith("0") and len(digits) == 10:
         normalized = "+254" + digits[1:]
+    elif digits.startswith(("7", "1")) and len(digits) == 9:
+        normalized = "+254" + digits
     else:
         return ""
     return normalized if re.fullmatch(r"\+[1-9]\d{7,14}", normalized) else ""
@@ -320,6 +322,184 @@ def _send_fee_reminder_email(recipient: str, subject: str, text_body: str, html_
         "text": text_body,
         "html": html_body,
     })
+
+
+def _whatsapp_phone_variants(value: Any) -> list[str]:
+    """Return common Kenyan representations for a normalized parent number."""
+    normalized = _normalize_whatsapp_phone(value)
+    if not normalized:
+        return []
+    digits = normalized.lstrip("+")
+    national = digits[3:] if digits.startswith("254") else digits
+    variants = {
+        normalized,
+        digits,
+        national,
+        "0" + national if len(national) == 9 else "",
+        "254" + national if len(national) == 9 else "",
+        "+254" + national if len(national) == 9 else "",
+    }
+    return sorted(item for item in variants if item)
+
+
+def _send_whatsapp_text(recipient: str, text_body: str) -> str:
+    """Send a user-requested reply inside WhatsApp's customer-service window."""
+    access_token = os.getenv("WHATSAPP_ACCESS_TOKEN", "").strip()
+    phone_number_id = os.getenv("WHATSAPP_PHONE_NUMBER_ID", "").strip()
+    api_version = (os.getenv("WHATSAPP_API_VERSION") or "v26.0").strip()
+    if not access_token or not phone_number_id:
+        raise RuntimeError("whatsapp_cloud_api_not_configured")
+
+    import requests
+
+    response = requests.post(
+        f"https://graph.facebook.com/{api_version}/{phone_number_id}/messages",
+        headers={
+            "Authorization": f"Bearer {access_token}",
+            "Content-Type": "application/json",
+        },
+        json={
+            "messaging_product": "whatsapp",
+            "recipient_type": "individual",
+            "to": recipient.lstrip("+"),
+            "type": "text",
+            "text": {
+                "preview_url": False,
+                "body": _text(text_body, 3800),
+            },
+        },
+        timeout=(5, 20),
+    )
+    try:
+        result = response.json()
+    except ValueError:
+        result = {}
+    if response.status_code >= 400 or not isinstance(result.get("messages"), list) or not result["messages"]:
+        raise RuntimeError("whatsapp_text_delivery_failed")
+    return _text(result["messages"][0].get("id"), 240)
+
+
+def _handle_whatsapp_fee_query(sender: str, message_text: str) -> str:
+    """Answer only with fee data belonging to active learners linked to this sender."""
+    normalized_sender = _normalize_whatsapp_phone(sender)
+    if not normalized_sender:
+        return "I could not verify this WhatsApp number. Please contact your school office to update the parent/guardian contact."
+
+    command = _text(message_text, 500).lower()
+    if not command or command in {"hi", "hello", "habari", "help", "menu", "start"}:
+        return (
+            "Jumuiya Elimu Parent Assistant\\n"
+            "Send FEES to check the balance for a linked learner.\\n"
+            "If more than one learner is linked, send FEES followed by the learner's admission number.\\n"
+            "For an official receipt or payment dispute, contact the school Bursar."
+        )
+
+    match = re.fullmatch(
+        r"(?:fees?|balance|fee balance)(?:\\s+([a-z0-9][a-z0-9/._-]{0,39}))?",
+        command,
+        flags=re.IGNORECASE,
+    )
+    if not match:
+        # Also allow a parent to refer to a child's name, but only among records
+        # linked to this same WhatsApp number.
+        name_query = re.sub(r"^(?:check|show|what is|what's)\\s+", "", command).strip()
+        if not name_query or len(name_query) > 80:
+            return "Please send FEES or FEES followed by the learner's admission number."
+    else:
+        name_query = ""
+    requested_identifier = _text(match.group(1), 40).lower() if match else ""
+
+    variants = _whatsapp_phone_variants(normalized_sender)
+    candidates = list(
+        collection(STUDENTS).find({
+            "status": "active",
+            "guardian_phone": {"$in": variants},
+        }).limit(1000)
+    )
+    linked = []
+    seen = set()
+    for student in candidates:
+        if _normalize_whatsapp_phone(student.get("guardian_phone")) != normalized_sender:
+            continue
+        student_id = _text(student.get("_id") or student.get("id"), 160)
+        if not student_id or student_id in seen:
+            continue
+        seen.add(student_id)
+        admission = _text(student.get("admission_number"), 120)
+        if requested_identifier and requested_identifier not in {
+            admission.lower(),
+            student_id.lower(),
+        }:
+            continue
+        full_name = _text(student.get("full_name") or student.get("name"), 160)
+        if name_query and name_query not in full_name.lower() and name_query not in admission.lower():
+            continue
+        school_id = _text(student.get("school_id"), 160)
+        if not school_id:
+            continue
+        school = collection(SCHOOLS).find_one(_school_query(school_id))
+        if not school:
+            continue
+        fee_rows = list(collection(FEES).find({"school_id": school_id}).limit(5000))
+        status = _student_fee_status(student, fee_rows)
+        linked.append({
+            "student": student,
+            "school": school,
+            "status": status,
+        })
+
+    if not linked:
+        return (
+            "I could not find an active learner linked to this WhatsApp number and request. "
+            "Please contact the Registrar to confirm the guardian number and admission number."
+        )
+
+    if len(linked) > 1:
+        options = []
+        for item in linked[:8]:
+            status = item["status"]
+            options.append(
+                f"• {status['student_name']} — Admission: {status['admission_number'] or 'not recorded'} "
+                f"({ _text(item['school'].get('name') or item['school'].get('school_name'), 100) or 'School' })"
+            )
+        more = f"\\n…and {len(linked) - 8} more linked learners." if len(linked) > 8 else ""
+        return (
+            "Several learners are linked to this number. Reply with FEES and one admission number.\\n"
+            + "\\n".join(options)
+            + more
+        )
+
+    item = linked[0]
+    status = item["status"]
+    school = item["school"]
+    school_name = _text(school.get("name") or school.get("school_name"), 160) or "Your school"
+    if not status["fee_records"]:
+        return (
+            f"{school_name}\\n"
+            f"Learner: {status['student_name']}\\n"
+            "No fee schedule is recorded yet. Please contact the Bursar for the current fee structure."
+        )
+
+    fee_lines = []
+    for fee in status["fee_items"][:8]:
+        fee_lines.append(
+            f"• {_text(fee.get('description') or fee.get('fee_type') or 'School fees', 100)}: "
+            f"Balance KES {float(fee.get('balance') or 0):,.2f}"
+        )
+    details = "\\n".join(fee_lines)
+    remaining = f"\\n…and {len(status['fee_items']) - 8} other fee item(s)." if len(status["fee_items"]) > 8 else ""
+    return (
+        f"{school_name} — Fee statement\\n"
+        f"Learner: {status['student_name']}\\n"
+        f"Admission no.: {status['admission_number'] or 'not recorded'}\\n"
+        f"Class: {status['class_name'] or 'not assigned'}\\n"
+        f"Required: KES {status['amount_required']:,.2f}\\n"
+        f"Recorded paid: KES {status['amount_paid']:,.2f}\\n"
+        f"Outstanding balance: KES {status['balance']:,.2f}\\n\\n"
+        f"{details}{remaining}\\n\\n"
+        "This statement reflects payments recorded by the school. If you have paid recently, "
+        "keep the M-Pesa receipt and contact the Bursar if the balance has not updated."
+    )
 
 
 def _send_fee_reminder_whatsapp(recipient: str, parameters: list[str]) -> str:
@@ -849,6 +1029,60 @@ def receive_whatsapp_webhook():
             if not isinstance(change, dict) or change.get("field") != "messages":
                 continue
             value = change.get("value") if isinstance(change.get("value"), dict) else {}
+            inbound_messages = value.get("messages") if isinstance(value.get("messages"), list) else []
+            for inbound in inbound_messages:
+                if not isinstance(inbound, dict) or _text(inbound.get("type"), 30).lower() != "text":
+                    continue
+                message_id = _text(inbound.get("id"), 240)
+                sender = _text(inbound.get("from"), 80)
+                message_body = inbound.get("text") if isinstance(inbound.get("text"), dict) else {}
+                text_body = _text(message_body.get("body"), 500)
+                if not message_id or not sender or not text_body:
+                    continue
+
+                # Idempotency prevents Meta retrying the same webhook from sending
+                # duplicate private fee statements to the parent.
+                inbound_collection = collection("jumuiya_elimu_whatsapp_inbound")
+                try:
+                    from pymongo import ReturnDocument
+                    recorded = inbound_collection.find_one_and_update(
+                        {"_id": message_id},
+                        {"$setOnInsert": {
+                            "sender_hash": hashlib.sha256(sender.encode("utf-8")).hexdigest()[:24],
+                            "message_type": "text",
+                            "status": "received",
+                            "created_at": _now(),
+                        }},
+                        upsert=True,
+                        return_document=ReturnDocument.AFTER,
+                    )
+                    is_new_message = bool(recorded and recorded.get("status") == "received" and recorded.get("sender_hash") == hashlib.sha256(sender.encode("utf-8")).hexdigest()[:24])
+                    # A previously processed event may still have status received if
+                    # a prior handler crashed. Marking the claim separately avoids
+                    # repeating a response during delivery retries.
+                    claim = inbound_collection.update_one(
+                        {"_id": message_id, "status": "received"},
+                        {"$set": {"status": "processing", "processing_started_at": _now()}},
+                    ) if is_new_message else None
+                    if not claim or claim.modified_count != 1:
+                        continue
+                    reply = _handle_whatsapp_fee_query(sender, text_body)
+                    reply_id = _send_whatsapp_text(_normalize_whatsapp_phone(sender), reply)
+                    inbound_collection.update_one(
+                        {"_id": message_id, "status": "processing"},
+                        {"$set": {"status": "replied", "outbound_message_id": reply_id, "replied_at": _now()}},
+                    )
+                except Exception:
+                    # Webhook callbacks must be acknowledged; do not expose parent
+                    # data, access tokens, or provider diagnostics in responses.
+                    try:
+                        inbound_collection.update_one(
+                            {"_id": message_id, "status": {"$in": ["received", "processing"]}},
+                            {"$set": {"status": "delivery_failed", "updated_at": _now()}},
+                        )
+                    except Exception:
+                        pass
+
             statuses = value.get("statuses") if isinstance(value.get("statuses"), list) else []
             for status in statuses:
                 if not isinstance(status, dict):
