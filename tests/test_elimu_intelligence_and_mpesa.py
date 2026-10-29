@@ -6,6 +6,7 @@ from backend.jumuiya.elimu.finance_routes import (
     _whatsapp_phone_variants,
 )
 from backend.jumuiya.elimu.intelligence_routes import (
+    _document_verification_url,
     _fees_for_student,
     _index_fees,
     _risk_for_student,
@@ -102,3 +103,25 @@ def test_elimu_callback_url_requires_the_dedicated_public_https_path(monkeypatch
         "https://revelacode-backend.onrender.com/api/revenue/providers/mpesa/callback",
     )
     assert _elimu_mpesa_callback_url() == ""
+
+
+def test_admission_document_verification_url_uses_https_origin_and_token(monkeypatch):
+    monkeypatch.setenv("ELIMU_DOCUMENT_VERIFY_BASE_URL", "https://school-api.example.org")
+    url = _document_verification_url("opaque-test-token_123")
+    assert url == (
+        "https://school-api.example.org/api/jumuiya/elimu/intelligence/"
+        "verify-document/opaque-test-token_123"
+    )
+
+
+def test_admission_document_verification_url_rejects_a_path_or_insecure_origin(monkeypatch):
+    import pytest
+    from backend.jumuiya.core.errors import APIError
+
+    monkeypatch.setenv("ELIMU_DOCUMENT_VERIFY_BASE_URL", "http://example.org")
+    with pytest.raises(APIError):
+        _document_verification_url("opaque-test-token_123")
+
+    monkeypatch.setenv("ELIMU_DOCUMENT_VERIFY_BASE_URL", "https://example.org/untrusted/path")
+    with pytest.raises(APIError):
+        _document_verification_url("opaque-test-token_123")
