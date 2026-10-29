@@ -81,16 +81,30 @@ def _student_key(student: dict) -> str:
     return _text(student.get("_id") or student.get("id"), 160)
 
 
-def _fee_student_match(fee: dict, student: dict) -> bool:
-    student_id = _student_key(student)
-    admission = _text(student.get("admission_number"), 120)
-    fee_student_id = _text(fee.get("student_id"), 160)
-    fee_admission = _text(fee.get("admission_number"), 120)
-    return (
-        (bool(student_id) and fee_student_id == student_id)
-        or (bool(admission) and fee_student_id == admission)
-        or (not fee_student_id and bool(admission) and fee_admission == admission)
-    )
+def _index_fees(fee_rows: list[dict]) -> dict[str, list[tuple[int, dict]]]:
+    """Index fee rows using the same student-ID/admission-number rules as Elimu finance."""
+    index: dict[str, list[tuple[int, dict]]] = {}
+    for row_number, fee in enumerate(fee_rows):
+        student_ref = _text(fee.get("student_id"), 160)
+        key = student_ref or _text(fee.get("admission_number"), 120)
+        if key:
+            index.setdefault(key, []).append((row_number, fee))
+    return index
+
+
+def _fees_for_student(student: dict, fee_index: dict[str, list[tuple[int, dict]]]) -> list[dict]:
+    """Retrieve matching fee records in near-linear time instead of scanning every row per student."""
+    keys = {_student_key(student), _text(student.get("admission_number"), 120)}
+    seen: set[int] = set()
+    result: list[dict] = []
+    for key in keys:
+        if not key:
+            continue
+        for row_number, fee in fee_index.get(key, []):
+            if row_number not in seen:
+                seen.add(row_number)
+                result.append(fee)
+    return result
 
 
 def _fee_amounts(fee: dict) -> tuple[float, float, float]:
@@ -124,8 +138,7 @@ def _term_key(fee: dict) -> str:
     return _text(fee.get("due_date") or fee.get("created_at"), 40)[:10] or "unspecified"
 
 
-def _risk_for_student(student: dict, fees: list[dict], today: date) -> dict:
-    matching = [fee for fee in fees if _fee_student_match(fee, student)]
+def _risk_for_student(student: dict, matching: list[dict], today: date) -> dict:
     required_total = 0.0
     paid_total = 0.0
     balance_total = 0.0
@@ -235,9 +248,10 @@ def fee_risk():
     fee_rows = list(fees_cursor)
     fees_truncated = len(fee_rows) > MAX_FEE_ROWS
     fee_rows = fee_rows[:MAX_FEE_ROWS]
+    fee_index = _index_fees(fee_rows)
 
     today = datetime.now(timezone.utc).date()
-    rows = [_risk_for_student(student, fee_rows, today) for student in students]
+    rows = [_risk_for_student(student, _fees_for_student(student, fee_index), today) for student in students]
     rows.sort(key=lambda item: (
         {"high": 0, "moderate": 1, "low": 2, "insufficient_data": 3}.get(item["risk_band"], 4),
         -(item["risk_score"] if item["risk_score"] is not None else -1),
@@ -246,9 +260,7 @@ def fee_risk():
 
     voteheads: dict[str, dict] = {}
     for student in students:
-        for fee in fee_rows:
-            if not _fee_student_match(fee, student):
-                continue
+        for fee in _fees_for_student(student, fee_index):
             required, paid, balance = _fee_amounts(fee)
             label = _text(fee.get("fee_type") or fee.get("votehead") or fee.get("description"), 100) or "Unclassified fees"
             item = voteheads.setdefault(label, {"votehead": label, "required": 0.0, "paid": 0.0, "balance": 0.0, "records": 0})
