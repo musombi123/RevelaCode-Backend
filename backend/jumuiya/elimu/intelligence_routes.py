@@ -596,7 +596,7 @@ def download_admission_letter(student_id: str):
     body.drawOn(pdf, margin, page_height - 202 - body_height)
 
     card_top = page_height - 232 - body_height
-    card_height = 116
+    card_height = 132
     pdf.setFillColor(pale)
     pdf.roundRect(margin, card_top - card_height, page_width - margin * 2, card_height, 10, fill=1, stroke=0)
     pdf.setFillColor(blue)
@@ -609,6 +609,7 @@ def download_admission_letter(student_id: str):
     pdf.drawString(margin + 16, card_top - 64, "Admission number: " + admission_number[:70])
     pdf.drawString(margin + 16, card_top - 81, "Class / stream: " + class_name[:70])
     pdf.drawString(margin + 16, card_top - 98, "Enrolment date: " + enrollment_date[:60])
+    pdf.drawString(margin + 16, card_top - 115, "Elimu system ID: " + student_system_id[:70])
 
     closing_y = card_top - card_height - 36
     closing_style = ParagraphStyle(
