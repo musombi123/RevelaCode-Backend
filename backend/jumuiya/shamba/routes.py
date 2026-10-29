@@ -16,6 +16,8 @@ from backend.jumuiya.core.responses import (
 from backend.jumuiya.core.errors import APIError
 from backend.revenue.subscriptions import require_revenue_entitlement
 
+from backend.jumuiya.shamba.weather_service import get_farm_weather
+
 from backend.jumuiya.shamba import (
     schemas,
     services,
@@ -899,4 +901,27 @@ def get_dashboard():
         services.dashboard(
             current_user_id()
         )
+    )
+
+
+# ============================================================
+# LIVE FARM WEATHER
+# ============================================================
+
+@shamba_bp.get("/farms/<farm_id>/weather")
+@require_authenticated
+def get_live_farm_weather(farm_id):
+    """Return live current conditions and a seven-day forecast.
+
+    The farm is resolved through the authenticated owner's existing
+    Shamba records. GPS coordinates are preferred; saved town/county
+    are used for geocoding when coordinates are not available.
+    """
+    farm = services.get_farm(current_user_id(), farm_id)
+    force_refresh = request.args.get("refresh", "").strip().lower() in {
+        "1", "true", "yes",
+    }
+    return ok(
+        get_farm_weather(farm, force_refresh=force_refresh),
+        "Live farm weather loaded.",
     )
