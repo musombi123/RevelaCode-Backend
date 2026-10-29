@@ -1,9 +1,9 @@
-"""School fee payment instructions and receipt reconciliation.
+"""School finance, WhatsApp fee queries, and verified M-Pesa reconciliation.
 
-This module stores school-owned payment instructions and submitted receipt
-claims in the existing Jumuiya Elimu database. It deliberately does not claim
-to initiate an M-Pesa STK push, charge a bank account, or verify external
-settlement without a configured payment-provider integration.
+School payment instructions, fee records, receipt claims, and automatically
+verified M-Pesa payments all use the existing Jumuiya Elimu data store. Daraja
+callbacks are notifications only; fee balances are updated only after a
+correlated provider status query confirms the same checkout.
 """
 from __future__ import annotations
 
@@ -270,6 +270,8 @@ def _normalize_whatsapp_phone(value: Any) -> str:
         normalized = "+" + digits
     elif digits.startswith("0") and len(digits) == 10:
         normalized = "+254" + digits[1:]
+    elif digits.startswith(("7", "1")) and len(digits) == 9:
+        normalized = "+254" + digits
     else:
         return ""
     return normalized if re.fullmatch(r"\+[1-9]\d{7,14}", normalized) else ""
@@ -320,6 +322,607 @@ def _send_fee_reminder_email(recipient: str, subject: str, text_body: str, html_
         "text": text_body,
         "html": html_body,
     })
+
+
+def _whatsapp_phone_variants(value: Any) -> list[str]:
+    """Return common Kenyan representations for a normalized parent number."""
+    normalized = _normalize_whatsapp_phone(value)
+    if not normalized:
+        return []
+    digits = normalized.lstrip("+")
+    national = digits[3:] if digits.startswith("254") else digits
+    variants = {
+        normalized,
+        digits,
+        national,
+        "0" + national if len(national) == 9 else "",
+        "254" + national if len(national) == 9 else "",
+        "+254" + national if len(national) == 9 else "",
+    }
+    return sorted(item for item in variants if item)
+
+
+def _send_whatsapp_text(recipient: str, text_body: str) -> str:
+    """Send a user-requested reply inside WhatsApp's customer-service window."""
+    access_token = os.getenv("WHATSAPP_ACCESS_TOKEN", "").strip()
+    phone_number_id = os.getenv("WHATSAPP_PHONE_NUMBER_ID", "").strip()
+    api_version = (os.getenv("WHATSAPP_API_VERSION") or "v26.0").strip()
+    if not access_token or not phone_number_id:
+        raise RuntimeError("whatsapp_cloud_api_not_configured")
+
+    import requests
+
+    response = requests.post(
+        f"https://graph.facebook.com/{api_version}/{phone_number_id}/messages",
+        headers={
+            "Authorization": f"Bearer {access_token}",
+            "Content-Type": "application/json",
+        },
+        json={
+            "messaging_product": "whatsapp",
+            "recipient_type": "individual",
+            "to": recipient.lstrip("+"),
+            "type": "text",
+            "text": {
+                "preview_url": False,
+                "body": _text(text_body, 3800),
+            },
+        },
+        timeout=(5, 20),
+    )
+    try:
+        result = response.json()
+    except ValueError:
+        result = {}
+    if response.status_code >= 400 or not isinstance(result.get("messages"), list) or not result["messages"]:
+        raise RuntimeError("whatsapp_text_delivery_failed")
+    return _text(result["messages"][0].get("id"), 240)
+
+
+ELIMU_MPESA_CHECKOUTS = "jumuiya_elimu_mpesa_checkouts"
+ELIMU_FEE_PAYMENT_LEDGER = "jumuiya_elimu_fee_payments"
+ELIMU_MPESA_PENDING = {
+    "initiating",
+    "pending",
+    "submission_unknown",
+    "awaiting_verification",
+    "verified_pending_allocation",
+    "allocation_partial",
+    "allocation_conflict",
+    "receipt_conflict",
+}
+
+
+def _elimu_mpesa_callback_url() -> str:
+    """Validate the Elimu-specific public HTTPS callback path."""
+    value = os.getenv("ELIMU_MPESA_CALLBACK_URL", "").strip()
+    if not value:
+        return ""
+    expected_path = "/api/jumuiya/elimu/finance/mpesa/callback"
+    try:
+        parsed = urlparse(value)
+        if (
+            parsed.scheme != "https"
+            or not parsed.hostname
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.path.rstrip("/") != expected_path
+            or parsed.query
+            or parsed.fragment
+        ):
+            return ""
+    except ValueError:
+        return ""
+    return value
+
+
+def _fee_rows_for_student(school_id: str, student: dict) -> list[dict]:
+    student_id = _text(student.get("_id") or student.get("id"), 160)
+    admission = _text(student.get("admission_number"), 120)
+    rows = list(collection(FEES).find({"school_id": school_id}).limit(5000))
+    matched = []
+    for fee in rows:
+        fee_student_id = _text(fee.get("student_id"), 160)
+        fee_admission = _text(fee.get("admission_number"), 120)
+        if (
+            fee_student_id == student_id
+            or (admission and fee_student_id == admission)
+            or (not fee_student_id and admission and fee_admission == admission)
+        ):
+            matched.append(fee)
+    matched.sort(key=lambda item: (
+        _text(item.get("due_date"), 40) or "9999-12-31",
+        _text(item.get("term"), 40),
+        _text(item.get("_id") or item.get("id"), 160),
+    ))
+    return matched
+
+
+def _fee_payment_allocations(school_id: str, student: dict) -> tuple[list[dict], float]:
+    """Plan a full-balance allocation across outstanding voteheads in due-date order."""
+    allocations = []
+    total = 0.0
+    for fee in _fee_rows_for_student(school_id, student):
+        required = _safe_money(fee.get("amount"))
+        paid_raw = fee.get("amount_paid")
+        if paid_raw is None:
+            paid_raw = fee.get("paid_amount")
+        paid = min(required, _safe_money(paid_raw))
+        balance = round(max(required - paid, 0.0), 2)
+        if balance <= 0:
+            continue
+        fee_id = _text(fee.get("_id") or fee.get("id"), 160)
+        if not fee_id:
+            raise APIError("A fee record has no stable identifier, so online payment was not started.", 409, "fee_record_id_missing")
+        allocations.append({
+            "fee_id": fee_id,
+            "votehead": _text(fee.get("fee_type") or fee.get("votehead") or fee.get("description") or "School fees", 120),
+            "amount": balance,
+        })
+        total += balance
+    return allocations, round(total, 2)
+
+
+def _clear_elimu_fee_locks(school_id: str, checkout_id: str) -> None:
+    try:
+        collection(FEES).update_many(
+            {"school_id": school_id, "active_mpesa_checkout_id": checkout_id},
+            {"$unset": {"active_mpesa_checkout_id": "", "active_mpesa_checkout_started_at": ""}},
+        )
+    except Exception:
+        # The checkout state remains durable and can be reconciled by finance.
+        pass
+
+
+def _start_elimu_fee_stk(school: dict, student: dict, sender: str, inbound_message_id: str) -> dict:
+    """Create a single idempotent STK request for this guardian's full recorded fee balance."""
+    callback_url = _elimu_mpesa_callback_url()
+    if not callback_url:
+        return {
+            "ok": False,
+            "message": (
+                "Live school-fee M-Pesa is not enabled yet. No payment prompt was sent. "
+                "The backend needs ELIMU_MPESA_CALLBACK_URL set to the public HTTPS URL ending "
+                "in /api/jumuiya/elimu/finance/mpesa/callback."
+            ),
+        }
+
+    try:
+        from backend.revenue import mpesa as daraja
+        if not daraja.checkout_is_production_configured():
+            return {
+                "ok": False,
+                "message": (
+                    "Live school-fee M-Pesa is not ready, so no payment prompt was sent. "
+                    "The school administrator must verify the production Daraja configuration first."
+                ),
+            }
+        # Authenticate against Daraja before reserving a fee or recording an intent.
+        # A token/configuration failure at this point is known to precede STK submission.
+        daraja._access_token()
+        phone = daraja._phone(_normalize_whatsapp_phone(sender))
+    except (RuntimeError, ValueError):
+        return {
+            "ok": False,
+            "message": "The M-Pesa request could not be prepared safely. No payment prompt was sent; please contact the school Bursar.",
+        }
+
+    school_id = _text(student.get("school_id") or school.get("_id") or school.get("school_id"), 160)
+    student_id = _text(student.get("_id") or student.get("id"), 160)
+    admission = _text(student.get("admission_number"), 120)
+    school_name = _text(school.get("name") or school.get("school_name"), 160) or "Your school"
+    student_name = _text(student.get("full_name") or student.get("name"), 160) or "the learner"
+
+    if (
+        not school_id
+        or not student_id
+        or _normalize_whatsapp_phone(student.get("guardian_phone")) != _normalize_whatsapp_phone(sender)
+    ):
+        return {"ok": False, "message": "This WhatsApp number could not be matched safely to the learner record. No payment prompt was sent."}
+
+    try:
+        allocations, total_balance = _fee_payment_allocations(school_id, student)
+    except APIError:
+        return {"ok": False, "message": "The fee records could not be prepared for payment. Please contact the school Bursar."}
+
+    if not allocations or total_balance <= 0:
+        return {"ok": False, "message": f"{school_name}: no outstanding fee balance is available for an M-Pesa prompt."}
+    if abs(total_balance - round(total_balance)) > 0.000001:
+        return {
+            "ok": False,
+            "message": (
+                f"{school_name}: the recorded balance is KES {total_balance:,.2f}. "
+                "Daraja STK Push requires a whole-KES amount here; please ask the Bursar to review the fee records."
+            ),
+        }
+
+    from pymongo import ReturnDocument
+    from pymongo.errors import DuplicateKeyError
+
+    rows = collection(ELIMU_MPESA_CHECKOUTS)
+    ledger = collection(ELIMU_FEE_PAYMENT_LEDGER)
+    try:
+        rows.create_index([("school_id", 1), ("idempotency_key", 1)], unique=True, name="uq_elimu_mpesa_school_idempotency")
+        rows.create_index([("checkout_request_id", 1)], unique=True, sparse=True, name="uq_elimu_mpesa_checkout_request")
+        ledger.create_index([("provider_receipt", 1)], unique=True, sparse=True, name="uq_elimu_fee_payment_receipt")
+        ledger.create_index([("checkout_id", 1)], unique=True, name="uq_elimu_fee_payment_checkout")
+    except Exception:
+        # An index conflict must not silently bypass idempotency; verify readiness below.
+        existing_indexes = list(rows.list_indexes())
+        ledger_indexes = list(ledger.list_indexes())
+        required = {"uq_elimu_mpesa_school_idempotency", "uq_elimu_mpesa_checkout_request"}
+        required_ledger = {"uq_elimu_fee_payment_receipt", "uq_elimu_fee_payment_checkout"}
+        if (
+            not required.issubset({item.get("name") for item in existing_indexes})
+            or not required_ledger.issubset({item.get("name") for item in ledger_indexes})
+        ):
+            return {"ok": False, "message": "M-Pesa checkout storage is not ready. No payment prompt was sent; contact RevelaCode support."}
+
+    idempotency_key = hashlib.sha256(
+        f"{_text(inbound_message_id, 240)}:{school_id}:{student_id}".encode("utf-8")
+    ).hexdigest()
+    existing = rows.find_one({"school_id": school_id, "idempotency_key": idempotency_key})
+    if existing:
+        if existing.get("status") in {"pending", "awaiting_verification", "submission_unknown", "verified_pending_allocation", "allocation_partial"}:
+            return {
+                "ok": False,
+                "message": (
+                    f"A payment request is already unresolved for {student_name}. "
+                    "Do not request another prompt. Send FEES to check the balance later, or contact the Bursar for reconciliation."
+                ),
+            }
+        return {
+            "ok": False,
+            "message": "This WhatsApp payment request was already processed. Send FEES for a current balance; do not repeat a payment request.",
+        }
+
+    unresolved = rows.find_one({
+        "school_id": school_id,
+        "student_id": student_id,
+        "status": {"$in": list(ELIMU_MPESA_PENDING)},
+    }, sort=[("created_at", -1)])
+    if unresolved:
+        return {
+            "ok": False,
+            "message": (
+                f"A payment for {student_name} is still awaiting confirmation. "
+                "No second prompt was sent. Please send FEES later or contact the Bursar."
+            ),
+        }
+
+    checkout_doc = {
+        "school_id": school_id,
+        "school_name": school_name,
+        "student_id": student_id,
+        "student_name": student_name,
+        "admission_number": admission,
+        "phone": phone,
+        "amount": f"{int(round(total_balance))}.00",
+        "currency": "KES",
+        "fee_allocations": allocations,
+        "idempotency_key": idempotency_key,
+        "provider": "mpesa",
+        "status": "initiating",
+        "created_from": "whatsapp_parent_bot",
+        "inbound_message_id": _text(inbound_message_id, 240),
+        "created_at": _now(),
+        "updated_at": _now(),
+    }
+    try:
+        inserted = rows.insert_one(checkout_doc)
+        checkout_doc["_id"] = inserted.inserted_id
+    except DuplicateKeyError:
+        return {
+            "ok": False,
+            "message": "This payment request has already been recorded. Send FEES to check the balance; do not request another prompt.",
+        }
+
+    checkout_id = str(checkout_doc["_id"])
+    claimed_fee_ids = []
+    for allocation in allocations:
+        fee_candidates = _id_candidates(allocation["fee_id"])
+        amount = float(allocation["amount"])
+        claimed = collection(FEES).find_one_and_update(
+            {
+                "school_id": school_id,
+                "_id": {"$in": fee_candidates},
+                "$or": [
+                    {"active_mpesa_checkout_id": {"$exists": False}},
+                    {"active_mpesa_checkout_id": None},
+                    {"active_mpesa_checkout_id": ""},
+                ],
+                "$expr": {
+                    "$gte": [
+                        {
+                            "$subtract": [
+                                {"$ifNull": ["$amount", 0]},
+                                {"$ifNull": ["$amount_paid", {"$ifNull": ["$paid_amount", 0]}]},
+                            ]
+                        },
+                        amount,
+                    ]
+                },
+            },
+            {"$set": {
+                "active_mpesa_checkout_id": checkout_id,
+                "active_mpesa_checkout_started_at": _now(),
+            }},
+            return_document=ReturnDocument.AFTER,
+        )
+        if not claimed:
+            _clear_elimu_fee_locks(school_id, checkout_id)
+            rows.update_one(
+                {"_id": checkout_doc["_id"]},
+                {"$set": {
+                    "status": "fee_state_conflict",
+                    "message": "A fee balance changed or another payment is already in progress; no STK prompt was sent.",
+                    "updated_at": _now(),
+                }},
+            )
+            return {
+                "ok": False,
+                "message": "A fee balance changed or another payment is already in progress. No prompt was sent; refresh the fee statement or contact the Bursar.",
+            }
+        claimed_fee_ids.append(allocation["fee_id"])
+
+    shortcode = os.getenv("MPESA_SHORTCODE", "").strip()
+    timestamp = daraja._timestamp()
+    transaction_type = os.getenv("MPESA_TRANSACTION_TYPE", "CustomerPayBillOnline").strip()
+    if transaction_type not in {"CustomerPayBillOnline", "CustomerBuyGoodsOnline"}:
+        _clear_elimu_fee_locks(school_id, checkout_id)
+        rows.update_one({"_id": checkout_doc["_id"]}, {"$set": {"status": "initiation_failed", "message": "Invalid transaction type", "updated_at": _now()}})
+        return {"ok": False, "message": "M-Pesa transaction configuration is invalid. No prompt was sent; contact the school administrator."}
+
+    party_b = os.getenv("MPESA_PARTY_B", shortcode).strip() or shortcode
+    account_ref = re.sub(r"[^A-Za-z0-9]", "", admission or student_id)[-12:] or "ELIMUFEE"
+    try:
+        response = daraja._daraja_post(
+            "/mpesa/stkpush/v1/processrequest",
+            {
+                "BusinessShortCode": shortcode,
+                "Password": daraja._password(timestamp),
+                "Timestamp": timestamp,
+                "TransactionType": transaction_type,
+                "Amount": int(round(total_balance)),
+                "PartyA": phone,
+                "PartyB": party_b,
+                "PhoneNumber": phone,
+                "CallBackURL": callback_url,
+                "AccountReference": account_ref,
+                "TransactionDesc": "Elimu fees",
+            },
+        )
+    except RuntimeError:
+        rows.update_one(
+            {"_id": checkout_doc["_id"]},
+            {"$set": {
+                "status": "submission_unknown",
+                "message": "STK submission could not be confirmed; do not retry until finance reconciliation.",
+                "updated_at": _now(),
+            }},
+        )
+        return {
+            "ok": False,
+            "message": (
+                f"M-Pesa submission for {student_name} could not be confirmed. "
+                "Do not make another payment request. The school must reconcile this checkout before retrying."
+            ),
+        }
+
+    checkout_request_id = _text(response.get("CheckoutRequestID"), 200)
+    merchant_request_id = _text(response.get("MerchantRequestID"), 200)
+    if str(response.get("ResponseCode", "")) != "0":
+        _clear_elimu_fee_locks(school_id, checkout_id)
+        rows.update_one(
+            {"_id": checkout_doc["_id"]},
+            {"$set": {
+                "status": "initiation_failed",
+                "message": _text(response.get("ResponseDescription") or response.get("errorMessage") or "Daraja rejected the STK request.", 300),
+                "updated_at": _now(),
+            }},
+        )
+        return {
+            "ok": False,
+            "message": f"Safaricom did not accept the M-Pesa prompt for {student_name}. No fee was cleared. Please contact the Bursar before trying again.",
+        }
+
+    if not checkout_request_id or not merchant_request_id:
+        rows.update_one(
+            {"_id": checkout_doc["_id"]},
+            {"$set": {
+                "status": "submission_unknown",
+                "message": "Daraja accepted the request but returned incomplete checkout identifiers; manual reconciliation is required.",
+                "updated_at": _now(),
+            }},
+        )
+        return {
+            "ok": False,
+            "message": "The M-Pesa request response was incomplete. Do not retry; the school must reconcile the checkout first.",
+        }
+
+    rows.update_one(
+        {"_id": checkout_doc["_id"]},
+        {"$set": {
+            "status": "pending",
+            "checkout_request_id": checkout_request_id,
+            "merchant_request_id": merchant_request_id,
+            "provider_response_code": str(response.get("ResponseCode", ""))[:40],
+            "message": _text(response.get("CustomerMessage") or response.get("ResponseDescription") or "STK prompt submitted.", 300),
+            "updated_at": _now(),
+        }},
+    )
+    try:
+        log_action(
+            user_id="whatsapp-parent",
+            action="elimu.fees.mpesa_stk_initiated",
+            resource="elimu_fee_checkout",
+            resource_id=checkout_id,
+            metadata={
+                "school_id": school_id,
+                "student_id": student_id,
+                "amount": int(round(total_balance)),
+                "channel": "whatsapp",
+            },
+        )
+    except Exception:
+        # A secondary audit write must not suppress the payment status message;
+        # the checkout itself already contains the core idempotent audit record.
+        pass
+    return {
+        "ok": True,
+        "message": (
+            f"M-Pesa prompt sent for {school_name}.\n"
+            f"Learner: {student_name}\n"
+            f"Amount: KES {int(round(total_balance)):,}\n"
+            "Enter your M-Pesa PIN only if the prompt shows the correct school payment and amount. "
+            "Never share your PIN. After payment, send FEES to check the recorded balance."
+        ),
+    }
+
+
+def _handle_whatsapp_fee_query(sender: str, message_text: str, inbound_message_id: str = "") -> str:
+    """Answer only with fee data belonging to active learners linked to this sender."""
+    normalized_sender = _normalize_whatsapp_phone(sender)
+    if not normalized_sender:
+        return "I could not verify this WhatsApp number. Please contact your school office to update the parent/guardian contact."
+
+    command = _text(message_text, 500).lower()
+    if not command or command in {"hi", "hello", "habari", "help", "menu", "start"}:
+        return (
+            "Jumuiya Elimu Parent Assistant\n"
+            "Send FEES to check the balance for a linked learner.\n"
+            "If more than one learner is linked, send FEES followed by the learner's admission number.\n"
+            "For an official receipt or payment dispute, contact the school Bursar."
+        )
+
+    pay_match = re.fullmatch(
+        r"pay(?:\s+([a-z0-9][a-z0-9/._-]{0,39}))?",
+        command,
+        flags=re.IGNORECASE,
+    )
+    match = re.fullmatch(
+        r"(?:fees?|balance|fee balance)(?:\s+([a-z0-9][a-z0-9/._-]{0,39}))?",
+        command,
+        flags=re.IGNORECASE,
+    )
+    if pay_match:
+        requested_action = "pay"
+        requested_identifier = _text(pay_match.group(1), 40).lower()
+        name_query = ""
+        match = None
+    elif match:
+        requested_action = "fees"
+        name_query = ""
+        requested_identifier = _text(match.group(1), 40).lower()
+    else:
+        requested_action = "fees"
+        # Also allow a parent to refer to a child's name, but only among records
+        # linked to this same WhatsApp number.
+        name_query = re.sub(r"^(?:check|show|what is|what's)\s+", "", command).strip()
+        if not name_query or len(name_query) > 80:
+            return "Please send FEES, FEES followed by the learner's admission number, or PAY to request an M-Pesa prompt."
+        requested_identifier = ""
+
+    variants = _whatsapp_phone_variants(normalized_sender)
+    candidates = list(
+        collection(STUDENTS).find({
+            "status": "active",
+            "guardian_phone": {"$in": variants},
+        }).limit(1000)
+    )
+    linked = []
+    seen = set()
+    for student in candidates:
+        if _normalize_whatsapp_phone(student.get("guardian_phone")) != normalized_sender:
+            continue
+        student_id = _text(student.get("_id") or student.get("id"), 160)
+        if not student_id or student_id in seen:
+            continue
+        seen.add(student_id)
+        admission = _text(student.get("admission_number"), 120)
+        if requested_identifier and requested_identifier not in {
+            admission.lower(),
+            student_id.lower(),
+        }:
+            continue
+        full_name = _text(student.get("full_name") or student.get("name"), 160)
+        if name_query and name_query not in full_name.lower() and name_query not in admission.lower():
+            continue
+        school_id = _text(student.get("school_id"), 160)
+        if not school_id:
+            continue
+        school = collection(SCHOOLS).find_one(_school_query(school_id))
+        if not school:
+            continue
+        fee_rows = list(collection(FEES).find({"school_id": school_id}).limit(5000))
+        status = _student_fee_status(student, fee_rows)
+        linked.append({
+            "student": student,
+            "school": school,
+            "status": status,
+        })
+
+    if not linked:
+        return (
+            "I could not find an active learner linked to this WhatsApp number and request. "
+            "Please contact the Registrar to confirm the guardian number and admission number."
+        )
+
+    if len(linked) > 1:
+        options = []
+        for item in linked[:8]:
+            status = item["status"]
+            options.append(
+                f"• {status['student_name']} — Admission: {status['admission_number'] or 'not recorded'} "
+                f"({ _text(item['school'].get('name') or item['school'].get('school_name'), 100) or 'School' })"
+            )
+        more = f"\n…and {len(linked) - 8} more linked learners." if len(linked) > 8 else ""
+        return (
+            "Several learners are linked to this number. Reply FEES <admission number> to check a balance or PAY <admission number> to request an M-Pesa prompt.\n"
+            + "\n".join(options)
+            + more
+        )
+
+    item = linked[0]
+    status = item["status"]
+    school = item["school"]
+    school_name = _text(school.get("name") or school.get("school_name"), 160) or "Your school"
+    if not status["fee_records"]:
+        return (
+            f"{school_name}\n"
+            f"Learner: {status['student_name']}\n"
+            "No fee schedule is recorded yet. Please contact the Bursar for the current fee structure."
+        )
+
+    if requested_action == "pay":
+        payment_result = _start_elimu_fee_stk(
+            school,
+            item["student"],
+            normalized_sender,
+            inbound_message_id,
+        )
+        return payment_result["message"]
+
+    fee_lines = []
+    for fee in status["fee_items"][:8]:
+        fee_lines.append(
+            f"• {_text(fee.get('description') or fee.get('fee_type') or 'School fees', 100)}: "
+            f"Balance KES {float(fee.get('balance') or 0):,.2f}"
+        )
+    details = "\n".join(fee_lines)
+    remaining = f"\n…and {len(status['fee_items']) - 8} other fee item(s)." if len(status["fee_items"]) > 8 else ""
+    return (
+        f"{school_name} — Fee statement\n"
+        f"Learner: {status['student_name']}\n"
+        f"Admission no.: {status['admission_number'] or 'not recorded'}\n"
+        f"Class: {status['class_name'] or 'not assigned'}\n"
+        f"Required: KES {status['amount_required']:,.2f}\n"
+        f"Recorded paid: KES {status['amount_paid']:,.2f}\n"
+        f"Outstanding balance: KES {status['balance']:,.2f}\n\n"
+        f"{details}{remaining}\n\n"
+        "This statement reflects payments recorded by the school. If you have paid recently, "
+        "keep the M-Pesa receipt and contact the Bursar if the balance has not updated."
+    )
 
 
 def _send_fee_reminder_whatsapp(recipient: str, parameters: list[str]) -> str:
@@ -809,6 +1412,291 @@ def list_student_fee_reminders():
     return ok({"reminders": reminders, "count": len(reminders)})
 
 
+@finance_bp.route("/mpesa/callback", methods=["POST"])
+def receive_elimu_mpesa_callback():
+    """Reconcile school-fee STK callbacks using a Daraja query before any ledger write."""
+    payload = request.get_json(silent=True)
+    callback = payload.get("Body", {}).get("stkCallback", {}) if isinstance(payload, dict) else {}
+    checkout_id = _text(callback.get("CheckoutRequestID"), 200)
+    merchant_id = _text(callback.get("MerchantRequestID"), 200)
+    if not checkout_id:
+        return {"ResultCode": 0, "ResultDesc": "Callback acknowledged"}, 200
+
+    rows = collection(ELIMU_MPESA_CHECKOUTS)
+    checkout = rows.find_one({"checkout_request_id": checkout_id})
+    if not checkout:
+        return {"ResultCode": 0, "ResultDesc": "Unknown Elimu checkout acknowledged"}, 200
+    if checkout.get("status") == "succeeded":
+        return {"ResultCode": 0, "ResultDesc": "Payment already reconciled"}, 200
+
+    stored_merchant = _text(checkout.get("merchant_request_id"), 200)
+    if not merchant_id or not stored_merchant or merchant_id != stored_merchant:
+        rows.update_one(
+            {"_id": checkout["_id"]},
+            {"$set": {
+                "status": "awaiting_verification",
+                "message": "Callback identifiers did not match the stored checkout; provider reconciliation is required.",
+                "callback_received_at": _now(),
+                "updated_at": _now(),
+            }},
+        )
+        return {"ResultCode": 0, "ResultDesc": "Callback acknowledged for reconciliation"}, 200
+
+    try:
+        from backend.revenue import mpesa as daraja
+        query_timestamp = daraja._timestamp()
+        query_result = daraja._daraja_post(
+            "/mpesa/stkpushquery/v1/query",
+            {
+                "BusinessShortCode": os.getenv("MPESA_SHORTCODE", "").strip(),
+                "Password": daraja._password(query_timestamp),
+                "Timestamp": query_timestamp,
+                "CheckoutRequestID": checkout_id,
+            },
+        )
+    except Exception:
+        rows.update_one(
+            {"_id": checkout["_id"]},
+            {"$set": {
+                "status": "awaiting_verification",
+                "message": "Callback received but the final Daraja query was unavailable; no fee was cleared.",
+                "callback_received_at": _now(),
+                "updated_at": _now(),
+            }},
+        )
+        return {"ResultCode": 0, "ResultDesc": "Callback acknowledged for reconciliation"}, 200
+
+    query_checkout_id = _text(query_result.get("CheckoutRequestID"), 200)
+    query_merchant_id = _text(query_result.get("MerchantRequestID"), 200)
+    query_code = query_result.get("ResultCode")
+    if query_checkout_id != checkout_id or query_merchant_id != stored_merchant:
+        rows.update_one(
+            {"_id": checkout["_id"]},
+            {"$set": {
+                "status": "awaiting_verification",
+                "message": "Daraja query identifiers did not match the stored checkout; no fee was cleared.",
+                "updated_at": _now(),
+            }},
+        )
+        return {"ResultCode": 0, "ResultDesc": "Callback acknowledged for reconciliation"}, 200
+
+    if str(query_code) == "0" and str(callback.get("ResultCode")) != "0":
+        rows.update_one(
+            {"_id": checkout["_id"]},
+            {"$set": {
+                "status": "awaiting_verification",
+                "message": "Daraja query and callback result codes conflicted; no fee was cleared.",
+                "updated_at": _now(),
+            }},
+        )
+        return {"ResultCode": 0, "ResultDesc": "Payment awaits reconciliation"}, 200
+
+    if query_code is None:
+        rows.update_one(
+            {"_id": checkout["_id"]},
+            {"$set": {
+                "status": "awaiting_verification",
+                "message": "Daraja accepted the query but has not returned a final transaction result.",
+                "updated_at": _now(),
+            }},
+        )
+        return {"ResultCode": 0, "ResultDesc": "Callback acknowledged for reconciliation"}, 200
+
+    if str(query_code) != "0":
+        rows.update_one(
+            {"_id": checkout["_id"]},
+            {"$set": {
+                "status": "failed",
+                "result_code": str(query_code)[:40],
+                "result_description": _text(query_result.get("ResultDesc") or query_result.get("ResponseDescription") or "M-Pesa payment was not completed.", 300),
+                "updated_at": _now(),
+            }},
+        )
+        _clear_elimu_fee_locks(_text(checkout.get("school_id"), 160), str(checkout["_id"]))
+        return {"ResultCode": 0, "ResultDesc": "Payment failure reconciled"}, 200
+
+    # Callback metadata is considered only after the provider query is correlated.
+    callback_metadata = {}
+    items = (callback.get("CallbackMetadata") or {}).get("Item", [])
+    if isinstance(items, list):
+        for item in items:
+            if not isinstance(item, dict) or not isinstance(item.get("Name"), str):
+                continue
+            key, value = item["Name"], item.get("Value")
+            if key in {"MpesaReceiptNumber", "Amount", "PhoneNumber"} and isinstance(value, (str, int, float)):
+                callback_metadata[key] = value
+    try:
+        receipt = daraja._validated_callback_receipt(checkout, callback_metadata)
+    except Exception:
+        rows.update_one(
+            {"_id": checkout["_id"]},
+            {"$set": {
+                "status": "awaiting_verification",
+                "message": "Daraja query succeeded but receipt amount/payer metadata failed validation; manual reconciliation is required.",
+                "updated_at": _now(),
+            }},
+        )
+        return {"ResultCode": 0, "ResultDesc": "Payment awaiting reconciliation"}, 200
+
+    ledger = collection(ELIMU_FEE_PAYMENT_LEDGER)
+    duplicate_receipt = ledger.find_one({"provider_receipt": receipt, "checkout_id": {"$ne": str(checkout["_id"])}})
+    if duplicate_receipt:
+        rows.update_one(
+            {"_id": checkout["_id"]},
+            {"$set": {
+                "status": "receipt_conflict",
+                "receipt": receipt,
+                "message": "This provider receipt is already linked to another Elimu checkout; manual reconciliation is required.",
+                "updated_at": _now(),
+            }},
+        )
+        return {"ResultCode": 0, "ResultDesc": "Payment receipt flagged for reconciliation"}, 200
+
+    payment_ledger = {
+        "checkout_id": str(checkout["_id"]),
+        "school_id": _text(checkout.get("school_id"), 160),
+        "student_id": _text(checkout.get("student_id"), 160),
+        "admission_number": _text(checkout.get("admission_number"), 120),
+        "provider": "mpesa",
+        "provider_receipt": receipt,
+        "checkout_request_id": checkout_id,
+        "merchant_request_id": stored_merchant,
+        "amount": float(checkout.get("amount") or 0),
+        "currency": "KES",
+        "fee_allocations": checkout.get("fee_allocations") if isinstance(checkout.get("fee_allocations"), list) else [],
+        "status": "verified_pending_allocation",
+        "verified_at": _now(),
+        "created_at": checkout.get("created_at") or _now(),
+    }
+    try:
+        ledger.update_one(
+            {"checkout_id": str(checkout["_id"])},
+            {"$setOnInsert": payment_ledger},
+            upsert=True,
+        )
+    except Exception:
+        rows.update_one(
+            {"_id": checkout["_id"]},
+            {"$set": {"status": "verified_pending_allocation", "receipt": receipt, "message": "Payment was verified but its accounting ledger could not be written yet.", "updated_at": _now()}},
+        )
+        return {"ResultCode": 0, "ResultDesc": "Payment verified; accounting allocation pending"}, 200
+
+    school_id = _text(checkout.get("school_id"), 160)
+    allocation_conflicts = []
+    applied_fee_ids = []
+    allocations = checkout.get("fee_allocations") if isinstance(checkout.get("fee_allocations"), list) else []
+    for allocation in allocations:
+        fee_id = _text(allocation.get("fee_id"), 160)
+        amount = _safe_money(allocation.get("amount"))
+        if not fee_id or amount <= 0:
+            allocation_conflicts.append(fee_id or "unknown")
+            continue
+        candidates = _id_candidates(fee_id)
+        existing_fee = collection(FEES).find_one({
+            "school_id": school_id,
+            "_id": {"$in": candidates},
+            "applied_mpesa_checkouts": str(checkout["_id"]),
+        })
+        if existing_fee:
+            applied_fee_ids.append(fee_id)
+            continue
+
+        from pymongo import ReturnDocument
+        paid_expression = {"$ifNull": ["$amount_paid", {"$ifNull": ["$paid_amount", 0]}]}
+        next_paid_expression = {"$add": [paid_expression, amount]}
+        updated_fee = collection(FEES).find_one_and_update(
+            {
+                "school_id": school_id,
+                "_id": {"$in": candidates},
+                "active_mpesa_checkout_id": str(checkout["_id"]),
+                "applied_mpesa_checkouts": {"$ne": str(checkout["_id"])},
+                "$expr": {
+                    "$gte": [
+                        {"$subtract": [{"$ifNull": ["$amount", 0]}, paid_expression]},
+                        amount,
+                    ]
+                },
+            },
+            [
+                {"$set": {
+                    "amount_paid": next_paid_expression,
+                    "paid_amount": next_paid_expression,
+                    "status": {"$cond": [{"$gte": [next_paid_expression, {"$ifNull": ["$amount", 0]}]}, "paid", "partial"]},
+                    "applied_mpesa_checkouts": {
+                        "$concatArrays": [{"$ifNull": ["$applied_mpesa_checkouts", []]}, [str(checkout["_id"])]]
+                    },
+                    "last_mpesa_receipt": receipt,
+                    "last_mpesa_payment_at": _now(),
+                    "last_mpesa_payment_amount": amount,
+                    "updated_at": _now(),
+                }},
+                {"$unset": ["active_mpesa_checkout_id", "active_mpesa_checkout_started_at"]},
+            ],
+            return_document=ReturnDocument.AFTER,
+        )
+        if not updated_fee:
+            allocation_conflicts.append(fee_id)
+        else:
+            applied_fee_ids.append(fee_id)
+
+    if allocation_conflicts:
+        rows.update_one(
+            {"_id": checkout["_id"]},
+            {"$set": {
+                "status": "allocation_conflict",
+                "receipt": receipt,
+                "applied_fee_ids": applied_fee_ids,
+                "allocation_conflict_fee_ids": allocation_conflicts,
+                "message": "Payment was verified by Daraja but one or more fee balances changed. Manual reconciliation is required; do not request another payment.",
+                "updated_at": _now(),
+            }},
+        )
+        ledger.update_one(
+            {"checkout_id": str(checkout["_id"])},
+            {"$set": {"status": "verified_allocation_conflict", "applied_fee_ids": applied_fee_ids, "conflict_fee_ids": allocation_conflicts, "updated_at": _now()}},
+        )
+        _clear_elimu_fee_locks(school_id, str(checkout["_id"]))
+        log_action(
+            user_id="mpesa-callback",
+            action="elimu.fees.mpesa_allocation_conflict",
+            resource="elimu_fee_checkout",
+            resource_id=str(checkout["_id"]),
+            metadata={"school_id": school_id, "receipt": receipt, "applied_fee_count": len(applied_fee_ids), "conflict_count": len(allocation_conflicts)},
+        )
+        return {"ResultCode": 0, "ResultDesc": "Payment verified; allocation requires reconciliation"}, 200
+
+    rows.update_one(
+        {"_id": checkout["_id"]},
+        {"$set": {
+            "status": "succeeded",
+            "receipt": receipt,
+            "result_code": "0",
+            "result_description": "Payment verified and allocated to school fee voteheads.",
+            "verified_at": _now(),
+            "applied_fee_ids": applied_fee_ids,
+            "updated_at": _now(),
+        }},
+    )
+    ledger.update_one(
+        {"checkout_id": str(checkout["_id"])},
+        {"$set": {"status": "applied", "updated_at": _now(), "applied_at": _now(), "applied_fee_ids": applied_fee_ids}},
+    )
+    log_action(
+        user_id="mpesa-callback",
+        action="elimu.fees.mpesa_payment_reconciled",
+        resource="elimu_fee_payment",
+        resource_id=str(checkout["_id"]),
+        metadata={
+            "school_id": school_id,
+            "student_id": _text(checkout.get("student_id"), 160),
+            "amount": _safe_money(checkout.get("amount")),
+            "receipt": receipt,
+            "fee_count": len(applied_fee_ids),
+        },
+    )
+    return {"ResultCode": 0, "ResultDesc": "M-Pesa payment reconciled"}, 200
+
+
 @finance_bp.route("/whatsapp/webhook", methods=["GET"])
 def verify_whatsapp_webhook():
     """Complete the Meta webhook subscription challenge."""
@@ -849,6 +1737,60 @@ def receive_whatsapp_webhook():
             if not isinstance(change, dict) or change.get("field") != "messages":
                 continue
             value = change.get("value") if isinstance(change.get("value"), dict) else {}
+            inbound_messages = value.get("messages") if isinstance(value.get("messages"), list) else []
+            for inbound in inbound_messages:
+                if not isinstance(inbound, dict) or _text(inbound.get("type"), 30).lower() != "text":
+                    continue
+                message_id = _text(inbound.get("id"), 240)
+                sender = _text(inbound.get("from"), 80)
+                message_body = inbound.get("text") if isinstance(inbound.get("text"), dict) else {}
+                text_body = _text(message_body.get("body"), 500)
+                if not message_id or not sender or not text_body:
+                    continue
+
+                # Idempotency prevents Meta retrying the same webhook from sending
+                # duplicate private fee statements to the parent.
+                inbound_collection = collection("jumuiya_elimu_whatsapp_inbound")
+                try:
+                    from pymongo import ReturnDocument
+                    recorded = inbound_collection.find_one_and_update(
+                        {"_id": message_id},
+                        {"$setOnInsert": {
+                            "sender_hash": hashlib.sha256(sender.encode("utf-8")).hexdigest()[:24],
+                            "message_type": "text",
+                            "status": "received",
+                            "created_at": _now(),
+                        }},
+                        upsert=True,
+                        return_document=ReturnDocument.AFTER,
+                    )
+                    is_new_message = bool(recorded and recorded.get("status") == "received" and recorded.get("sender_hash") == hashlib.sha256(sender.encode("utf-8")).hexdigest()[:24])
+                    # A previously processed event may still have status received if
+                    # a prior handler crashed. Marking the claim separately avoids
+                    # repeating a response during delivery retries.
+                    claim = inbound_collection.update_one(
+                        {"_id": message_id, "status": "received"},
+                        {"$set": {"status": "processing", "processing_started_at": _now()}},
+                    ) if is_new_message else None
+                    if not claim or claim.modified_count != 1:
+                        continue
+                    reply = _handle_whatsapp_fee_query(sender, text_body, message_id)
+                    reply_id = _send_whatsapp_text(_normalize_whatsapp_phone(sender), reply)
+                    inbound_collection.update_one(
+                        {"_id": message_id, "status": "processing"},
+                        {"$set": {"status": "replied", "outbound_message_id": reply_id, "replied_at": _now()}},
+                    )
+                except Exception:
+                    # Webhook callbacks must be acknowledged; do not expose parent
+                    # data, access tokens, or provider diagnostics in responses.
+                    try:
+                        inbound_collection.update_one(
+                            {"_id": message_id, "status": {"$in": ["received", "processing"]}},
+                            {"$set": {"status": "delivery_failed", "updated_at": _now()}},
+                        )
+                    except Exception:
+                        pass
+
             statuses = value.get("statuses") if isinstance(value.get("statuses"), list) else []
             for status in statuses:
                 if not isinstance(status, dict):

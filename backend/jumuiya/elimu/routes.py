@@ -36,6 +36,7 @@ from backend.jumuiya.elimu.public_routes import public_bp
 from backend.jumuiya.elimu.media.routes import media_bp
 from backend.jumuiya.elimu.portal_routes import parent_bp, student_bp, portal_review_bp
 from backend.jumuiya.elimu.finance_routes import finance_bp
+from backend.jumuiya.elimu.intelligence_routes import intelligence_bp
 from backend.jumuiya.elimu.inventory.routes import inventory_bp
 from backend.jumuiya.elimu.library.routes import library_bp
 
@@ -703,6 +704,8 @@ elimu_bp.register_blueprint(automation_bp)
 elimu_bp.register_blueprint(sync_bp)
 
 elimu_bp.register_blueprint(finance_bp)
+
+elimu_bp.register_blueprint(intelligence_bp)
 
 elimu_bp.register_blueprint(inventory_bp)
 

@@ -51,6 +51,9 @@ jobs:
           backend/jumuiya/community/services.py
           backend/jumuiya/community/messaging.py
           backend/jumuiya/community/routes.py
+          backend/jumuiya/elimu/routes.py
+          backend/jumuiya/elimu/finance_routes.py
+          backend/jumuiya/elimu/intelligence_routes.py
       - name: Verify account document, Elimu, and Community route registration contracts
         run: |
           python - <<'PY'
@@ -128,5 +131,7 @@ jobs:
         run: python -m pytest -q tests/test_shamba_farmer_verification.py tests/test_shamba_marketplace_eligibility.py
       - name: Run Elimu progress and certificate tests
         run: python -m pytest -q tests/test_elimu_learning_routes.py tests/test_account_documents.py
+      - name: Run Elimu intelligence and M-Pesa guard tests
+        run: python -m pytest -q tests/test_elimu_intelligence_and_mpesa.py
 
 
