@@ -255,6 +255,9 @@ def create_or_update_business(user_id, payload):
             "location",
             "county",
             "category",
+            "industry_template",
+            "business_scale",
+            "workspace_mode",
             "logo_url",
         ]
         update = {
