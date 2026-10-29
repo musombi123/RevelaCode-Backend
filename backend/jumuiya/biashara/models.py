@@ -84,6 +84,23 @@ def business_document(
             "",
         ),
 
+        # Industry and operating mode are configuration,
+        # not separate applications or separate databases.
+        "industry_template": payload.get(
+            "industry_template",
+            "general",
+        ),
+
+        "business_scale": payload.get(
+            "business_scale",
+            "small",
+        ),
+
+        "workspace_mode": payload.get(
+            "workspace_mode",
+            "advanced",
+        ),
+
         # -------------------------------------------------
         # CONTACT
         # -------------------------------------------------

@@ -18,6 +18,30 @@ BUSINESS_STATUSES = {
     "suspended",
 }
 
+# Tenant-specific templates configure the workspace without creating a
+# separate backend or database for each business.
+INDUSTRY_TEMPLATES = {
+    "general",
+    "retail_shop",
+    "hardware",
+    "factory",
+    "salon",
+    "professional_services",
+    "school",
+}
+
+BUSINESS_SCALES = {
+    "micro",
+    "small",
+    "growing",
+    "enterprise",
+}
+
+WORKSPACE_MODES = {
+    "simple",
+    "advanced",
+}
+
 PRODUCT_STATUSES = {
     "active",
     "inactive",
@@ -328,6 +352,27 @@ def business_payload(data):
         max_len=80,
     )
 
+    industry_template = _choice(
+        data,
+        "industry_template",
+        INDUSTRY_TEMPLATES,
+        default="general",
+    )
+
+    business_scale = _choice(
+        data,
+        "business_scale",
+        BUSINESS_SCALES,
+        default="small",
+    )
+
+    workspace_mode = _choice(
+        data,
+        "workspace_mode",
+        WORKSPACE_MODES,
+        default="advanced",
+    )
+
     opening_hours = data.get(
         "opening_hours"
     )
@@ -384,6 +429,12 @@ def business_payload(data):
             "category",
             max_len=120,
         ),
+
+        "industry_template": industry_template,
+
+        "business_scale": business_scale,
+
+        "workspace_mode": workspace_mode,
 
         "logo_url": _text(
             data,
