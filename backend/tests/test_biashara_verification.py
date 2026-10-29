@@ -95,6 +95,9 @@ def test_new_business_is_created_as_pending_application(monkeypatch):
         "name": "Coastal Electronics",
         "business_type": "Sole Proprietorship",
         "category": "Electronics",
+        "industry_template": "retail_shop",
+        "business_scale": "micro",
+        "workspace_mode": "simple",
         "phone": "+254712345678",
         "email": "owner@example.com",
         "county": "Mombasa",
@@ -104,6 +107,9 @@ def test_new_business_is_created_as_pending_application(monkeypatch):
     })
 
     assert result["status"] == "pending_verification"
+    assert result["industry_template"] == "retail_shop"
+    assert result["business_scale"] == "micro"
+    assert result["workspace_mode"] == "simple"
     assert result["verification_status"] == "pending"
     assert result["owner_user_id"] == "owner-1"
     assert result["verification_history"][0]["event"] == "submitted"
