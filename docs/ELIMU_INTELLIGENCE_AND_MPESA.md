@@ -6,6 +6,9 @@ This change adds an Elimu Intelligence workspace, a school-scoped student regist
 
 - GET /api/jumuiya/elimu/intelligence/fee-risk — School Owner, Principal, or Bursar with fees.view.
 - GET /api/jumuiya/elimu/intelligence/student-register-export — School Owner, Principal, or Registrar with students.view. Returns a CSV-ready response; the frontend downloads it as a file.
+- GET /api/jumuiya/elimu/intelligence/students/<student_id>/admission-letter.pdf — School Owner, Principal, or Registrar with students.view. Generates a school-scoped PDF with an opaque QR verification token and audit event.
+- GET /api/jumuiya/elimu/intelligence/verify-document/<token> — public QR verification endpoint. Returns only the document ID, school identity, learner name, admission number, class and issue date. It never returns contacts or fee data.
+- POST /api/jumuiya/elimu/intelligence/students/<student_id>/admission-letter/<document_id>/revoke — authorized school Owner, Principal or Registrar can revoke an issued document; the QR then reports revoked.
 - POST /api/jumuiya/elimu/finance/whatsapp/webhook — existing Meta webhook, extended to handle incoming text messages as well as delivery statuses.
 - POST /api/jumuiya/elimu/finance/mpesa/callback — new public provider callback for Elimu fee checkout. Callbacks are not treated as payment proof on their own; the backend queries Daraja for the same checkout and validates provider identifiers and callback amount/payer/receipt before recording payment.
 
@@ -45,6 +48,7 @@ Keep the existing Revenue Engine variables set in RevelaCode-Backend. Never plac
 | WHATSAPP_ACCESS_TOKEN | Server-side WhatsApp Cloud API access token |
 | WHATSAPP_PHONE_NUMBER_ID | WhatsApp Cloud API phone-number ID |
 | WHATSAPP_API_VERSION | Supported Graph API version, for example v26.0 |
+| ELIMU_DOCUMENT_VERIFY_BASE_URL | Optional HTTPS origin for the public QR verification endpoint; defaults to https://revelacode-backend.onrender.com |
 
 The public URL configured in ELIMU_MPESA_CALLBACK_URL must route to the deployed RevelaCode Backend and be reachable by Safaricom. Meta must be configured to deliver message webhooks to https://<backend-host>/api/jumuiya/elimu/finance/whatsapp/webhook. The app secret, tokens and shortcode secrets must not be committed to Git.
 
@@ -63,4 +67,5 @@ This is not a guarantee that production checkout will be live immediately after 
 
 - Fee-risk signals are an explainable heuristic based on stored fee history, not a trained/default prediction model. They must never trigger automatic exclusion or termination of a learner.
 - The student-register export is a review template. It does not log into KEMIS/NEMIS or claim to meet the latest official upload schema. Confirm the current government field definition before submitting it.
-- This change does not yet generate a receipt PDF, submit KNEC CBA files, synchronize to government systems, or implement a face-recognition attendance check. Those require dedicated schemas, permissions and end-to-end tests.
+- The admission-letter QR verifies a document record stored in the same backend; it does not itself certify a KEMIS/NEMIS registration.
+- This change does not yet generate a fee receipt PDF/WhatsApp attachment, submit KNEC CBA files, synchronize to government systems, or implement a face-recognition attendance check. Those require dedicated schemas, permissions and end-to-end tests.
