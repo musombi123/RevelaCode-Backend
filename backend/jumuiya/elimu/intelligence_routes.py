@@ -10,9 +10,14 @@ from __future__ import annotations
 from datetime import date, datetime, timezone
 from math import isfinite
 from typing import Any
+import hashlib
+import io
+import os
+import secrets
+from urllib.parse import urlsplit
 
 from bson import ObjectId
-from flask import Blueprint, request
+from flask import Blueprint, request, send_file
 
 from backend.jumuiya.core.audit import log_action
 from backend.jumuiya.core.database import collection
@@ -394,3 +399,395 @@ def student_register_export():
         "official_submission": False,
         "mapping_note": "This is a CSV-ready school register template. Confirm the current official KEMIS/NEMIS import field names, required identifiers, and validation rules before uploading; this endpoint does not connect to or submit data to a government portal.",
     })
+
+
+DOCUMENT_VERIFICATIONS = "jumuiya_elimu_document_verifications"
+
+
+def _admission_student_query(school_id: str, student_id: str) -> dict:
+    candidates: list[Any] = [student_id]
+    if ObjectId.is_valid(student_id):
+        candidates.append(ObjectId(student_id))
+    return {
+        "school_id": school_id,
+        "$or": [
+            {"_id": {"$in": candidates}},
+            {"id": student_id},
+        ],
+    }
+
+
+def _document_verification_url(token: str) -> str:
+    """Build a QR URL against an explicitly HTTPS backend origin, never a Host header."""
+    raw_origin = (
+        os.getenv("ELIMU_DOCUMENT_VERIFY_BASE_URL", "").strip()
+        or "https://revelacode-backend.onrender.com"
+    )
+    try:
+        parsed = urlsplit(raw_origin)
+        if (
+            parsed.scheme != "https"
+            or not parsed.hostname
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.path not in ("", "/")
+            or parsed.query
+            or parsed.fragment
+        ):
+            raise ValueError("invalid verification origin")
+        origin = f"https://{parsed.netloc}"
+    except ValueError as exc:
+        raise APIError(
+            "Elimu document verification base URL must be a valid HTTPS origin.",
+            503,
+            "document_verification_not_configured",
+        ) from exc
+    return (
+        origin
+        + "/api/jumuiya/elimu/intelligence/verify-document/"
+        + token
+    )
+
+
+def _pdf_text(value: Any, limit: int = 240) -> str:
+    text = _text(value, limit)
+    # ReportLab's built-in Helvetica is WinAnsi encoded. Replace unsupported
+    # glyphs instead of allowing unusual Unicode to break PDF generation.
+    return text.encode("cp1252", errors="replace").decode("cp1252")
+
+
+@intelligence_bp.get("/students/<student_id>/admission-letter.pdf")
+@require_authenticated
+def download_admission_letter(student_id: str):
+    """Generate and audit a school-scoped admission letter with a revocable QR token."""
+    user_id = current_user_id()
+    _, school, school_id = _member_and_school(
+        "students.view",
+        {"owner", "principal", "registrar"},
+    )
+    student = collection(STUDENTS).find_one(
+        _admission_student_query(school_id, _text(student_id, 160))
+    )
+    if not student:
+        raise APIError(
+            "Student was not found in this school.",
+            404,
+            "student_not_found",
+        )
+
+    student_name = _pdf_text(
+        student.get("full_name") or student.get("name")
+        or " ".join(
+            _text(student.get(key), 80)
+            for key in ("first_name", "middle_name", "last_name")
+            if _text(student.get(key), 80)
+        ),
+        180,
+    ).strip()
+    admission_number = _pdf_text(student.get("admission_number"), 100)
+    class_name = _pdf_text(
+        student.get("class_name") or student.get("stream") or "Not assigned",
+        100,
+    )
+    if not student_name or not admission_number:
+        raise APIError(
+            "The learner must have a full name and admission number before an admission letter can be issued.",
+            422,
+            "admission_details_incomplete",
+        )
+
+    school_name = _pdf_text(
+        school.get("name") or school.get("school_name") or "School",
+        180,
+    )
+    school_code = _pdf_text(
+        school.get("school_code") or school.get("code") or "",
+        80,
+    )
+    issued_at = datetime.now(timezone.utc)
+    document_id = "ELM-ADM-" + secrets.token_hex(6).upper()
+    token = secrets.token_urlsafe(32)
+    token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    verify_url = _document_verification_url(token)
+    student_system_id = _student_key(student)
+    enrollment_date = _pdf_text(student.get("enrollment_date"), 60) or "Not recorded"
+    school_address = _pdf_text(
+        school.get("address") or school.get("physical_address") or "",
+        240,
+    )
+
+    # Build the PDF before persisting the verification token, so failed PDF
+    # generation does not create a seemingly valid document without a file.
+    try:
+        import qrcode
+        from reportlab.lib import colors
+        from reportlab.lib.pagesizes import A4
+        from reportlab.lib.utils import ImageReader
+        from reportlab.pdfgen import canvas
+        from reportlab.platypus import Paragraph
+        from reportlab.lib.styles import ParagraphStyle
+    except ImportError as exc:
+        raise APIError(
+            "Admission-letter PDF dependencies are not installed.",
+            503,
+            "document_generation_unavailable",
+        ) from exc
+
+    qr_image = qrcode.make(verify_url)
+    qr_buffer = io.BytesIO()
+    qr_image.save(qr_buffer, format="PNG")
+    qr_buffer.seek(0)
+
+    pdf_buffer = io.BytesIO()
+    page_width, page_height = A4
+    pdf = canvas.Canvas(pdf_buffer, pagesize=A4)
+    navy = colors.HexColor("#0A2342")
+    blue = colors.HexColor("#0A74DA")
+    muted = colors.HexColor("#526176")
+    pale = colors.HexColor("#F2F6FB")
+    margin = 48
+
+    pdf.setFillColor(navy)
+    pdf.rect(0, page_height - 96, page_width, 96, fill=1, stroke=0)
+    pdf.setFillColor(colors.white)
+    pdf.setFont("Helvetica-Bold", 17)
+    pdf.drawString(margin, page_height - 43, school_name[:48])
+    pdf.setFont("Helvetica", 9)
+    pdf.drawString(
+        margin,
+        page_height - 61,
+        ("School code: " + school_code) if school_code else "Jumuiya Elimu school record",
+    )
+    if school_address:
+        pdf.setFillColor(colors.HexColor("#DCE7F5"))
+        pdf.drawString(margin, page_height - 78, school_address[:90])
+
+    pdf.setFillColor(navy)
+    pdf.setFont("Helvetica-Bold", 18)
+    pdf.drawString(margin, page_height - 135, "ADMISSION LETTER")
+    pdf.setFillColor(muted)
+    pdf.setFont("Helvetica", 9)
+    pdf.drawRightString(page_width - margin, page_height - 130, "Issued: " + issued_at.strftime("%d %B %Y"))
+    pdf.drawRightString(page_width - margin, page_height - 145, "Ref: " + document_id)
+    pdf.setStrokeColor(blue)
+    pdf.setLineWidth(1.5)
+    pdf.line(margin, page_height - 157, page_width - margin, page_height - 157)
+
+    pdf.setFillColor(navy)
+    pdf.setFont("Helvetica", 10)
+    pdf.drawString(margin, page_height - 184, "Dear Parent/Guardian,")
+    body_style = ParagraphStyle(
+        "ElimuAdmissionBody",
+        fontName="Helvetica",
+        fontSize=10,
+        leading=16,
+        textColor=navy,
+    )
+    body = Paragraph(
+        (
+            f"We are pleased to confirm the admission of <b>{__import__('html').escape(student_name)}</b> "
+            f"to <b>{__import__('html').escape(school_name)}</b>. Please retain this letter as a "
+            "school-issued admission record. The document reference and QR code can be used to "
+            "verify the record against RevelaCode Elimu."
+        ),
+        body_style,
+    )
+    _, body_height = body.wrap(page_width - margin * 2, 90)
+    body.drawOn(pdf, margin, page_height - 202 - body_height)
+
+    card_top = page_height - 232 - body_height
+    card_height = 116
+    pdf.setFillColor(pale)
+    pdf.roundRect(margin, card_top - card_height, page_width - margin * 2, card_height, 10, fill=1, stroke=0)
+    pdf.setFillColor(blue)
+    pdf.setFont("Helvetica-Bold", 9)
+    pdf.drawString(margin + 16, card_top - 23, "LEARNER DETAILS")
+    pdf.setFillColor(navy)
+    pdf.setFont("Helvetica-Bold", 11)
+    pdf.drawString(margin + 16, card_top - 45, student_name[:70])
+    pdf.setFont("Helvetica", 9)
+    pdf.drawString(margin + 16, card_top - 64, "Admission number: " + admission_number[:70])
+    pdf.drawString(margin + 16, card_top - 81, "Class / stream: " + class_name[:70])
+    pdf.drawString(margin + 16, card_top - 98, "Enrolment date: " + enrollment_date[:60])
+
+    closing_y = card_top - card_height - 36
+    closing_style = ParagraphStyle(
+        "ElimuAdmissionClosing",
+        fontName="Helvetica",
+        fontSize=9,
+        leading=14,
+        textColor=navy,
+    )
+    closing = Paragraph(
+        "Please contact the school office if any learner details on this letter require correction. "
+        "This document confirms the record currently stored by the school; it is not a substitute "
+        "for any separate government registration requirement.",
+        closing_style,
+    )
+    _, closing_height = closing.wrap(page_width - margin * 2, 65)
+    closing.drawOn(pdf, margin, closing_y - closing_height)
+
+    sign_y = closing_y - closing_height - 45
+    pdf.setStrokeColor(muted)
+    pdf.setLineWidth(0.6)
+    pdf.line(margin, sign_y, margin + 180, sign_y)
+    pdf.setFillColor(muted)
+    pdf.setFont("Helvetica", 8)
+    pdf.drawString(margin, sign_y - 14, "Authorised school representative")
+    pdf.drawString(margin, sign_y - 27, "School stamp / signature")
+
+    qr_size = 108
+    qr_x = page_width - margin - qr_size
+    qr_y = 70
+    pdf.drawImage(ImageReader(qr_buffer), qr_x, qr_y, width=qr_size, height=qr_size, preserveAspectRatio=True, mask="auto")
+    pdf.setFillColor(navy)
+    pdf.setFont("Helvetica-Bold", 8)
+    pdf.drawCentredString(qr_x + qr_size / 2, qr_y - 13, "VERIFY DOCUMENT")
+    pdf.setFillColor(muted)
+    pdf.setFont("Helvetica", 7)
+    pdf.drawCentredString(qr_x + qr_size / 2, qr_y - 25, "Scan the QR code")
+    pdf.setStrokeColor(colors.HexColor("#DCE4EF"))
+    pdf.line(margin, 42, page_width - margin, 42)
+    pdf.setFillColor(muted)
+    pdf.setFont("Helvetica", 7)
+    pdf.drawString(margin, 27, "Generated by RevelaCode Elimu | " + document_id)
+    pdf.showPage()
+    pdf.save()
+    pdf_buffer.seek(0)
+
+    collection(DOCUMENT_VERIFICATIONS).insert_one({
+        "_id": token_hash,
+        "document_id": document_id,
+        "document_type": "admission_letter_v1",
+        "school_id": school_id,
+        "school_name": _text(school.get("name") or school.get("school_name") or "School", 180),
+        "school_code": school_code,
+        "student_id": student_system_id,
+        "student_name": student_name,
+        "admission_number": admission_number,
+        "class_name": class_name,
+        "status": "valid",
+        "issued_at": issued_at,
+        "issued_by": _text(user_id, 160),
+    })
+
+    try:
+        log_action(
+            user_id=user_id,
+            action="elimu.admission_letter.generated",
+            resource="elimu_document",
+            resource_id=document_id,
+            metadata={
+                "school_id": school_id,
+                "student_id": student_system_id,
+                "document_type": "admission_letter_v1",
+            },
+        )
+    except Exception:
+        pass
+
+    safe_admission = "".join(
+        character if character.isalnum() or character in "-_" else "-"
+        for character in admission_number
+    )[:60]
+    return send_file(
+        pdf_buffer,
+        mimetype="application/pdf",
+        as_attachment=True,
+        download_name=f"admission-letter-{safe_admission or 'student'}.pdf",
+        max_age=0,
+    )
+
+
+@intelligence_bp.get("/verify-document/<token>")
+def verify_admission_document(token: str):
+    """Public, privacy-minimal QR verification endpoint for a school-issued document."""
+    normalized_token = _text(token, 160)
+    if not normalized_token or len(normalized_token) < 30:
+        return ok({
+            "verified": False,
+            "status": "invalid",
+            "message": "This admission document could not be verified.",
+        })
+
+    token_hash = hashlib.sha256(normalized_token.encode("utf-8")).hexdigest()
+    record = collection(DOCUMENT_VERIFICATIONS).find_one({"_id": token_hash})
+    if not record:
+        return ok({
+            "verified": False,
+            "status": "invalid",
+            "message": "This admission document could not be verified.",
+        })
+    if record.get("status") != "valid":
+        return ok({
+            "verified": False,
+            "status": "revoked",
+            "document_id": _text(record.get("document_id"), 80),
+            "message": "This admission document has been revoked by the school.",
+        })
+    issued_at = record.get("issued_at")
+    return ok({
+        "verified": True,
+        "status": "valid",
+        "document_type": "admission_letter",
+        "document_id": _text(record.get("document_id"), 80),
+        "school_name": _text(record.get("school_name"), 180),
+        "school_code": _text(record.get("school_code"), 80),
+        "student_name": _text(record.get("student_name"), 180),
+        "admission_number": _text(record.get("admission_number"), 100),
+        "class_name": _text(record.get("class_name"), 100),
+        "issued_at": issued_at.isoformat() if hasattr(issued_at, "isoformat") else _text(issued_at, 80),
+        "message": "This admission document matches a school-issued Elimu record.",
+    })
+
+
+@intelligence_bp.post("/students/<student_id>/admission-letter/<document_id>/revoke")
+@require_authenticated
+def revoke_admission_letter(student_id: str, document_id: str):
+    """Let authorized school leadership revoke a previously issued admission letter."""
+    user_id = current_user_id()
+    _, _, school_id = _member_and_school(
+        "students.view",
+        {"owner", "principal", "registrar"},
+    )
+    student = collection(STUDENTS).find_one(
+        _admission_student_query(school_id, _text(student_id, 160))
+    )
+    if not student:
+        raise APIError("Student was not found in this school.", 404, "student_not_found")
+
+    verification = collection(DOCUMENT_VERIFICATIONS).find_one({
+        "document_id": _text(document_id, 80),
+        "school_id": school_id,
+        "student_id": _student_key(student),
+        "document_type": "admission_letter_v1",
+        "status": "valid",
+    })
+    if not verification:
+        raise APIError(
+            "A valid admission letter for this learner was not found.",
+            404,
+            "admission_letter_not_found",
+        )
+    collection(DOCUMENT_VERIFICATIONS).update_one(
+        {"_id": verification["_id"], "status": "valid", "school_id": school_id},
+        {"$set": {
+            "status": "revoked",
+            "revoked_at": datetime.now(timezone.utc),
+            "revoked_by": _text(user_id, 160),
+        }},
+    )
+    try:
+        log_action(
+            user_id=user_id,
+            action="elimu.admission_letter.revoked",
+            resource="elimu_document",
+            resource_id=_text(document_id, 80),
+            metadata={"school_id": school_id, "student_id": _student_key(student)},
+        )
+    except Exception:
+        pass
+    return ok({
+        "document_id": _text(document_id, 80),
+        "status": "revoked",
+    }, "Admission letter revoked.")
