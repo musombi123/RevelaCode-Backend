@@ -216,3 +216,24 @@ def test_admin_cannot_reject_without_review_notes(monkeypatch):
         )
 
     assert exc.value.code == "review_notes_required"
+
+def test_business_payload_accepts_small_biashara_configuration():
+    payload = schemas.business_payload({
+        "name": "Amina Mini Mart",
+        "industry_template": "retail_shop",
+        "business_scale": "micro",
+        "workspace_mode": "simple",
+    })
+
+    assert payload["industry_template"] == "retail_shop"
+    assert payload["business_scale"] == "micro"
+    assert payload["workspace_mode"] == "simple"
+
+
+def test_business_payload_rejects_unknown_industry_template():
+    with pytest.raises(ValueError, match="industry_template must be one of"):
+        schemas.business_payload({
+            "name": "Amina Mini Mart",
+            "industry_template": "unapproved_template",
+        })
+
