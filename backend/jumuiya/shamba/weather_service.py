@@ -51,7 +51,13 @@ def _resolve_coordinates(farm: dict[str, Any]) -> tuple[float, float, str]:
     if lat is not None and lon is not None and -90 <= lat <= 90 and -180 <= lon <= 180:
         return lat, lon, label or "Farm GPS location"
 
-    if not label or label == "Kenya":
+    candidates = []
+    for value in (farm.get("town"), farm.get("county"), farm.get("location")):
+        candidate = str(value or "").strip()
+        if candidate and candidate.lower() not in {item.lower() for item in candidates}:
+            candidates.append(candidate)
+
+    if not candidates:
         raise APIError(
             "Add a town or county to this farm, or share its device location, to get local weather.",
             422,
@@ -59,35 +65,46 @@ def _resolve_coordinates(farm: dict[str, Any]) -> tuple[float, float, str]:
         )
 
     try:
-        response = requests.get(
-            GEOCODING_URL,
-            params={"name": label, "count": 5, "language": "en", "format": "json"},
-            timeout=_REQUEST_TIMEOUT_SECONDS,
-            headers={"User-Agent": "RevelaCode-Shamba/1.0"},
-        )
-        response.raise_for_status()
-        results = response.json().get("results") or []
-    except (requests.RequestException, ValueError) as exc:
+        results = []
+        for candidate in candidates:
+            response = requests.get(
+                GEOCODING_URL,
+                params={
+                    "name": candidate,
+                    "count": 10,
+                    "language": "en",
+                    "format": "json",
+                    "countryCode": "KE",
+                },
+                timeout=_REQUEST_TIMEOUT_SECONDS,
+                headers={"User-Agent": "RevelaCode-Shamba/1.0"},
+            )
+            response.raise_for_status()
+            results = response.json().get("results") or []
+            kenya_results = [
+                item for item in results
+                if str(item.get("country_code") or "").upper() == "KE"
+            ]
+            if kenya_results:
+                match = kenya_results[0]
+                return float(match["latitude"]), float(match["longitude"]), (
+                    match.get("name") or candidate
+                )
+            if results:
+                # Keep trying more specific Kenyan location fields before using
+                # a provider match that may belong to another country.
+                continue
+    except (requests.RequestException, ValueError, KeyError, TypeError) as exc:
         raise APIError(
             "The weather location service is temporarily unavailable. Try again shortly.",
             502,
             "weather_geocoding_unavailable",
         ) from exc
 
-    # Prefer a Kenyan match when the provider returns country metadata.
-    match = next(
-        (item for item in results if str(item.get("country_code") or "").upper() == "KE"),
-        results[0] if results else None,
-    )
-    if not match:
-        raise APIError(
-            "We could not locate this farm from its saved town/county. Add GPS coordinates or update the farm location.",
-            422,
-            "weather_location_not_found",
-        )
-
-    return float(match["latitude"]), float(match["longitude"]), (
-        match.get("name") or label
+    raise APIError(
+        "We could not locate this farm from its saved town/county. Add GPS coordinates or update the farm location.",
+        422,
+        "weather_location_not_found",
     )
 
 
