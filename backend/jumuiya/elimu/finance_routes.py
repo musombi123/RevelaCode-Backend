@@ -546,8 +546,13 @@ def _start_elimu_fee_stk(school: dict, student: dict, sender: str, inbound_messa
     except Exception:
         # An index conflict must not silently bypass idempotency; verify readiness below.
         existing_indexes = list(rows.list_indexes())
+        ledger_indexes = list(ledger.list_indexes())
         required = {"uq_elimu_mpesa_school_idempotency", "uq_elimu_mpesa_checkout_request"}
-        if not required.issubset({item.get("name") for item in existing_indexes}):
+        required_ledger = {"uq_elimu_fee_payment_receipt", "uq_elimu_fee_payment_checkout"}
+        if (
+            not required.issubset({item.get("name") for item in existing_indexes})
+            or not required_ledger.issubset({item.get("name") for item in ledger_indexes})
+        ):
             return {"ok": False, "message": "M-Pesa checkout storage is not ready. No payment prompt was sent; contact RevelaCode support."}
 
     idempotency_key = hashlib.sha256(
@@ -758,9 +763,9 @@ def _start_elimu_fee_stk(school: dict, student: dict, sender: str, inbound_messa
     return {
         "ok": True,
         "message": (
-            f"M-Pesa prompt sent for {school_name}.\\n"
-            f"Learner: {student_name}\\n"
-            f"Amount: KES {int(round(total_balance)):,}\\n"
+            f"M-Pesa prompt sent for {school_name}.\n"
+            f"Learner: {student_name}\n"
+            f"Amount: KES {int(round(total_balance)):,}\n"
             "Enter your M-Pesa PIN only if the prompt shows the correct school payment and amount. "
             "Never share your PIN. After payment, send FEES to check the recorded balance."
         ),
@@ -776,19 +781,19 @@ def _handle_whatsapp_fee_query(sender: str, message_text: str, inbound_message_i
     command = _text(message_text, 500).lower()
     if not command or command in {"hi", "hello", "habari", "help", "menu", "start"}:
         return (
-            "Jumuiya Elimu Parent Assistant\\n"
-            "Send FEES to check the balance for a linked learner.\\n"
-            "If more than one learner is linked, send FEES followed by the learner's admission number.\\n"
+            "Jumuiya Elimu Parent Assistant\n"
+            "Send FEES to check the balance for a linked learner.\n"
+            "If more than one learner is linked, send FEES followed by the learner's admission number.\n"
             "For an official receipt or payment dispute, contact the school Bursar."
         )
 
     pay_match = re.fullmatch(
-        r"pay(?:\\s+([a-z0-9][a-z0-9/._-]{0,39}))?",
+        r"pay(?:\s+([a-z0-9][a-z0-9/._-]{0,39}))?",
         command,
         flags=re.IGNORECASE,
     )
     match = re.fullmatch(
-        r"(?:fees?|balance|fee balance)(?:\\s+([a-z0-9][a-z0-9/._-]{0,39}))?",
+        r"(?:fees?|balance|fee balance)(?:\s+([a-z0-9][a-z0-9/._-]{0,39}))?",
         command,
         flags=re.IGNORECASE,
     )
@@ -805,7 +810,7 @@ def _handle_whatsapp_fee_query(sender: str, message_text: str, inbound_message_i
         requested_action = "fees"
         # Also allow a parent to refer to a child's name, but only among records
         # linked to this same WhatsApp number.
-        name_query = re.sub(r"^(?:check|show|what is|what's)\\s+", "", command).strip()
+        name_query = re.sub(r"^(?:check|show|what is|what's)\s+", "", command).strip()
         if not name_query or len(name_query) > 80:
             return "Please send FEES, FEES followed by the learner's admission number, or PAY to request an M-Pesa prompt."
         requested_identifier = ""
@@ -863,10 +868,10 @@ def _handle_whatsapp_fee_query(sender: str, message_text: str, inbound_message_i
                 f"• {status['student_name']} — Admission: {status['admission_number'] or 'not recorded'} "
                 f"({ _text(item['school'].get('name') or item['school'].get('school_name'), 100) or 'School' })"
             )
-        more = f"\\n…and {len(linked) - 8} more linked learners." if len(linked) > 8 else ""
+        more = f"\n…and {len(linked) - 8} more linked learners." if len(linked) > 8 else ""
         return (
-            "Several learners are linked to this number. Reply FEES <admission number> to check a balance or PAY <admission number> to request an M-Pesa prompt.\\n"
-            + "\\n".join(options)
+            "Several learners are linked to this number. Reply FEES <admission number> to check a balance or PAY <admission number> to request an M-Pesa prompt.\n"
+            + "\n".join(options)
             + more
         )
 
@@ -876,8 +881,8 @@ def _handle_whatsapp_fee_query(sender: str, message_text: str, inbound_message_i
     school_name = _text(school.get("name") or school.get("school_name"), 160) or "Your school"
     if not status["fee_records"]:
         return (
-            f"{school_name}\\n"
-            f"Learner: {status['student_name']}\\n"
+            f"{school_name}\n"
+            f"Learner: {status['student_name']}\n"
             "No fee schedule is recorded yet. Please contact the Bursar for the current fee structure."
         )
 
@@ -896,17 +901,17 @@ def _handle_whatsapp_fee_query(sender: str, message_text: str, inbound_message_i
             f"• {_text(fee.get('description') or fee.get('fee_type') or 'School fees', 100)}: "
             f"Balance KES {float(fee.get('balance') or 0):,.2f}"
         )
-    details = "\\n".join(fee_lines)
-    remaining = f"\\n…and {len(status['fee_items']) - 8} other fee item(s)." if len(status["fee_items"]) > 8 else ""
+    details = "\n".join(fee_lines)
+    remaining = f"\n…and {len(status['fee_items']) - 8} other fee item(s)." if len(status["fee_items"]) > 8 else ""
     return (
-        f"{school_name} — Fee statement\\n"
-        f"Learner: {status['student_name']}\\n"
-        f"Admission no.: {status['admission_number'] or 'not recorded'}\\n"
-        f"Class: {status['class_name'] or 'not assigned'}\\n"
-        f"Required: KES {status['amount_required']:,.2f}\\n"
-        f"Recorded paid: KES {status['amount_paid']:,.2f}\\n"
-        f"Outstanding balance: KES {status['balance']:,.2f}\\n\\n"
-        f"{details}{remaining}\\n\\n"
+        f"{school_name} — Fee statement\n"
+        f"Learner: {status['student_name']}\n"
+        f"Admission no.: {status['admission_number'] or 'not recorded'}\n"
+        f"Class: {status['class_name'] or 'not assigned'}\n"
+        f"Required: KES {status['amount_required']:,.2f}\n"
+        f"Recorded paid: KES {status['amount_paid']:,.2f}\n"
+        f"Outstanding balance: KES {status['balance']:,.2f}\n\n"
+        f"{details}{remaining}\n\n"
         "This statement reflects payments recorded by the school. If you have paid recently, "
         "keep the M-Pesa receipt and contact the Bursar if the balance has not updated."
     )
