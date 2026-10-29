@@ -44,6 +44,7 @@ Keep the existing Revenue Engine variables set in RevelaCode-Backend. Never plac
 | MPESA_CALLBACK_URL | Keep the existing Revenue callback URL ending in /api/revenue/providers/mpesa/callback |
 | REVENUE_PAYMENT_PROVIDERS | Must include mpesa for the shared Daraja adapter's production readiness check |
 | ELIMU_MPESA_CALLBACK_URL | Public HTTPS URL ending in /api/jumuiya/elimu/finance/mpesa/callback |
+| WHATSAPP_WEBHOOK_VERIFY_TOKEN | Random verification token used when Meta subscribes to the webhook |
 | WHATSAPP_APP_SECRET | Meta app secret used to validate X-Hub-Signature-256 |
 | WHATSAPP_ACCESS_TOKEN | Server-side WhatsApp Cloud API access token |
 | WHATSAPP_PHONE_NUMBER_ID | WhatsApp Cloud API phone-number ID |
