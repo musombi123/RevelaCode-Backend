@@ -504,7 +504,7 @@ def _start_elimu_fee_stk(school: dict, student: dict, sender: str, inbound_messa
             "message": "The M-Pesa request could not be prepared safely. No payment prompt was sent; please contact the school Bursar.",
         }
 
-    school_id = _text(school.get("school_id") or school.get("_id"), 160)
+    school_id = _text(student.get("school_id") or school.get("_id") or school.get("school_id"), 160)
     student_id = _text(student.get("_id") or student.get("id"), 160)
     admission = _text(student.get("admission_number"), 120)
     school_name = _text(school.get("name") or school.get("school_name"), 160) or "Your school"
@@ -681,7 +681,7 @@ def _start_elimu_fee_stk(school: dict, student: dict, sender: str, inbound_messa
                 "PhoneNumber": phone,
                 "CallBackURL": callback_url,
                 "AccountReference": account_ref,
-                "TransactionDesc": "Elimu school fees",
+                "TransactionDesc": "Elimu fees",
             },
         )
     except RuntimeError:
@@ -1431,12 +1431,13 @@ def receive_elimu_mpesa_callback():
 
     try:
         from backend.revenue import mpesa as daraja
+        query_timestamp = daraja._timestamp()
         query_result = daraja._daraja_post(
             "/mpesa/stkpushquery/v1/query",
             {
                 "BusinessShortCode": os.getenv("MPESA_SHORTCODE", "").strip(),
-                "Password": daraja._password(daraja._timestamp()),
-                "Timestamp": daraja._timestamp(),
+                "Password": daraja._password(query_timestamp),
+                "Timestamp": query_timestamp,
                 "CheckoutRequestID": checkout_id,
             },
         )
@@ -1465,6 +1466,17 @@ def receive_elimu_mpesa_callback():
             }},
         )
         return {"ResultCode": 0, "ResultDesc": "Callback acknowledged for reconciliation"}, 200
+
+    if str(query_code) == "0" and str(callback.get("ResultCode")) != "0":
+        rows.update_one(
+            {"_id": checkout["_id"]},
+            {"$set": {
+                "status": "awaiting_verification",
+                "message": "Daraja query and callback result codes conflicted; no fee was cleared.",
+                "updated_at": _now(),
+            }},
+        )
+        return {"ResultCode": 0, "ResultDesc": "Payment awaits reconciliation"}, 200
 
     if query_code is None:
         rows.update_one(
