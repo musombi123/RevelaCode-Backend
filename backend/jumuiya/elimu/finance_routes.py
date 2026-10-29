@@ -497,6 +497,9 @@ def _start_elimu_fee_stk(school: dict, student: dict, sender: str, inbound_messa
                     "The school administrator must verify the production Daraja configuration first."
                 ),
             }
+        # Authenticate against Daraja before reserving a fee or recording an intent.
+        # A token/configuration failure at this point is known to precede STK submission.
+        daraja._access_token()
         phone = daraja._phone(_normalize_whatsapp_phone(sender))
     except (RuntimeError, ValueError):
         return {
@@ -748,18 +751,23 @@ def _start_elimu_fee_stk(school: dict, student: dict, sender: str, inbound_messa
             "updated_at": _now(),
         }},
     )
-    log_action(
-        user_id="whatsapp-parent",
-        action="elimu.fees.mpesa_stk_initiated",
-        resource="elimu_fee_checkout",
-        resource_id=checkout_id,
-        metadata={
-            "school_id": school_id,
-            "student_id": student_id,
-            "amount": int(round(total_balance)),
-            "channel": "whatsapp",
-        },
-    )
+    try:
+        log_action(
+            user_id="whatsapp-parent",
+            action="elimu.fees.mpesa_stk_initiated",
+            resource="elimu_fee_checkout",
+            resource_id=checkout_id,
+            metadata={
+                "school_id": school_id,
+                "student_id": student_id,
+                "amount": int(round(total_balance)),
+                "channel": "whatsapp",
+            },
+        )
+    except Exception:
+        # A secondary audit write must not suppress the payment status message;
+        # the checkout itself already contains the core idempotent audit record.
+        pass
     return {
         "ok": True,
         "message": (
