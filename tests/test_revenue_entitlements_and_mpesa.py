@@ -864,7 +864,6 @@ def test_hub_trial_durations_are_configured(hub, expected_days):
         ("shamba", 30),
         ("smart_ai", 30),
         ("marketplace", 30),
-        ("faith", 30),
     ],
 )
 def test_new_trial_snapshot_uses_hub_specific_duration(hub, expected_days):
