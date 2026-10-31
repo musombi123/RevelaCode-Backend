@@ -28,22 +28,19 @@ TRIAL_DAYS_BY_HUB = {
     "shamba": 30,
     "smart_ai": 30,
     "marketplace": 30,
-    "faith": 30,
 }
 
 
 def trial_days_for_hub(hub):
     return TRIAL_DAYS_BY_HUB.get(str(hub or "").strip().lower(), TRIAL_DAYS)
 
-# Each separately metered hub gets its own trial. Faith covers the RevelaCode
-# Theology/Faith experience; Smart AI is separately metered from the hubs.
+# Faith and Community are permanently free. Other metered hubs keep their trials.
 TRIAL_HUBS = {
     "shamba": "Shamba",
     "biashara": "Biashara",
     "elimu": "Elimu",
     "smart_ai": "RevelaAI / Smart AI",
     "marketplace": "Marketplace",
-    "faith": "Faith & Scripture",
 }
 
 _INDEXES_READY = False

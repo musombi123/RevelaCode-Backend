@@ -3151,10 +3151,6 @@ def elimu_learning_verify_certificate(certificate_id):
 import uuid as _faith_uuid
 from pymongo import ASCENDING as _FAITH_ASCENDING, DESCENDING as _FAITH_DESCENDING
 from pymongo.errors import DuplicateKeyError as _FaithDuplicateKeyError
-from backend.revenue.subscriptions import (
-    resolve_entitlement as _faith_resolve_entitlement,
-    require_revenue_entitlement as _faith_require_entitlement,
-)
 from backend.study.faith_premium_curriculum import (
     COURSES as _FAITH_COURSES,
     get_course as _faith_get_course,
@@ -3227,35 +3223,11 @@ def _faith_clean(value, limit=500):
     return str(value or "").strip()[:limit]
 
 
-def _faith_access(feature):
-    try:
-        user_id = current_user_id()
-        entitlement = _faith_resolve_entitlement(user_id, "faith", feature)
-        return user_id, entitlement, None
-    except ValueError as exc:
-        return None, None, _faith_error(str(exc), 400, "invalid_entitlement_request")
-    except Exception as exc:
-        logger.exception("Faith entitlement check failed: %s", exc)
-        return None, None, _faith_error(
-            "Faith access could not be verified right now. Please retry.",
-            503, "faith_entitlement_unavailable",
-        )
-
-
 def _faith_error(message, status=400, code="invalid_request", extra=None):
     payload = {"success": False, "message": message, "code": code}
     if isinstance(extra, dict):
         payload.update(extra)
     return jsonify(payload), status
-
-
-def _faith_locked(entitlement):
-    return jsonify({
-        "success": False,
-        "code": "premium_entitlement_required",
-        "message": "Start your one-time 30-day Faith trial or activate an eligible Faith plan to unlock this service.",
-        "entitlement": entitlement,
-    }), 402
 
 
 def _faith_public_group(group, can_manage=False, member_count=0):
@@ -3293,42 +3265,34 @@ def _faith_progress(user_id, course_slug, lesson_slug):
 @study_bp.get("/faith/courses")
 @require_authenticated
 def faith_list_learning_courses():
-    user_id, entitlement, failure = _faith_access("faith_courses")
-    if failure:
-        return failure
+    user_id = current_user_id()
     _faith_indexes()
     courses = []
     for course in _FAITH_COURSES:
-        item = _faith_public_course(course, has_premium_access=bool(entitlement.get("allowed")), detail=False)
-        item["completed_lessons"] = (
-            _faith_db()[_FAITH_PROGRESS].count_documents({
-                "user_id": user_id, "course_slug": course["slug"], "completed": True,
-            }) if entitlement.get("allowed") else 0
-        )
+        item = _faith_public_course(course, has_premium_access=True, detail=False)
+        item["completed_lessons"] = _faith_db()[_FAITH_PROGRESS].count_documents({
+            "user_id": user_id, "course_slug": course["slug"], "completed": True,
+        })
         courses.append(item)
     return jsonify({
         "success": True,
         "courses": courses,
-        "entitlement": entitlement,
-        "preview_note": "One lesson in Study Scripture with Context is free to preview. Full courses unlock during the Faith trial or through an eligible paid plan.",
+        "access": "free",
     }), 200
 
 
 @study_bp.get("/faith/courses/<course_slug>")
 @require_authenticated
 def faith_get_learning_course(course_slug):
-    user_id, entitlement, failure = _faith_access("faith_courses")
-    if failure:
-        return failure
+    user_id = current_user_id()
     course = _faith_get_course(course_slug)
     if not course:
         return _faith_error("Course not found.", 404, "course_not_found")
-    payload = _faith_public_course(course, has_premium_access=bool(entitlement.get("allowed")), detail=True)
+    payload = _faith_public_course(course, has_premium_access=True, detail=True)
     for lesson in payload.get("lessons", []):
         row = _faith_progress(user_id, course["slug"], lesson["slug"])
         lesson["completed"] = bool(row and row.get("completed"))
         lesson["last_accessed_at"] = _serialize_value(row.get("updated_at")) if row else None
-    payload["entitlement"] = entitlement
     return jsonify({"success": True, "course": payload}), 200
 
 
@@ -3344,12 +3308,7 @@ def faith_save_learning_progress():
     course, lesson = _faith_get_lesson(course_slug, lesson_slug)
     if not course or not lesson:
         return _faith_error("Course or lesson not found.", 404, "lesson_not_found")
-    user_id, entitlement, failure = _faith_access("faith_courses")
-    if failure:
-        return failure
-    if not entitlement.get("allowed") and not lesson.get("preview"):
-        return _faith_locked(entitlement)
-
+    user_id = current_user_id()
     _faith_indexes()
     now = _faith_now()
     try:
@@ -3378,7 +3337,6 @@ def faith_save_learning_progress():
 
 @study_bp.get("/faith/workspace")
 @require_authenticated
-@_faith_require_entitlement("faith", "faith_workspace")
 def faith_get_personal_workspace():
     user_id = current_user_id()
     _faith_indexes()
@@ -3426,7 +3384,6 @@ def faith_get_personal_workspace():
 
 @study_bp.post("/faith/notes")
 @require_authenticated
-@_faith_require_entitlement("faith", "faith_workspace")
 def faith_save_note():
     data = _json_body()
     title = _faith_clean(data.get("title") or "Study note", 160)
@@ -3471,7 +3428,6 @@ def faith_save_note():
 
 @study_bp.delete("/faith/notes/<note_id>")
 @require_authenticated
-@_faith_require_entitlement("faith", "faith_workspace")
 def faith_delete_note(note_id):
     user_id = current_user_id()
     _faith_indexes()
@@ -3495,11 +3451,7 @@ def faith_submit_assessment():
     course, lesson = _faith_get_lesson(course_slug, lesson_slug)
     if not course or not lesson:
         return _faith_error("Course or lesson not found.", 404, "lesson_not_found")
-    user_id, entitlement, failure = _faith_access("faith_courses")
-    if failure:
-        return failure
-    if not entitlement.get("allowed") and not lesson.get("preview"):
-        return _faith_locked(entitlement)
+    user_id = current_user_id()
     quiz = lesson.get("quiz") or []
     if not quiz:
         return _faith_error("This lesson has no assessment configured.", 409, "assessment_unavailable")
@@ -3543,7 +3495,6 @@ def faith_submit_assessment():
 
 @study_bp.post("/faith/companion")
 @require_authenticated
-@_faith_require_entitlement("faith", "faith_companion")
 def faith_study_companion():
     data = _json_body()
     course_slug = _faith_clean(data.get("course_slug"), 100).lower()
@@ -3636,7 +3587,6 @@ def faith_study_companion():
 
 @study_bp.get("/faith/groups")
 @require_authenticated
-@_faith_require_entitlement("faith", "faith_group_tools")
 def faith_list_groups():
     user_id = current_user_id()
     _faith_indexes()
@@ -3657,7 +3607,6 @@ def faith_list_groups():
 
 @study_bp.post("/faith/groups")
 @require_authenticated
-@_faith_require_entitlement("faith", "faith_group_tools")
 def faith_create_group():
     data = _json_body()
     name = _faith_clean(data.get("name"), 120)
@@ -3707,7 +3656,6 @@ def faith_create_group():
 
 @study_bp.post("/faith/groups/join")
 @require_authenticated
-@_faith_require_entitlement("faith", "faith_group_tools")
 def faith_join_group():
     invite_code = _faith_clean(_json_body().get("invite_code"), 32).upper()
     if not invite_code:
@@ -3738,7 +3686,6 @@ def faith_join_group():
 
 @study_bp.get("/faith/groups/<group_id>")
 @require_authenticated
-@_faith_require_entitlement("faith", "faith_group_tools")
 def faith_get_group(group_id):
     user_id = current_user_id()
     group_id = _faith_clean(group_id, 64)
@@ -3780,7 +3727,6 @@ def faith_get_group(group_id):
 
 @study_bp.post("/faith/groups/<group_id>/assignments")
 @require_authenticated
-@_faith_require_entitlement("faith", "faith_group_tools")
 def faith_create_group_assignment(group_id):
     data = _json_body()
     title = _faith_clean(data.get("title") or "Group study assignment", 140)
@@ -3817,7 +3763,6 @@ def faith_create_group_assignment(group_id):
 
 @study_bp.post("/faith/groups/<group_id>/assignments/<assignment_id>/complete")
 @require_authenticated
-@_faith_require_entitlement("faith", "faith_group_tools")
 def faith_complete_group_assignment(group_id, assignment_id):
     user_id = current_user_id()
     group_id = _faith_clean(group_id, 64)

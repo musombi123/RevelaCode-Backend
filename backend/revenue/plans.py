@@ -10,6 +10,7 @@ from backend.jumuiya.core.database import collection
 
 PRICING_STATUS = "draft"
 PLANS_COLLECTION = "jumuiya_revenue_plans"
+BILLING_DISABLED_HUBS = {"faith"}
 
 # These are proposed catalogue values, not approved live pricing. A plan must be
 # explicitly published by a platform administrator before checkout can charge.
@@ -167,36 +168,6 @@ PLANS = [
         ],
     },
     {
-        "code": "faith_plus",
-        "name": "Faith & Scripture Plus",
-        "hub": "faith",
-        "amount": "99.00",
-        "currency": "KES",
-        "interval": "month",
-        "status": "proposed",
-        "features": [
-            "Full structured Faith courses and server-graded assessments",
-            "Saved personal notes, learning progress and study history",
-            "Source-linked RevelaAI Faith Study Companion",
-            "One account, synced across web and Android",
-        ],
-    },
-    {
-        "code": "faith_pro",
-        "name": "Faith & Scripture Pro",
-        "hub": "faith",
-        "amount": "199.00",
-        "currency": "KES",
-        "interval": "month",
-        "status": "proposed",
-        "features": [
-            "Everything in Faith & Scripture Plus",
-            "Church and study-group workspaces",
-            "Shareable invite codes, group assignments and completion tracking",
-            "Facilitator tools for structured study programmes",
-        ],
-    },
-    {
         "code": "community_ads_campaign",
         "name": "Community Ads Campaign",
         "hub": "advertising",
@@ -261,6 +232,8 @@ def list_plans(hub=None, *, include_retired=False):
                 item[key] = override[key]
 
         item["features"] = list(item.get("features") or [])
+        if str(item.get("hub") or "").strip().lower() in BILLING_DISABLED_HUBS:
+            continue
         if not include_retired and item.get("status") == "retired":
             continue
         if not include_retired and _is_paid_community_subscription(item):
@@ -283,6 +256,8 @@ def list_plans(hub=None, *, include_retired=False):
             "status": stored.get("status", "proposed"),
             "features": list(stored.get("features") or []),
         }
+        if str(item.get("hub") or "").strip().lower() in BILLING_DISABLED_HUBS:
+            continue
         if not include_retired and item["status"] == "retired":
             continue
         if not include_retired and _is_paid_community_subscription(item):
@@ -298,7 +273,7 @@ def get_pricing_status():
     """Report whether any payable hub subscription is published."""
     for plan in list_plans():
         if (
-            plan.get("hub") in {"shamba", "biashara", "elimu", "smart_ai", "marketplace", "faith"}
+            plan.get("hub") in {"shamba", "biashara", "elimu", "smart_ai", "marketplace"}
             and plan.get("status") == "available"
             and str(plan.get("interval", "")).lower() in {"month", "year"}
             and str(plan.get("amount", "0")) not in {"0", "0.0", "0.00"}
