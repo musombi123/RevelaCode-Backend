@@ -17,9 +17,12 @@ on:
     branches: [main]
     paths:
       - "backend/revenue/**"
+      - "backend/routes/study_routes.py"
+      - "backend/study/faith_premium_curriculum.py"
       - "backend/jumuiya/biashara/**"
       - "backend/tests/test_biashara_website.py"
       - "backend/tests/test_biashara_business_forecast.py"
+      - "tests/test_faith_premium_curriculum.py"
       - "tests/test_revenue_entitlements_and_mpesa.py"
       - ".github/workflows/revenue-engine-validation.yml"
 
