@@ -1,8 +1,7 @@
-"""Original structured curriculum for the RevelaCode Faith premium workspace.
+"""Structured curriculum for RevelaCode Faith Hub.
 
-Lessons are editorial learning aids, not official denominational rulings. The first
-lesson in the Scripture Study Method course is a public preview; all other course
-material requires the existing Faith trial or a verified paid subscription.
+All published lessons are available to authenticated Faith Hub members. Lessons are
+editorial learning aids, not official denominational rulings.
 """
 from __future__ import annotations
 
@@ -1144,7 +1143,7 @@ def public_course(course: dict, *, has_premium_access: bool, detail: bool = Fals
         "summary": course["summary"],
         "level": course["level"],
         "duration_minutes": course["duration_minutes"],
-        "tier": course["tier"],
+        "tier": "free",
         "outcomes": list(course.get("outcomes") or []),
         "sources": list(course.get("sources") or []),
         "lesson_count": len(course.get("lessons") or []),
