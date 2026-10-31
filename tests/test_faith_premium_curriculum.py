@@ -32,26 +32,17 @@ def test_premium_curriculum_has_unique_slugs_and_substantive_lessons():
     assert len(lesson_slugs) == len(set(lesson_slugs))
 
 
-def test_only_explicit_scripture_study_preview_is_open_without_premium():
-    course = get_course("scripture-study-method")
-    assert course is not None
-
-    public = public_course(course, has_premium_access=False, detail=True)
-    assert public["locked"] is True
-    lessons = {lesson["slug"]: lesson for lesson in public["lessons"]}
-
-    preview = lessons["observe-before-interpreting"]
-    assert preview["preview"] is True
-    assert preview["locked"] is False
-    assert preview["content"].strip()
-    assert preview["quiz"]
-
-    for slug, lesson in lessons.items():
-        if slug == "observe-before-interpreting":
-            continue
-        assert lesson["locked"] is True
-        assert "content" not in lesson
-        assert "quiz" not in lesson
+def test_all_faith_curriculum_is_open_without_a_paid_entitlement():
+    for course in COURSES:
+        public = public_course(course, has_premium_access=False, detail=True)
+        assert public["locked"] is False
+        assert public["tier"] == "free"
+        assert len(public["lessons"]) == len(course["lessons"])
+        for lesson in public["lessons"]:
+            assert lesson["locked"] is False
+            assert lesson["content"].strip()
+            assert lesson["sources"]
+            assert lesson["quiz"]
 
 
 def test_quiz_answer_keys_are_not_exposed_before_submission():
@@ -88,7 +79,7 @@ def test_priority_faith_courses_cover_requested_topics_and_primary_sources():
         course = by_slug[slug]
         assert course["sources"]
         assert len(course["lessons"]) >= 3
-        assert course["tier"] == "premium"
+        assert course["tier"] == "free"
         assert course["preview_lesson_slug"] is None
         for lesson in course["lessons"]:
             assert lesson["sources"]
