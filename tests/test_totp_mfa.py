@@ -146,7 +146,7 @@ class TotpMfaIntegrationTests(unittest.TestCase):
         )
         self.assertEqual(reused.status_code, 401, reused.get_json())
 
-    def test_privileged_login_requires_enrollment_before_access_token(self):
+    def test_privileged_login_is_allowed_when_optional_mfa_is_disabled(self):
         self.user["role"] = "admin"
         self.user["roles"] = ["admin"]
         self.user["mfa_enabled"] = False
@@ -156,24 +156,14 @@ class TotpMfaIntegrationTests(unittest.TestCase):
         )
         self.assertEqual(login.status_code, 200, login.get_json())
         payload = login.get_json()
-        self.assertTrue(payload["mfa_setup_required"])
-        self.assertNotIn("access_token", payload)
+        self.assertFalse(payload.get("mfa_required", False))
+        self.assertFalse(payload.get("mfa_setup_required", False))
+        self.assertTrue(payload.get("access_token"))
 
-        setup = self.client.post(
-            "/api/auth/mfa/setup",
-            json={"challenge_token": payload["challenge_token"]},
-        )
-        self.assertEqual(setup.status_code, 200, setup.get_json())
-        enabled = self.client.post(
-            "/api/auth/mfa/enable",
-            json={
-                "challenge_token": payload["challenge_token"],
-                "code": mfa._totp_at(setup.get_json()["secret"]),
-            },
-        )
-        self.assertEqual(enabled.status_code, 200, enabled.get_json())
-        self.assertTrue(enabled.get_json()["sign_in_again"])
-        self.assertTrue(self.user["mfa_enabled"])
+        admin_headers = {"Authorization": "Bearer " + payload["access_token"]}
+        protected = self.client.get("/api/private-test", headers=admin_headers)
+        self.assertEqual(protected.status_code, 200, protected.get_json())
+        self.assertFalse(self.user.get("mfa_enabled", False))
 
 
 if __name__ == "__main__":

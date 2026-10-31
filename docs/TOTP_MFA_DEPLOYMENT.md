@@ -17,13 +17,13 @@ The implementation has a JWT_SECRET compatibility fallback, but a dedicated MFA_
 1. Users enable an authenticator in Account & Security, confirm their current password, scan the locally generated QR code (or enter the manual key), and verify a current six-digit code.
 2. RevelaCode displays single-use recovery codes once. Save them somewhere secure, separate from the device running the authenticator.
 3. On future sign-ins, users enter their password followed by a current authenticator code or an unused recovery code.
-4. Platform administrators and support accounts must enroll before being given a full access token.
-5. The backend refuses protected API requests from sessions that do not carry a verified-MFA claim once MFA is enabled for that account.
+4. Two-step verification is optional for all roles, including platform administrators and support accounts. Users can enable or disable it from Settings → Account Security.
+5. When an account has enabled MFA, login requires a verified authenticator or unused recovery code and protected API requests require a verified-MFA claim. Accounts that leave MFA disabled use the normal password sign-in flow.
 
 ## Recovery and operations
 
 - Recovery codes are stored as hashes and are accepted once each.
 - Authenticator secrets are encrypted at rest.
-- Disabling MFA and rotating recovery codes require the current password and a valid authenticator or recovery code.
+- Disabling optional MFA and rotating recovery codes require the current password and a valid authenticator or recovery code.
 - A privileged account that has lost both the authenticator and all recovery codes needs a controlled administrator-assisted recovery process; never reset MFA solely because someone can access the account's email.
 - Keep the backend clock synchronized. TOTP uses 30-second time steps and allows a small time drift window.
