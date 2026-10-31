@@ -1409,34 +1409,29 @@ def login():
     )
 
     # -----------------------------------------------------
-    # SECOND FACTOR / PRIVILEGED ACCOUNT ENROLLMENT
+    # OPTIONAL SECOND FACTOR
     # -----------------------------------------------------
-    # TOTP is local and free: the browser receives only a short-lived, purpose-
-    # limited challenge until MFA is complete. A full access JWT is not issued
-    # before the second factor is verified.
+    # Two-step verification is opt-in for every account, including platform
+    # administrators and support users. Users who enable it receive only a
+    # short-lived challenge until the authenticator/recovery code is verified.
+    # Accounts that leave it disabled receive the normal authenticated session.
     actual_user_id = str(user.get("_id") or user.get("id") or user.get("user_id") or "").strip()
-    normalized_role = str(role or "user").strip().casefold()
-    privileged_mfa_role = (
-        normalized_role in PLATFORM_ADMIN_ROLES
-        or normalized_role in {"support", "support_admin"}
-    )
     mfa_enabled = user.get("mfa_enabled") is True and bool(user.get("mfa_secret_enc"))
 
-    if mfa_enabled or (privileged_mfa_role and not mfa_enabled):
-        purpose = "mfa_login" if mfa_enabled else "mfa_enrollment"
+    if mfa_enabled:
         challenge_id = secrets.token_urlsafe(32)
         issued_at = int(now().timestamp())
         challenge_payload = {
             "sub": actual_user_id,
             "user_id": actual_user_id,
-            "purpose": purpose,
+            "purpose": "mfa_login",
             "jti": challenge_id,
             "iat": issued_at,
             "exp": issued_at + 300,
         }
         challenge_fields = {
             "mfa_challenge_id": challenge_id,
-            "mfa_challenge_purpose": purpose,
+            "mfa_challenge_purpose": "mfa_login",
             "mfa_challenge_attempts": 0,
         }
         if MONGO_AVAILABLE and users_col is not None:
@@ -1457,15 +1452,11 @@ def login():
         )
         return jsonify(
             success=True,
-            mfa_required=mfa_enabled,
-            mfa_setup_required=not mfa_enabled,
+            mfa_required=True,
+            mfa_setup_required=False,
             challenge_token=challenge_token,
             expires_in=300,
-            message=(
-                "Enter your authenticator code to finish signing in."
-                if mfa_enabled
-                else "Set up authenticator verification before accessing the privileged account."
-            ),
+            message="Enter your authenticator code to finish signing in.",
         ), 200
 
     # -----------------------------------------------------
