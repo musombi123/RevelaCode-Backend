@@ -12,7 +12,7 @@ COURSES = [
         "summary": "A practical, repeatable method for reading passages carefully, distinguishing textual observations from interpretations, and writing evidence-based conclusions.",
         "level": "Foundations",
         "duration_minutes": 50,
-        "tier": "premium",
+        "tier": "free",
         "preview_lesson_slug": "observe-before-interpreting",
         "outcomes": [
             "Observe a passage before forming a conclusion.",
@@ -187,7 +187,7 @@ Choose a short passage and produce a one-page study record containing all seven 
         "summary": "A structured investigation of apocalyptic genre, major Christian interpretive approaches, and responsible connections between prophecy and current events.",
         "level": "Intermediate",
         "duration_minutes": 65,
-        "tier": "premium",
+        "tier": "free",
         "preview_lesson_slug": None,
         "outcomes": [
             "Identify features of apocalyptic literature.",
@@ -355,7 +355,7 @@ Select a current item from the existing World Events workspace. Summarize only w
         "summary": "A sourced, respectful comparison of interpretive authority, Sabbath practice, and interfaith dialogue across traditions without pretending differences do not exist.",
         "level": "Intermediate",
         "duration_minutes": 60,
-        "tier": "premium",
+        "tier": "free",
         "preview_lesson_slug": None,
         "outcomes": [
             "Compare claims through primary texts and accountable sources.",
@@ -525,7 +525,7 @@ Can you state a genuine disagreement without insulting the people who hold a dif
         "summary": "A priority course on Revelation 14:6–12, presenting the Seventh-day Adventist historicist reading accurately while comparing alternative Christian interpretations and their evidence.",
         "level": "Intermediate",
         "duration_minutes": 75,
-        "tier": "premium",
+        "tier": "free",
         "preview_lesson_slug": None,
         "outcomes": [
             "Explain the three proclamations in Revelation 14:6–12 in context.",
@@ -637,7 +637,7 @@ Do not predict a date for Christ's return, identify a person as the beast withou
         "summary": "A structured tour of all 28 Seventh-day Adventist Fundamental Beliefs, grouped into the Church's six official doctrine categories and opened to interpretation, questions, and fair comparison.",
         "level": "Foundations to Intermediate",
         "duration_minutes": 110,
-        "tier": "premium",
+        "tier": "free",
         "preview_lesson_slug": None,
         "outcomes": [
             "Name and understand the scope of all 28 official Seventh-day Adventist Fundamental Beliefs.",
@@ -828,7 +828,7 @@ Make a table of beliefs 24–28, their main claims, primary texts, official expl
         "summary": "A deep study of the Great Controversy as an official Seventh-day Adventist theme, its biblical foundations, ethical implications, and serious questions raised by comparative theology and philosophy.",
         "level": "Intermediate",
         "duration_minutes": 70,
-        "tier": "premium",
+        "tier": "free",
         "preview_lesson_slug": None,
         "outcomes": [
             "Describe the official Adventist teaching on the Great Controversy accurately.",
@@ -939,7 +939,7 @@ Name one action that would reduce harm or help someone who is suffering. Record 
         "summary": "A joint comparative course on God, Jesus and Mary, revelation and authority, worship, salvation, and ethics, using Catholic primary sources and Qur’anic texts without ranking or merging the traditions.",
         "level": "Foundations to Intermediate",
         "duration_minutes": 85,
-        "tier": "premium",
+        "tier": "free",
         "preview_lesson_slug": None,
         "outcomes": [
             "Explain Catholic and Muslim positions from sources their communities recognize.",
@@ -1118,25 +1118,25 @@ def public_quiz(lesson: dict):
     ]
 
 
-def public_lesson(lesson: dict, *, include_content: bool):
-    result = {
+def public_lesson(lesson: dict, *, include_content: bool = True):
+    # Keep the legacy argument for older callers; authenticated Faith members
+    # now receive the complete lesson without a trial or subscription.
+    return {
         "slug": lesson["slug"],
         "title": lesson["title"],
         "minutes": lesson.get("minutes", 10),
         "preview": bool(lesson.get("preview")),
         "reference": lesson.get("reference", ""),
-        "locked": not include_content,
+        "locked": False,
+        "content": lesson.get("content", ""),
+        "sources": list(lesson.get("sources") or []),
+        "quiz": public_quiz(lesson),
     }
-    if include_content:
-        result["content"] = lesson.get("content", "")
-        result["sources"] = list(lesson.get("sources") or [])
-        result["quiz"] = public_quiz(lesson)
-    else:
-        result["summary"] = "Unlock this lesson with your 30-day Faith trial or an active Faith subscription."
-    return result
 
 
-def public_course(course: dict, *, has_premium_access: bool, detail: bool = False):
+def public_course(course: dict, *, has_premium_access: bool = True, detail: bool = False):
+    # Keep the legacy keyword argument for compatibility, but never gate
+    # Faith curriculum content by a subscription or trial.
     result = {
         "slug": course["slug"],
         "title": course["title"],
@@ -1147,16 +1147,12 @@ def public_course(course: dict, *, has_premium_access: bool, detail: bool = Fals
         "outcomes": list(course.get("outcomes") or []),
         "sources": list(course.get("sources") or []),
         "lesson_count": len(course.get("lessons") or []),
-        "locked": not has_premium_access,
+        "locked": False,
         "preview_available": bool(course.get("preview_lesson_slug")),
     }
     if detail:
-        lessons = []
-        for lesson in course.get("lessons") or []:
-            preview_only = (
-                not has_premium_access
-                and lesson["slug"] != course.get("preview_lesson_slug")
-            )
-            lessons.append(public_lesson(lesson, include_content=not preview_only))
-        result["lessons"] = lessons
+        result["lessons"] = [
+            public_lesson(lesson, include_content=True)
+            for lesson in course.get("lessons") or []
+        ]
     return result
