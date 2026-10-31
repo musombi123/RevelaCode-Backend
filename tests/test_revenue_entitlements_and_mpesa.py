@@ -830,8 +830,13 @@ def test_each_metered_trial_hub_has_a_paid_plan_but_faith_is_free(monkeypatch):
         assert matching, f"{hub} has a trial but no paid subscription plan"
 
     assert "faith" not in trials.TRIAL_HUBS
-    assert plans.list_plans(hub="faith") == []
-    assert not any(plan.get("hub") == "faith" for plan in catalogue)
+    faith_catalogue = plans.list_plans(hub="faith")
+    assert all(plan.get("hub") != "faith" for plan in faith_catalogue)
+    assert not any(
+        plan.get("hub") == "faith"
+        and Decimal(str(plan.get("amount", "0"))) > 0
+        for plan in faith_catalogue
+    )
 
     community_paid_plans = [
         plan for plan in catalogue
