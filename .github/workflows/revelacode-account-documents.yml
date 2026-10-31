@@ -16,7 +16,6 @@ jobs:
     runs-on: ubuntu-latest
     env:
       JWT_SECRET: test-only-mfa-secret-for-ci
-      JWT_SECRET: test-only-jwt-secret-for-ci
       MONGO_URI: mongodb://127.0.0.1:27017/revelacode_test
       REVELACODE_CERTIFICATE_SIGNING_KEY: test-only-certificate-key
     services:
@@ -43,6 +42,7 @@ jobs:
           main.py
           backend/auth_gate.py
           backend/mfa_routes.py
+          tests/test_totp_mfa.py
           backend/account_documents.py
           backend/routes/study_routes.py
           backend/jumuiya/shamba/models.py
