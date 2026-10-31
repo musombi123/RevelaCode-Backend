@@ -51,16 +51,6 @@ PREMIUM_FEATURES = {
     "faith_courses", "faith_workspace", "faith_companion", "faith_group_tools",
 }
 
-# These are feature flags attached to approved Faith plans, not frontend-only labels.
-# A 30-day Faith trial unlocks all four capabilities. Paid Faith Plus covers courses,
-# saved workspace and the study companion; Faith Pro adds church/group tooling.
-FAITH_PLAN_FEATURES = {
-    "faith_courses": {"faith_plus", "faith_pro"},
-    "faith_workspace": {"faith_plus", "faith_pro"},
-    "faith_companion": {"faith_plus", "faith_pro"},
-    "faith_group_tools": {"faith_pro"},
-}
-
 # Paid tiers are allow-lists, not a global premium switch. Trial access is
 # intentionally full-featured for that hub; paid subscriptions receive only
 # the capabilities included in their exact plan.
@@ -307,9 +297,9 @@ def resolve_entitlement(user_id, hub, feature="essential"):
     if feature not in PREMIUM_FEATURES | {"essential"}:
         raise ValueError("Unsupported entitlement feature.")
 
-    # Community is permanently free: advertising funds the open community
-    # experience, so access never depends on a trial, subscription, or billing.
-    if hub == "community":
+    # Faith and Community are permanently free. Faith Hub uses an open-access
+    # model; no course, workspace, AI companion, or group tool requires billing.
+    if hub in {"community", "faith"}:
         return {
             "success": True,
             "user_id": str(user_id),
@@ -345,20 +335,6 @@ def resolve_entitlement(user_id, hub, feature="essential"):
     premium_feature = feature in PREMIUM_FEATURES
     allowed = True if not premium_feature else premium_access
 
-    # Faith plans carry different service entitlements. A trial is deliberately
-    # full-featured for its 30-day period; a Plus subscription cannot silently
-    # unlock Pro-only church/group administration. Other hubs retain their
-    # existing shared premium behavior.
-    if premium_feature and hub == "faith" and feature in FAITH_PLAN_FEATURES:
-        if trial_active:
-            allowed = True
-        elif subscription:
-            subscription_hub = str(subscription.get("hub") or hub).strip().lower()
-            plan_code = str(subscription.get("plan_code") or "").strip().lower()
-            allowed = subscription_hub == "all" or plan_code in FAITH_PLAN_FEATURES[feature]
-        else:
-            allowed = False
-
     # Tiered Jumuiya plans are enforced server-side at each protected tool.
     # A successful payment grants the selected plan, not every premium feature
     # in the hub. Existing active trials still unlock the full hub trial.
@@ -385,7 +361,7 @@ def resolve_entitlement(user_id, hub, feature="essential"):
         tier = "free"
         reason = "free_tier"
     if premium_feature and not allowed:
-        reason = "plan_upgrade_required" if paid and hub == "faith" and feature in FAITH_PLAN_FEATURES else "premium_entitlement_required"
+        reason = "premium_entitlement_required"
 
     result = {
         "success": True,
