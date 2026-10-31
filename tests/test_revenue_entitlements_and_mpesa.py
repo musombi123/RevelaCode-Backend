@@ -94,67 +94,24 @@ def test_premium_entitlement_allows_active_paid_subscription(monkeypatch):
     assert result["subscription"]["plan_code"] == "ai_plus"
 
 
-def test_faith_plus_unlocks_courses_workspace_and_companion_but_not_group_tools(monkeypatch):
-    now = datetime(2026, 10, 23, tzinfo=timezone.utc)
-    subscription = {
-        "_id": "faith-plus-1",
-        "user_id": "user-1",
-        "hub": "faith",
-        "plan_code": "faith_plus",
-        "status": "active",
-        "starts_at": now - timedelta(days=1),
-        "ends_at": now + timedelta(days=29),
-    }
-    monkeypatch.setattr(subscriptions, "now_utc", lambda: now)
-    monkeypatch.setattr(subscriptions, "_active_subscription", lambda *args, **kwargs: subscription)
-    monkeypatch.setattr(subscriptions, "collection", lambda name: Mock(find_one=lambda query: None))
+@pytest.mark.parametrize(
+    "feature",
+    ["faith_courses", "faith_workspace", "faith_companion", "faith_group_tools"],
+)
+def test_every_faith_feature_is_permanently_free(feature, monkeypatch):
+    monkeypatch.setattr(
+        subscriptions,
+        "_active_subscription",
+        lambda *args, **kwargs: pytest.fail("Faith must not read subscription state"),
+    )
 
-    assert subscriptions.resolve_entitlement("user-1", "faith", "faith_courses")["allowed"] is True
-    assert subscriptions.resolve_entitlement("user-1", "faith", "faith_workspace")["allowed"] is True
-    assert subscriptions.resolve_entitlement("user-1", "faith", "faith_companion")["allowed"] is True
-    group_entitlement = subscriptions.resolve_entitlement("user-1", "faith", "faith_group_tools")
-    assert group_entitlement["allowed"] is False
-    assert group_entitlement["reason"] == "plan_upgrade_required"
+    result = subscriptions.resolve_entitlement("user-1", "faith", feature)
 
-
-def test_faith_pro_unlocks_group_tools(monkeypatch):
-    now = datetime(2026, 10, 23, tzinfo=timezone.utc)
-    subscription = {
-        "_id": "faith-pro-1",
-        "user_id": "user-1",
-        "hub": "faith",
-        "plan_code": "faith_pro",
-        "status": "active",
-        "starts_at": now - timedelta(days=1),
-        "ends_at": now + timedelta(days=29),
-    }
-    monkeypatch.setattr(subscriptions, "now_utc", lambda: now)
-    monkeypatch.setattr(subscriptions, "_active_subscription", lambda *args, **kwargs: subscription)
-    monkeypatch.setattr(subscriptions, "collection", lambda name: Mock(find_one=lambda query: None))
-
-    result = subscriptions.resolve_entitlement("user-1", "faith", "faith_group_tools")
     assert result["allowed"] is True
-    assert result["tier"] == "paid"
-
-
-def test_faith_trial_unlocks_group_tools_for_its_full_duration(monkeypatch):
-    now = datetime(2026, 10, 23, tzinfo=timezone.utc)
-    trial = {
-        "user_id": "user-1",
-        "hub": "faith",
-        "status": "active",
-        "started_at": now - timedelta(days=1),
-        "ends_at": now + timedelta(days=29),
-        "trial_days": 30,
-    }
-    monkeypatch.setattr(subscriptions, "now_utc", lambda: now)
-    monkeypatch.setattr(subscriptions, "_active_subscription", lambda *args, **kwargs: None)
-    monkeypatch.setattr(subscriptions, "collection", lambda name: Mock(find_one=lambda query: trial))
-
-    result = subscriptions.resolve_entitlement("user-1", "faith", "faith_group_tools")
-    assert result["allowed"] is True
-    assert result["tier"] == "trial"
-    assert result["trial_status"] == "active"
+    assert result["tier"] == "free"
+    assert result["reason"] == "permanent_free_hub"
+    assert result["billing_enabled"] is False
+    assert result["checkout_enabled"] is False
 
 
 def test_proposed_plan_cannot_activate_paid_subscription(monkeypatch, revenue_app):
@@ -856,7 +813,7 @@ def test_public_plan_catalog_reports_real_production_checkout_readiness(
     assert payload["checkout_enabled"] is checkout_ready
     assert payload["billing_enabled"] is checkout_ready
 
-def test_every_trial_hub_has_a_proposed_paid_subscription_plan(monkeypatch):
+def test_each_metered_trial_hub_has_a_paid_plan_but_faith_is_free(monkeypatch):
     from backend.revenue import plans
 
     monkeypatch.setattr(plans, "collection", lambda _name: Mock(find=lambda _query: []))
@@ -872,14 +829,9 @@ def test_every_trial_hub_has_a_proposed_paid_subscription_plan(monkeypatch):
         ]
         assert matching, f"{hub} has a trial but no paid subscription plan"
 
-    matching = [
-        plan for plan in catalogue
-        if plan.get("hub") == "faith"
-        and plan.get("interval") == "month"
-        and Decimal(str(plan.get("amount", "0"))) > 0
-    ]
-    assert matching
-    assert all(plan.get("status") == "proposed" for plan in matching)
+    assert "faith" not in trials.TRIAL_HUBS
+    assert plans.list_plans(hub="faith") == []
+    assert not any(plan.get("hub") == "faith" for plan in catalogue)
 
     community_paid_plans = [
         plan for plan in catalogue
@@ -898,7 +850,6 @@ def test_every_trial_hub_has_a_proposed_paid_subscription_plan(monkeypatch):
         ("shamba", 30),
         ("smart_ai", 30),
         ("marketplace", 30),
-        ("faith", 30),
     ],
 )
 def test_hub_trial_durations_are_configured(hub, expected_days):
