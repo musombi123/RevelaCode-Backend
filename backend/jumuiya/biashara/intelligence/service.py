@@ -1428,7 +1428,7 @@ def load_product_history(
         if not business_id:
             return []
 
-        from backend.jumuiya.core.database import collection
+        from backend.jumuiya.biashara.tenant_store import biashara_collection as collection
 
         sales = collection(
             "jumuiya_sales"
