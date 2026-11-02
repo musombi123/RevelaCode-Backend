@@ -38,7 +38,7 @@ jobs:
           python-version: "3.12"
           cache: pip
       - name: Install test dependencies
-        run: python -m pip install Flask pymongo pytest python-dotenv
+        run: python -m pip install Flask pymongo pytest python-dotenv requests
       - name: Run Biashara storefront tests
         env:
           PYTHONPATH: backend
