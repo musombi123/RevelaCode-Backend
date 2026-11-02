@@ -12,7 +12,7 @@ from decimal import Decimal, InvalidOperation
 
 from flask import Blueprint, request
 
-from backend.jumuiya.biashara.tenant_store import biashara_collection as collection, set_business_tenant_context
+from backend.jumuiya.biashara.tenant_store import biashara_collection as collection, set_business_tenant_context, business_id_for_origin
 from backend.jumuiya.core.permissions import require_authenticated, current_user, current_user_id
 from backend.jumuiya.core.responses import ok, created
 from backend.jumuiya.core.errors import APIError
@@ -44,7 +44,10 @@ def _owner_business(permission="business.manage"):
     uid = str(current_user_id())
     preference = collection("jumuiya_biashara_active_business").find_one({"user_id": uid}) or {}
     requested_business_id = str(request.headers.get("X-Business-ID") or "").strip()
-    selected_id = requested_business_id or str(preference.get("business_id") or "").strip()
+    origin_business_id = business_id_for_origin(request.headers.get("Origin"))
+    if requested_business_id and origin_business_id and requested_business_id != origin_business_id:
+        raise APIError("The selected business does not match this company subdomain.", 403, "business_origin_mismatch")
+    selected_id = requested_business_id or origin_business_id or str(preference.get("business_id") or "").strip()
     context = resolve_business_access(uid, selected_id or None)
     if not context:
         raise APIError("Create a business profile or select an accessible business first.", 409, "business_required")
