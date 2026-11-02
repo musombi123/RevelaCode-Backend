@@ -142,13 +142,16 @@ def create_organization():
         return _error("Parent organization was not found.", 404, "not_found")
     doc = {
         "type": org_type, "name": name, "parent_id": parent,
-        "conference_id": (parent_doc or {}).get("conference_id") or (parent if org_type == "conference" else None),
+        "conference_id": (str((parent_doc or {}).get("conference_id")) if (parent_doc or {}).get("conference_id") else (str(parent) if parent and parent_doc and parent_doc.get("type") == "conference" else None)),
         "county": _text(data.get("county"), 100),
         "town": _text(data.get("town"), 100),
         "status": "active", "created_by": current_user_id(),
         "created_at": _now(), "updated_at": _now(),
     }
     result = collection("jumuiya_missionpulse_organizations").insert_one(doc)
+    if org_type == "conference":
+        collection("jumuiya_missionpulse_organizations").update_one({"_id": result.inserted_id}, {"$set": {"conference_id": str(result.inserted_id)}})
+        doc["conference_id"] = str(result.inserted_id)
     doc["_id"] = result.inserted_id
     _audit("organization.created", "organization", result.inserted_id, str(doc.get("conference_id") or result.inserted_id))
     return jsonify(success=True, organization=_json(doc)), 201
@@ -228,8 +231,11 @@ def create_case():
     if not consent:
         return _error("Record the person's consent before saving identifiable beneficiary information.")
     now = _now()
+    org = collection("jumuiya_missionpulse_organizations").find_one({"_id": _oid(org_id)})
+    if not org or org.get("type") != "church":
+        return _error("Community cases must belong to a registered local church.", 400, "invalid_church")
     doc = {
-        "church_id": org_id, "conference_id": _text(data.get("conference_id"), 64),
+        "church_id": org_id, "conference_id": str(org.get("conference_id") or ""),
         "category": category, "summary": summary,
         "beneficiary_name": _text(data.get("beneficiary_name"), 160),
         "beneficiary_contact": _text(data.get("beneficiary_contact"), 80),
