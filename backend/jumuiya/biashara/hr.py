@@ -19,6 +19,7 @@ from pymongo.errors import DuplicateKeyError
 
 from backend.jumuiya.biashara import services
 from backend.jumuiya.biashara.access import resolve_business_access
+from backend.jumuiya.biashara.whatsapp import sync_employee_whatsapp_identity
 from backend.jumuiya.biashara.tenant_store import tenant_collection, set_business_tenant_context
 from backend.jumuiya.core.errors import APIError
 from backend.jumuiya.core.permissions import current_user_id, require_authenticated
@@ -213,6 +214,7 @@ def create_employee():
     if idempotency_key:
         existing = employees.find_one({"business_id": business["id"], "idempotency_key": idempotency_key})
         if existing:
+            sync_employee_whatsapp_identity(existing)
             return ok(_serialize(existing), "This employee registration was already recorded.")
     if linked_user_id:
         member = resolve_business_access(linked_user_id, business["id"])
@@ -259,6 +261,7 @@ def create_employee():
             if existing:
                 return ok(_serialize(existing), "This employee registration was already recorded.")
         raise APIError("This account is already linked to an employee or the System ID collided. Retry the registration.", 409, "employee_already_registered")
+    sync_employee_whatsapp_identity(employee)
     return created(_serialize(employee), "Employee registered. Share the System ID through your approved onboarding process.")
 
 
@@ -315,7 +318,9 @@ def update_employee(employee_id):
     )
     if not result.matched_count:
         raise APIError("Employee record was not found in this company.", 404, "employee_not_found")
-    return ok(_serialize(employees.find_one({"_id": _id(employee_id), "business_id": business["id"]})), "Employee record updated.")
+    updated_employee = employees.find_one({"_id": _id(employee_id), "business_id": business["id"]})
+    sync_employee_whatsapp_identity(updated_employee)
+    return ok(_serialize(updated_employee), "Employee record updated.")
 
 
 @hr_bp.get("/hr/attendance")
