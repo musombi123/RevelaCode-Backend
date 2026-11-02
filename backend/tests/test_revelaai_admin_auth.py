@@ -22,6 +22,21 @@ def client(monkeypatch):
         "super_admin": {"_id": "super-admin-user-id", "role": "super_admin"},
         "revelacode_admin": {"_id": "revelacode-admin-user-id", "role": "revelacode_admin"},
         "member": {"_id": "member-user-id", "role": "user"},
+        "roles_admin": {
+            "_id": "roles-admin-user-id",
+            "role": "user",
+            "roles": ["user", "revelacode_admin"],
+        },
+        "inactive_admin": {
+            "_id": "inactive-admin-user-id",
+            "role": "platform_admin",
+            "status": "suspended",
+        },
+        "disabled_admin": {
+            "_id": "disabled-admin-user-id",
+            "role": "admin",
+            "is_active": False,
+        },
     }
     monkeypatch.setattr(auth_gate, "load_users_file", lambda: users)
     app = Flask(__name__)
@@ -73,6 +88,28 @@ def test_non_admin_is_denied_even_with_admin_jwt_claim(client):
     )
     assert response.status_code == 403
     assert response.get_json()["code"] == "admin_required"
+
+
+def test_current_database_roles_array_can_grant_platform_admin_access(client):
+    response = client.get(
+        "/api/auth/verify-admin",
+        headers={"Authorization": f"Bearer {token_for('roles-admin-user-id', claimed_role='user')}"},
+    )
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["authorized"] is True
+    assert payload["role"] == "revelacode_admin"
+    assert "revelacode_admin" in payload["roles"]
+
+
+@pytest.mark.parametrize("user_id", ["inactive-admin-user-id", "disabled-admin-user-id"])
+def test_inactive_or_disabled_admin_accounts_are_rejected(client, user_id):
+    response = client.get(
+        "/api/auth/verify-admin",
+        headers={"Authorization": f"Bearer {token_for(user_id, claimed_role='admin')}"},
+    )
+    assert response.status_code == 403
+    assert response.get_json()["code"] == "account_inactive"
 
 
 def test_missing_bearer_token_is_rejected(client):
