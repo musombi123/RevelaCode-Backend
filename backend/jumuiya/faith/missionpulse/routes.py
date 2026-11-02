@@ -253,7 +253,7 @@ def create_case():
         "beneficiary_contact": _text(data.get("beneficiary_contact"), 80),
         "location_general": _text(data.get("location_general"), 160),
         "consent": True, "status": "new", "priority": _text(data.get("priority"), 20) or "normal",
-        "assigned_to": None, "created_by": current_user_id(),
+        "assigned_to": None, "assigned_ministry": None, "due_at": None, "assignment_note": "", "created_by": current_user_id(),
         "created_at": now, "updated_at": now,
     }
     result = collection("jumuiya_missionpulse_cases").insert_one(doc)
@@ -302,7 +302,22 @@ def update_case(case_id):
             return _error("Invalid case status.")
         updates["status"] = status
     if "assigned_to" in data:
-        updates["assigned_to"] = _text(data["assigned_to"], 128) or None
+        assignee = _text(data["assigned_to"], 128) or None
+        if assignee and not collection("jumuiya_missionpulse_memberships").find_one({
+            "church_id": org_id, "user_id": assignee, "status": "active"
+        }):
+            # Memberships are attached to the organization ID, not a separate church_id field.
+            if not collection("jumuiya_missionpulse_memberships").find_one({
+                "org_id": org_id, "user_id": assignee, "status": "active"
+            }):
+                return _error("The assigned officer is not an active member of this church.", 400, "invalid_assignee")
+        updates["assigned_to"] = assignee
+    if "assigned_ministry" in data:
+        updates["assigned_ministry"] = _text(data["assigned_ministry"], 80) or None
+    if "due_at" in data:
+        updates["due_at"] = _text(data["due_at"], 50) or None
+    if "assignment_note" in data:
+        updates["assignment_note"] = _text(data["assignment_note"], 1000)
     if "follow_up_note" in data:
         note = _text(data["follow_up_note"], 1200)
         if note:
@@ -330,6 +345,17 @@ def create_outreach():
     title = _text(data.get("title"), 180)
     if not title:
         return _error("Outreach programme title is required.")
+    volunteer_ids = list(dict.fromkeys(
+        _text(x, 128) for x in (data.get("volunteer_user_ids") or []) if _text(x, 128)
+    ))[:200]
+    if volunteer_ids:
+        active_ids = {
+            item.get("user_id") for item in collection("jumuiya_missionpulse_memberships").find({
+                "org_id": org_id, "status": "active", "user_id": {"$in": volunteer_ids}
+            }, {"user_id": 1})
+        }
+        if set(volunteer_ids) - active_ids:
+            return _error("Every assigned volunteer must be an active member of this church.", 400, "invalid_volunteer")
     doc = {
         "church_id": org_id, "title": title,
         "programme_type": _text(data.get("programme_type"), 60),
@@ -337,9 +363,7 @@ def create_outreach():
         "venue_general": _text(data.get("venue_general"), 180),
         "starts_at": _text(data.get("starts_at"), 50),
         "ends_at": _text(data.get("ends_at"), 50),
-        "volunteer_user_ids": list(dict.fromkeys(
-            _text(x, 128) for x in (data.get("volunteer_user_ids") or []) if _text(x, 128)
-        ))[:200],
+        "volunteer_user_ids": volunteer_ids,
         "attendance_count": 0, "people_reached": 0, "services_delivered": [],
         "status": "planned", "created_by": current_user_id(),
         "created_at": _now(), "updated_at": _now(),
