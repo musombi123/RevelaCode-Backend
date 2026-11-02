@@ -35,6 +35,15 @@ def _now():
     return datetime.now(timezone.utc)
 
 
+def valid_meta_signature(raw_body, signature, app_secret):
+    if not app_secret or not signature:
+        return False
+    expected = "sha256=" + hmac.new(
+        str(app_secret).encode("utf-8"), raw_body, hashlib.sha256
+    ).hexdigest()
+    return hmac.compare_digest(str(signature).strip(), expected)
+
+
 def _text(value, maximum=500):
     result = str(value or "").strip()
     return result[:maximum]
@@ -343,8 +352,7 @@ def receive_biashara_whatsapp_webhook():
         return "WhatsApp webhook signature verification is not configured.", 503
     raw_body = request.get_data(cache=True)
     signature = request.headers.get("X-Hub-Signature-256", "").strip()
-    expected_signature = "sha256=" + hmac.new(app_secret.encode("utf-8"), raw_body, hashlib.sha256).hexdigest()
-    if not signature or not hmac.compare_digest(signature, expected_signature):
+    if not valid_meta_signature(raw_body, signature, app_secret):
         return "Invalid webhook signature.", 401
     payload = request.get_json(silent=True)
     if not isinstance(payload, dict) or payload.get("object") != "whatsapp_business_account":
