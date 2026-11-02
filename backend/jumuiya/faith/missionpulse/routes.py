@@ -450,7 +450,7 @@ def church_report(church_id):
     case_total = cases.count_documents({"church_id": church_id})
     resolved = cases.count_documents({"church_id": church_id, "status": "resolved"})
     programmes = list(outreach.find({"church_id": church_id}, {
-        "attendance_count": 1, "people_reached": 1, "status": 1, "services_delivered": 1
+        "attendance_count": 1, "people_reached": 1, "status": 1, "services_delivered": 1, "volunteer_user_ids": 1
     }).limit(1000))
     return jsonify(success=True, report={
         "church_id": church_id, "cases_registered": case_total,
@@ -459,6 +459,8 @@ def church_report(church_id):
         "programmes_completed": sum(1 for x in programmes if x.get("status") == "completed"),
         "attendance_total": sum(int(x.get("attendance_count") or 0) for x in programmes),
         "people_reached_total": sum(int(x.get("people_reached") or 0) for x in programmes),
+        "volunteers_participating": len({user_id for item in programmes for user_id in item.get("volunteer_user_ids", [])}),
+        "services_delivered_count": sum(len(x.get("services_delivered") or []) for x in programmes),
     }), 200
 
 
@@ -475,7 +477,7 @@ def conference_report(conference_id):
     case_total = cases.count_documents({"church_id": {"$in": church_ids}})
     resolved = cases.count_documents({"church_id": {"$in": church_ids}, "status": "resolved"})
     programmes = list(outreach.find({"church_id": {"$in": church_ids}}, {
-        "attendance_count": 1, "people_reached": 1, "status": 1
+        "attendance_count": 1, "people_reached": 1, "status": 1, "services_delivered": 1, "volunteer_user_ids": 1
     }).limit(10000))
     return jsonify(success=True, report={
         "conference_id": conference_id, "participating_churches": len(church_ids),
