@@ -4,27 +4,27 @@ from __future__ import annotations
 TEMPLATES = {
     "general": {
         "label": "General business",
-        "modules": ["sales", "customers", "inventory", "finance", "website", "team", "sync", "reports"],
+        "modules": ["sales", "customers", "inventory", "debts", "finance", "mpesa", "etims", "hr", "website", "team", "sync", "reports"],
     },
     "retail_shop": {
         "label": "Retail shop",
-        "modules": ["sales", "customers", "inventory", "finance", "debts", "suppliers", "website", "team", "sync", "reports"],
+        "modules": ["sales", "customers", "inventory", "finance", "debts", "suppliers", "mpesa", "etims", "hr", "website", "team", "sync", "reports"],
     },
     "hardware": {
         "label": "Hardware",
-        "modules": ["sales", "customers", "inventory", "finance", "debts", "suppliers", "purchases", "website", "team", "sync", "reports"],
+        "modules": ["sales", "customers", "inventory", "finance", "debts", "suppliers", "purchases", "mpesa", "etims", "hr", "website", "team", "sync", "reports"],
     },
     "factory": {
         "label": "Manufacturing / factory",
-        "modules": ["sales", "customers", "inventory", "finance", "debts", "suppliers", "purchases", "production", "machines", "quality", "hr", "website", "team", "automations", "sync", "reports"],
+        "modules": ["sales", "customers", "inventory", "finance", "debts", "suppliers", "purchases", "mpesa", "etims", "production", "machines", "quality", "hr", "website", "team", "automations", "sync", "reports"],
     },
     "salon": {
         "label": "Salon and personal services",
-        "modules": ["sales", "customers", "appointments", "inventory", "finance", "hr", "website", "team", "sync", "reports"],
+        "modules": ["sales", "customers", "appointments", "inventory", "finance", "mpesa", "etims", "debts", "hr", "website", "team", "sync", "reports"],
     },
     "professional_services": {
         "label": "Professional services",
-        "modules": ["sales", "customers", "invoicing", "finance", "projects", "hr", "website", "team", "sync", "reports"],
+        "modules": ["sales", "customers", "invoicing", "finance", "mpesa", "etims", "debts", "projects", "hr", "website", "team", "sync", "reports"],
     },
     "school": {
         "label": "School",
