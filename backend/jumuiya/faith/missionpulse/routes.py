@@ -36,6 +36,16 @@ def _text(value, limit=500):
     return str(value or "").strip()[:limit]
 
 
+def _coord(value, minimum, maximum):
+    if value in (None, ""):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if minimum <= number <= maximum else None
+
+
 def _oid(value):
     try:
         return ObjectId(str(value))
@@ -145,8 +155,8 @@ def create_organization():
         "conference_id": (str((parent_doc or {}).get("conference_id")) if (parent_doc or {}).get("conference_id") else (str(parent) if parent and parent_doc and parent_doc.get("type") == "conference" else None)),
         "county": _text(data.get("county"), 100),
         "town": _text(data.get("town"), 100),
-        "latitude": float(data["latitude"]) if data.get("latitude") not in (None, "") else None,
-        "longitude": float(data["longitude"]) if data.get("longitude") not in (None, "") else None,
+        "latitude": _coord(data.get("latitude"), -90, 90),
+        "longitude": _coord(data.get("longitude"), -180, 180),
         "status": "active", "created_by": current_user_id(),
         "created_at": _now(), "updated_at": _now(),
     }
