@@ -101,6 +101,10 @@ def business_document(
             "advanced",
         ),
 
+        "enabled_modules": list(payload.get("enabled_modules") or []),
+
+        "industry_template_version": int(payload.get("industry_template_version") or 1),
+
         # -------------------------------------------------
         # CONTACT
         # -------------------------------------------------
