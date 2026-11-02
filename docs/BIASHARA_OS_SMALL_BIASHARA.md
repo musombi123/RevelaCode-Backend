@@ -12,8 +12,8 @@ This branch introduces the first configuration step: an industry template, busin
 - Every business-owned record must be scoped to an authenticated business ID; the server must resolve the selected business from the authenticated user's ownership or membership.
 - Add an explicit immutable **tenant_id** where it improves consistency, and enforce it in every read, update, delete, background job, export and sync operation.
 - Never trust a client-supplied business ID, role, owner ID or verification state.
-- Start with the existing shared database and strict tenant scoping. Do not create a separate database per customer by default; physical database-per-tenant can be evaluated later if scale, regulatory or contract requirements justify its operational and migration cost.
-- Subdomains such as **sarefactory.revelacode.co.ke** should resolve through a trusted tenant/domain registry, then be checked against the authenticated membership. A hostname must never grant access on its own.
+- Use one MongoDB database per Biashara company within the existing MongoDB cluster. The central database retains the company directory, identity, memberships, invitations, tenant registry and domain registry. Operational company collections are stored in a deterministic database named with the prefix `revelacode_biz_` plus a SHA-256 identifier prefix; customer slugs are never database names.\n- Migrate legacy company-owned records idempotently on first verified access, retaining the shared-database source records until a reviewed cleanup is approved. Fail closed if a tenant-owned collection is accessed without a verified company context. Background jobs must provide an explicit business ID.
+- Subdomains such as **sarefactory.revelacode.co.ke** resolve only when a domain registry record is verified and active. The API checks the authenticated membership and rejects an X-Business-ID that conflicts with a verified company Origin. The DNS wildcard and Render custom-domain binding are deployment prerequisites; new domain records remain pending until verified.
 
 ### Industry template
 Persist **industry_template** with a validated allow-list. Initial values:
@@ -125,3 +125,31 @@ Use a rule engine with **observe → alert → request review → approve → ex
 - Tests cover invalid template values, profile updates, unverified business access, cross-tenant access and sync idempotency.
 - Integrations are shown as available only when credentials, provider responses, certification and production checks support that claim.
 - No feature is marked live merely because its menu item or configuration field exists.
+
+
+## 9. Current Core-Zero implementation status
+
+This status describes the working branches, not a production deployment.
+
+### Implemented on the working branches
+
+- Company database provisioning, hashed database names, central tenant registry, idempotent legacy record copy and strict tenant collection allow-list.
+- Verified-host lookup and request binding for subdomains, with membership validation still mandatory.
+- Server-validated industry templates, business scale/workspace mode persistence and enabled-module configuration.
+- Normalized company role aliases and server-side permission checks for common commerce, finance, HR and factory workflows.
+- Factory batch lifecycle: raw-material deduction, output/wastage/by-product reconciliation, quality hold/release, machine register, hourly readings and alerts.
+- Employee register, System IDs, invited-account linking, shift configuration, clock-in/out, late/overtime calculation and optional GPS.
+- Tenant-aware offline cache separation and business ID preservation during queued mutation replay.
+- Invoice M-Pesa STK Push, idempotent invoice checkout, unresolved-checkout lock, Daraja query verification, receipt/payer/amount matching and provider-verified invoice allocation.
+- Integration readiness UI for M-Pesa, eTIMS and WhatsApp.
+
+### Still gated or incomplete
+
+- Wildcard DNS, Render wildcard-domain routing and activation of verified company subdomains.
+- End-to-end test of tenant migration against a staging backup and cross-tenant security tests.
+- Daraja sandbox/production credential validation and controlled end-to-end reconciliation.
+- KRA OSCU/VSCU submission adapter, credential handling, sandbox tests, vetting and certification. The current eTIMS surface is readiness-only and does not submit tax invoices.
+- Biashara WhatsApp command handler and verified phone-to-user identity binding. The current status surface intentionally reports business commands disabled.
+- Payroll, payslip delivery, supplier auto-ordering, machine sensor/PLC integration and a native Android SQLite implementation.
+
+Do not advertise any gated integration as live until its independent acceptance tests pass.
