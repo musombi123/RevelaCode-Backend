@@ -57,9 +57,9 @@ ROLE_PERMISSIONS = {
     "operations_manager": frozenset({
         "dashboard.view", "reports.view", "sales.view", "orders.view", "orders.update",
         "inventory.view", "production.view", "production.create", "production.update",
-        "machines.view", "machines.readings.create", "quality.view", "quality.inspect",
+        "machines.view", "machines.create", "machines.readings.create", "quality.view", "quality.inspect",
         "suppliers.view", "purchases.view", "purchases.create", "automations.view",
-        "team.view", "attendance.view",
+        "team.view", "team.manage", "attendance.view", "sync.view", "sync.request", "automations.view", "automations.manage",
     }),
     "manager": frozenset({
         "dashboard.view", "reports.view", "sales.view", "orders.view", "orders.update",
@@ -74,12 +74,12 @@ ROLE_PERMISSIONS = {
     "accountant": frozenset({
         "dashboard.view", "reports.view", "finance.view", "finance.create",
         "finance.allocate", "sales.view", "invoices.view", "invoices.create",
-        "invoices.allocate", "mpesa.reconcile", "etims.view",
+        "invoices.allocate", "mpesa.reconcile", "etims.view", "sync.view", "sync.request",
     }),
     "store_keeper": frozenset({
         "dashboard.view", "inventory.view", "inventory.create", "inventory.adjust",
         "suppliers.view", "suppliers.manage", "purchases.view", "purchases.create",
-        "production.materials.view",
+        "production.materials.view", "sync.view", "sync.request",
     }),
     "inventory": frozenset({
         "dashboard.view", "inventory.view", "inventory.create", "inventory.adjust",
@@ -88,11 +88,11 @@ ROLE_PERMISSIONS = {
     "factory_floor_lead": frozenset({
         "dashboard.view", "production.view", "production.create", "production.update",
         "machines.view", "machines.readings.create", "quality.view", "quality.inspect",
-        "inventory.view",
+        "inventory.view", "sync.view",
     }),
     "sales_agent": frozenset({
         "dashboard.view", "sales.view", "sales.create", "customers.view", "customers.create",
-        "orders.view", "orders.create", "orders.update",
+        "orders.view", "orders.create", "orders.update", "sync.view",
     }),
     "sales": frozenset({
         "dashboard.view", "sales.view", "sales.create", "customers.view", "customers.create",
