@@ -69,7 +69,7 @@ def _json(doc):
 def _is_platform_admin():
     roles = {r.lower() for r in current_user_roles()}
     return bool(roles.intersection({
-        "platform_admin", "super_admin", "system_admin",
+        "platform_admin", "super_admin", "system_admin", "revelacode_admin", "admin",
         "founder", "root_admin",
     }))
 
@@ -216,9 +216,22 @@ def list_organizations():
         memberships = list(collection("jumuiya_missionpulse_memberships").find({
             "user_id": current_user_id(), "status": "active"
         }).limit(100))
-        ids = [m.get("org_id") for m in memberships]
-        query = {"status": "active", "_id": {"$in": [_oid(x) for x in ids if _oid(x)]}}
-    docs = list(collection("jumuiya_missionpulse_organizations").find(query).sort("name", 1).limit(300))
+        roots = [_oid(m.get("org_id")) for m in memberships if _oid(m.get("org_id"))]
+        visible = set(roots)
+        frontier = list(roots)
+        organizations = collection("jumuiya_missionpulse_organizations")
+        # Resolve descendants only; a church user does not inherit access to siblings.
+        for _ in range(5):
+            if not frontier:
+                break
+            children = list(organizations.find({
+                "status": "active", "parent_id": {"$in": frontier}
+            }, {"_id": 1}))
+            next_frontier = [child["_id"] for child in children if child["_id"] not in visible]
+            visible.update(next_frontier)
+            frontier = next_frontier
+        query = {"status": "active", "_id": {"$in": list(visible)}}
+    docs = list(collection("jumuiya_missionpulse_organizations").find(query).sort("name", 1).limit(500))
     return jsonify(success=True, organizations=[_json(x) for x in docs]), 200
 
 
