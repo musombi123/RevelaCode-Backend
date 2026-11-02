@@ -521,6 +521,9 @@ def verify_admin_for_revelaai():
                 "id": 1,
                 "user_id": 1,
                 "role": 1,
+                "roles": 1,
+                "status": 1,
+                "is_active": 1,
             }
             if ObjectId.is_valid(user_id):
                 user = users_col.find_one({"_id": ObjectId(user_id)}, projection)
@@ -549,25 +552,59 @@ def verify_admin_for_revelaai():
     if not canonical_id or canonical_id != user_id:
         return jsonify(success=False, authorized=False, code="user_identity_mismatch"), 403
 
-    # Match the singular role field used by the existing login/redirect flow.
-    # Role changes take effect immediately; stale JWT role claims are ignored.
-    role = str(user.get("role") or "user").strip().lower()
-    if role not in PLATFORM_ADMIN_ROLES:
+    # Resolve account state and roles from the current database document.
+    # Browser/JWT role claims are never used. Revocation takes effect immediately.
+    account_status = str(user.get("status") or "active").strip().casefold()
+    if user.get("is_active") is False or account_status in {
+        "inactive", "disabled", "suspended", "blocked", "banned",
+        "deleted", "revoked", "pending_invitation", "locked",
+    }:
+        return jsonify(
+            success=False,
+            authenticated=True,
+            authorized=False,
+            code="account_inactive",
+            userId=canonical_id,
+            role=str(user.get("role") or "user").strip().casefold(),
+        ), 403
+
+    raw_roles = user.get("roles")
+    if isinstance(raw_roles, str):
+        raw_roles = [raw_roles]
+    elif not isinstance(raw_roles, (list, tuple, set)):
+        raw_roles = []
+
+    current_roles = {
+        str(value).strip().casefold()
+        for value in raw_roles
+        if str(value or "").strip()
+    }
+    singular_role = str(user.get("role") or "").strip().casefold()
+    if singular_role:
+        current_roles.add(singular_role)
+
+    authorized_roles = sorted(current_roles.intersection(PLATFORM_ADMIN_ROLES))
+    if not authorized_roles:
         return jsonify(
             success=False,
             authenticated=True,
             authorized=False,
             code="admin_required",
             userId=canonical_id,
-            role=role,
+            role=singular_role or "user",
+            roles=sorted(current_roles),
         ), 403
 
+    # Prefer the canonical singular role when it is itself privileged; otherwise
+    # return one of the current database roles that grants platform-admin access.
+    role = singular_role if singular_role in PLATFORM_ADMIN_ROLES else authorized_roles[0]
     return jsonify(
         success=True,
         authenticated=True,
         authorized=True,
         userId=canonical_id,
         role=role,
+        roles=sorted(current_roles),
     ), 200
 
 
