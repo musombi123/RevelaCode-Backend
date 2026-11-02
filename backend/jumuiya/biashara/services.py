@@ -8,7 +8,7 @@ from bson import ObjectId
 from bson.errors import InvalidId
 from pymongo import ReturnDocument
 
-from backend.jumuiya.core.database import collection
+from backend.jumuiya.biashara.tenant_store import biashara_collection as collection, set_business_tenant_context
 from backend.jumuiya.core.errors import APIError
 from backend.jumuiya.core.audit import log_action
 from backend.jumuiya.biashara.access import resolve_business_access
@@ -218,6 +218,9 @@ def _require_business(user_id, allowed_roles=None):
     status = str(business.get("status") or "").strip().lower()
 
     if verification_status == "verified" and status == "active":
+        set_business_tenant_context(
+            business["id"], business_slug=business.get("slug"), migrate_legacy=True
+        )
         return business
 
     if verification_status == "rejected" or status == "rejected":
@@ -1729,6 +1732,7 @@ def get_public_biashara_website(slug):
     })
     if not business:
         raise APIError("Business website not found or not published.", 404, "website_not_found")
+    set_business_tenant_context(str(business["_id"]), business_slug=business.get("slug"), migrate_legacy=True)
 
     # A saved published flag is not perpetual entitlement. Once a trial expires,
     # the public storefront stays hidden until the owner activates a qualifying plan.
@@ -1855,11 +1859,13 @@ def submit_public_biashara_inquiry(slug, payload):
     business = collection("jumuiya_businesses").find_one({
         "slug": normalized_slug,
         "status": "active",
+        "verification_status": "verified",
         "website.published": True,
         "website.contact_enabled": True,
     })
     if not business:
         raise APIError("Business website not found or contact is disabled.", 404, "website_not_found")
+    set_business_tenant_context(str(business["_id"]), business_slug=business.get("slug"), migrate_legacy=True)
 
     def text_field(name, limit, required=False):
         value = payload.get(name, "")
@@ -1922,6 +1928,7 @@ def create_public_biashara_order(slug, payload):
     })
     if not business:
         raise APIError("This business does not currently accept website orders.", 404, "website_not_found")
+    set_business_tenant_context(str(business["_id"]), business_slug=business.get("slug"), migrate_legacy=True)
 
     from backend.revenue.subscriptions import resolve_entitlement
     entitlement = resolve_entitlement(str(business.get("owner_user_id") or ""), "biashara", "seller_tools")
