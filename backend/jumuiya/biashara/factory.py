@@ -59,6 +59,27 @@ def _decimal(value, field, *, allow_zero=False, max_value="1000000000000"):
         raise APIError(f"{field} must be {qualifier} and within the supported range.", 422, "invalid_number")
     return number
 
+def _validate_material_pair(raw, output, input_quantity, expected_output_quantity):
+    """Enforce comparable material units and explicit production SKU types."""
+    raw_type = str(raw.get("production_type") or "resale").strip().lower()
+    output_type = str(output.get("production_type") or "resale").strip().lower()
+    if raw_type != "raw_material":
+        raise APIError("The selected input SKU must be classified as raw_material.", 422, "invalid_raw_material_type")
+    if output_type != "finished_good":
+        raise APIError("The selected output SKU must be classified as finished_good.", 422, "invalid_finished_good_type")
+    raw_unit = str(raw.get("unit") or "").strip().lower()
+    output_unit = str(output.get("unit") or "").strip().lower()
+    if not raw_unit or raw_unit != output_unit:
+        raise APIError(
+            "Raw material and finished output must use the same base unit. Add unit conversion support before using mixed units.",
+            422,
+            "production_unit_mismatch",
+        )
+    if expected_output_quantity > input_quantity:
+        raise APIError("Expected finished output cannot exceed raw-material input.", 422, "invalid_expected_yield")
+    return raw_unit
+
+
 def _serialise_value(value):
     if isinstance(value, ObjectId):
         return str(value)
@@ -207,8 +228,9 @@ def create_production_batch():
                 )
                 if not output:
                     raise APIError("Finished-goods product was not found in this business.", 404, "output_product_not_found")
+                unit = _validate_material_pair(raw, output, material_quantity, expected_output)
                 movement["product_name"] = raw.get("name", "")
-                movement["unit"] = raw.get("unit", "unit")
+                movement["unit"] = unit
                 c["movements"].insert_one(movement, session=session)
                 c["batches"].insert_one(batch, session=session)
     except DuplicateKeyError:
