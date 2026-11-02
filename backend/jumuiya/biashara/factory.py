@@ -323,10 +323,16 @@ def inspect_quality():
     if existing_for_batch:
         raise APIError("This batch already has a quality inspection.", 409, "quality_check_exists")
     now = _now()
+    certificate_number = (
+        "RC-QC-" + now.strftime("%Y%m%d") + "-" + secrets.token_hex(3).upper()
+        if grade in {"A", "B", "C"} else None
+    )
     check = {
         "_id": ObjectId(), "business_id": business["id"], "batch_id": str(batch_id),
         "idempotency_key": idempotency_key,
         "grade": grade, "result": "passed" if grade in {"A", "B", "C"} else "rejected",
+        "certificate_number": certificate_number,
+        "certificate_status": "issued" if certificate_number else "not_issued",
         "inspection_notes": str(data.get("inspection_notes") or "")[:3000],
         "measurements": data.get("measurements") if isinstance(data.get("measurements"), dict) else {},
         "inspected_by_user_id": uid, "created_at": now,
@@ -364,6 +370,8 @@ def inspect_quality():
                 c["batches"].update_one(
                     {"_id": batch_id, "business_id": business["id"], "status": "quality_hold"},
                     {"$set": {"status": next_status, "quality_grade": grade, "quality_check_id": str(check["_id"]),
+                              "quality_certificate_number": certificate_number,
+                              "quality_certificate_issued_at": now if certificate_number else None,
                               "released_at": now if next_status == "released" else None, "updated_at": now},
                      "$push": {"events": {"event": next_status, "actor_user_id": uid, "at": now}}},
                     session=session,
