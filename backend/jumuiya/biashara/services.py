@@ -13,7 +13,7 @@ from backend.jumuiya.biashara.tenant_store import biashara_collection as collect
 from backend.jumuiya.core.errors import APIError
 from backend.jumuiya.core.audit import log_action
 from backend.jumuiya.biashara.access import resolve_business_access
-from backend.jumuiya.biashara.templates import has_permission, normalize_role
+from backend.jumuiya.biashara.templates import has_permission, normalize_role, template_config
 
 from backend.jumuiya.biashara.website import (
     DEFAULT_BIASHARA_WEBSITE_SETTINGS,
@@ -284,12 +284,37 @@ def _require_business(user_id, allowed_roles=None, permission=None):
         "business_verification_required",
     )
 
+def _validated_business_template(payload, existing=None):
+    existing = existing or {}
+    template_key = str(payload.get("industry_template") or existing.get("industry_template") or "general").strip().lower()
+    config = template_config(template_key)
+    if not config:
+        raise APIError("Choose a supported industry template.", 422, "invalid_industry_template")
+
+    scale = str(payload.get("business_scale") or existing.get("business_scale") or "small").strip().lower()
+    if scale not in {"micro", "small", "growing", "enterprise"}:
+        raise APIError("business_scale must be micro, small, growing or enterprise.", 422, "invalid_business_scale")
+
+    workspace_mode = str(payload.get("workspace_mode") or existing.get("workspace_mode") or ("advanced" if template_key == "factory" or scale in {"growing", "enterprise"} else "simple")).strip().lower()
+    if workspace_mode not in {"simple", "advanced"}:
+        raise APIError("workspace_mode must be simple or advanced.", 422, "invalid_workspace_mode")
+
+    return {
+        "industry_template": template_key,
+        "business_scale": scale,
+        "workspace_mode": workspace_mode,
+        "enabled_modules": list(config["modules"]),
+        "industry_template_version": 1,
+    }
+
+
 def create_or_update_business(user_id, payload):
     businesses = collection("jumuiya_businesses")
     owner_id = str(user_id)
     old = businesses.find_one({"owner_user_id": owner_id})
 
     if old:
+        template_settings = _validated_business_template(payload, old)
         fields = [
             "name",
             "business_type",
@@ -308,6 +333,7 @@ def create_or_update_business(user_id, payload):
             key: payload.get(key, old.get(key, ""))
             for key in fields
         }
+        update.update(template_settings)
         update["slug"] = unique_slug(payload["name"], old["_id"])
         now = now_utc()
         update["updated_at"] = now
@@ -379,10 +405,12 @@ def create_or_update_business(user_id, payload):
         )
         return serialise(document)
 
+    template_settings = _validated_business_template(payload)
+    normalized_payload = {**payload, **template_settings}
     now = now_utc()
     document = business_document(
         owner_id,
-        payload,
+        normalized_payload,
         unique_slug(payload["name"]),
     )
     # Business data is an application until a platform administrator
