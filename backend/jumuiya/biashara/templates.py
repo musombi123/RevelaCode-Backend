@@ -98,7 +98,7 @@ ROLE_PERMISSIONS = {
     }),
     "sales_agent": frozenset({
         "dashboard.view", "sales.view", "sales.create", "customers.view", "customers.create",
-        "orders.view", "orders.create", "orders.update", "catalog.view", "inventory.view",
+        "orders.view", "orders.create", "orders.update", "catalog.view",
         "website.inquiries.view", "sync.view", "hr.attendance.self",
     }),
     "employee": frozenset({"dashboard.view", "hr.attendance.self", "sync.view"}),
