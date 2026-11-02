@@ -228,11 +228,6 @@ def _require_business(user_id, allowed_roles=None, permission=None):
         )
 
     role = str((access or {}).get("role") or "owner").strip().lower()
-    business["access_role"] = "owner" if (access or {}).get("is_owner") else role
-    business["is_owner"] = bool((access or {}).get("is_owner"))
-    membership = (access or {}).get("membership") or {}
-    if membership.get("_id"):
-        business["membership_id"] = str(membership["_id"])
     if permission:
         permitted = has_permission(role, permission)
     else:
