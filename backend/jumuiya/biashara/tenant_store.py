@@ -44,6 +44,9 @@ TENANT_COLLECTIONS = frozenset({
     "jumuiya_factory_machines",
     "jumuiya_factory_machine_readings",
     "jumuiya_factory_alerts",
+    "jumuiya_biashara_employees",
+    "jumuiya_biashara_attendance",
+    "jumuiya_biashara_leave_requests",
 })
 
 LEGACY_CENTRAL_COLLECTIONS = frozenset({
@@ -117,6 +120,28 @@ def _ensure_tenant_indexes(database):
     database["jumuiya_factory_alerts"].create_index(
         [("business_id", ASCENDING), ("status", ASCENDING), ("created_at", DESCENDING)],
         name="ix_factory_alerts_status_created",
+    )
+    database["jumuiya_biashara_employees"].create_index(
+        [("business_id", ASCENDING), ("system_id", ASCENDING)],
+        unique=True, name="uq_biashara_employee_system_id",
+    )
+    database["jumuiya_biashara_employees"].create_index(
+        [("business_id", ASCENDING), ("user_id", ASCENDING)],
+        unique=True, partialFilterExpression={"user_id": {"$type": "string"}},
+        name="uq_biashara_employee_user",
+    )
+    database["jumuiya_biashara_attendance"].create_index(
+        [("business_id", ASCENDING), ("user_id", ASCENDING), ("local_date", DESCENDING)],
+        name="ix_biashara_attendance_user_date",
+    )
+    database["jumuiya_biashara_attendance"].create_index(
+        [("business_id", ASCENDING), ("user_id", ASCENDING), ("open_shift", ASCENDING)],
+        unique=True, partialFilterExpression={"open_shift": True},
+        name="uq_biashara_attendance_open_shift",
+    )
+    database["jumuiya_biashara_leave_requests"].create_index(
+        [("business_id", ASCENDING), ("status", ASCENDING), ("created_at", DESCENDING)],
+        name="ix_biashara_leave_status_created",
     )
 
 def _copy_legacy_business_records(database, business_id):
