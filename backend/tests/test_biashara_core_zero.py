@@ -8,6 +8,7 @@ import pytest
 from backend.jumuiya.biashara import tenant_store
 from backend.jumuiya.biashara.integrations import _etims_status, _whatsapp_status
 from backend.jumuiya.biashara.templates import has_permission, normalize_role, template_config
+from backend.jumuiya.biashara.schemas import product_payload
 from backend.jumuiya.core.errors import APIError
 
 
@@ -133,3 +134,41 @@ def test_whatsapp_credentials_do_not_imply_business_commands_are_enabled(monkeyp
 
     assert status["state"] == "configuration_present"
     assert status["business_commands_enabled"] is False
+
+
+def test_product_payload_supports_raw_material_and_finished_goods():
+    raw = product_payload({
+        "name": "Maize",
+        "sku": "RAW-MAIZE",
+        "price": 0,
+        "cost_price": 85,
+        "stock_quantity": 100,
+        "unit": "kg",
+        "production_type": "raw_material",
+    })
+    finished = product_payload({
+        "name": "Maize flour",
+        "sku": "FLOUR-2KG",
+        "price": 140,
+        "cost_price": 95,
+        "stock_quantity": 0,
+        "unit": "2kg bag",
+        "production_type": "finished_good",
+    })
+
+    assert raw["production_type"] == "raw_material"
+    assert raw["unit"] == "kg"
+    assert raw["cost_price"] == 85.0
+    assert finished["production_type"] == "finished_good"
+    assert finished["unit"] == "2kg bag"
+
+
+def test_product_payload_defaults_existing_catalogue_records_to_resale():
+    result = product_payload({"name": "Soap", "price": 20})
+
+    assert result["production_type"] == "resale"
+
+
+def test_product_payload_rejects_unknown_inventory_type():
+    with pytest.raises(ValueError, match="production_type must be one of"):
+        product_payload({"name": "Unknown", "price": 10, "production_type": "unknown"})
