@@ -16,7 +16,7 @@ from backend.jumuiya.core.responses import (
 
 from backend.jumuiya.core.errors import APIError
 from backend.revenue.subscriptions import require_revenue_entitlement
-from backend.jumuiya.core.database import collection
+from backend.jumuiya.biashara.tenant_store import biashara_collection as collection
 from backend.jumuiya.biashara import services as biashara_services
 
 from backend.jumuiya.biashara.intelligence import (
