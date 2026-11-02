@@ -79,7 +79,7 @@ def _whatsapp_status():
         "business_commands_enabled": enabled,
         "webhook_path": "/api/jumuiya/biashara/whatsapp/webhook",
         "supported_commands": ["sales today", "stock alerts", "production today", "help"],
-        "note": "Commands are read-only and require a unique hash-matched active employee identity, active company membership and matching server-side role permission. Configure the Meta webhook URL, subscribe to messages, test the callback and only then set WHATSAPP_BIASHARA_COMMANDS_ENABLED=true.",
+        "note": "Commands are read-only and require a unique hash-matched active employee identity, active company membership and matching server-side role permission. Configure the Meta webhook URL https://revelacode-backend.onrender.com/api/jumuiya/biashara/whatsapp/webhook, subscribe to the messages field, validate the signature and run a controlled test. Only then set WHATSAPP_BIASHARA_COMMANDS_ENABLED=true.",
     }
 
 
