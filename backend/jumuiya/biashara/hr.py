@@ -220,8 +220,6 @@ def create_employee():
         member = resolve_business_access(linked_user_id, business["id"])
         if not member:
             raise APIError("The linked account must first accept an invitation to this company.", 422, "employee_membership_required")
-        if member.get("is_owner") or str(member.get("role") or "") in {"ceo", "director", "admin", "owner"}:
-            raise APIError("Executive accounts cannot be reassigned as ordinary employee records.", 422, "employee_role_conflict")
 
     start_time = _shift_time(data.get("shift_start"), "shift_start", "08:00")
     end_time = _shift_time(data.get("shift_end"), "shift_end", "17:00")
@@ -285,8 +283,6 @@ def update_employee(employee_id):
                 member = resolve_business_access(value, business["id"])
                 if not member:
                     raise APIError("The linked account must first accept an invitation to this company.", 422, "employee_membership_required")
-                if member.get("is_owner") or str(member.get("role") or "") in {"ceo", "director", "admin", "owner"}:
-                    raise APIError("Executive accounts cannot be linked as ordinary employees.", 422, "employee_role_conflict")
             update[field] = value or None
         elif field == "role":
             value = _text(data[field], "Role", 48).lower().replace("-", "_").replace(" ", "_")
