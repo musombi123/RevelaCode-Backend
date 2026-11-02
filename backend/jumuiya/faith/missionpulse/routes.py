@@ -320,13 +320,9 @@ def update_case(case_id):
     if "assigned_to" in data:
         assignee = _text(data["assigned_to"], 128) or None
         if assignee and not collection("jumuiya_missionpulse_memberships").find_one({
-            "church_id": org_id, "user_id": assignee, "status": "active"
+            "org_id": org_id, "user_id": assignee, "status": "active"
         }):
-            # Memberships are attached to the organization ID, not a separate church_id field.
-            if not collection("jumuiya_missionpulse_memberships").find_one({
-                "org_id": org_id, "user_id": assignee, "status": "active"
-            }):
-                return _error("The assigned officer is not an active member of this church.", 400, "invalid_assignee")
+            return _error("The assigned officer is not an active member of this church.", 400, "invalid_assignee")
         updates["assigned_to"] = assignee
     if "assigned_ministry" in data:
         updates["assigned_ministry"] = _text(data["assigned_ministry"], 80) or None
@@ -520,7 +516,18 @@ def sync_queue():
             continue
         # Reuse the same validation and authorization paths as online writes.
         org_id = _text(payload.get("church_id"), 64)
-        if not _oid(org_id) or not _require_org(org_id):
+        if kind == "case":
+            allowed_sync_roles = {
+                "conference_admin", "field_admin", "district_coordinator", "church_admin",
+                "pastor", "personal_ministries", "dorcas", "health_ministries", "case_worker",
+            }
+        else:
+            allowed_sync_roles = {
+                "conference_admin", "field_admin", "district_coordinator", "church_admin",
+                "pastor", "personal_ministries", "dorcas", "health_ministries",
+                "youth_ministries", "family_ministries", "education_ministries",
+            }
+        if not _oid(org_id) or not _require_org(org_id, allowed_sync_roles):
             results.append({"client_id": client_id, "ok": False, "error": "forbidden_or_invalid_church"})
             continue
         if kind == "case":
