@@ -69,7 +69,7 @@ ROLE_PERMISSIONS = {
         "inventory.view", "inventory.create", "inventory.adjust", "inventory.manage",
         "production.view", "production.create", "production.update",
         "machines.view", "machines.readings.create", "quality.view", "quality.inspect", "team.view",
-        "sync.view", "sync.request",
+        "sync.view", "sync.request", "expenses.view", "expenses.create",
     }),
     "hr_manager": frozenset({
         "dashboard.view", "hr.view", "hr.employees.manage", "hr.attendance.view",
