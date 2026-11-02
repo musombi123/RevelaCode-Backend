@@ -36,6 +36,8 @@ from backend.jumuiya.biashara.intelligence.routes.economic import (
 from backend.jumuiya.elimu.routes import elimu_bp
 from backend.jumuiya.community.routes import community_bp
 from backend.jumuiya.platform_admin_routes import platform_admin_bp
+from backend.jumuiya.faith.missionpulse.routes import missionpulse_bp
+from backend.jumuiya.core.database import collection
 
 # =========================================================
 # JUMUIYA REGISTRATION
@@ -114,6 +116,42 @@ def register_jumuiya(app):
     logger.info(
         "✅ Jumuiya authentication bridge installed."
     )
+
+    # =====================================================
+    # FAITH HUB — MISSIONPULSE
+    # =====================================================
+
+    collection("jumuiya_missionpulse_organizations").create_index(
+        [("type", 1), ("status", 1), ("name", 1)],
+        name="ix_missionpulse_org_type_status_name",
+    )
+    collection("jumuiya_missionpulse_memberships").create_index(
+        [("user_id", 1), ("org_id", 1)],
+        unique=True,
+        name="uq_missionpulse_membership_user_org",
+    )
+    collection("jumuiya_missionpulse_cases").create_index(
+        [("church_id", 1), ("updated_at", -1)],
+        name="ix_missionpulse_cases_church_updated",
+    )
+    collection("jumuiya_missionpulse_outreach").create_index(
+        [("church_id", 1), ("starts_at", -1)],
+        name="ix_missionpulse_outreach_church_start",
+    )
+    collection("jumuiya_missionpulse_sync_receipts").create_index(
+        [("user_id", 1), ("client_id", 1)],
+        unique=True,
+        name="uq_missionpulse_sync_user_client",
+    )
+    collection("jumuiya_missionpulse_audit").create_index(
+        [("org_id", 1), ("created_at", -1)],
+        name="ix_missionpulse_audit_org_created",
+    )
+    app.register_blueprint(
+        missionpulse_bp,
+        url_prefix="/api/jumuiya/faith/missionpulse",
+    )
+    logger.info("MissionPulse API registered at /api/jumuiya/faith/missionpulse")
 
     # =====================================================
     # IDENTITY
