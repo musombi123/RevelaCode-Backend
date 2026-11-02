@@ -50,17 +50,24 @@ def _decimal(value, field, *, allow_zero=False, max_value="1000000000000"):
         raise APIError(f"{field} must be {qualifier} and within the supported range.", 422, "invalid_number")
     return number
 
+def _serialise_value(value):
+    if isinstance(value, ObjectId):
+        return str(value)
+    if isinstance(value, dict):
+        return {str(key): _serialise_value(item) for key, item in value.items() if key != "_id"}
+    if isinstance(value, (list, tuple)):
+        return [_serialise_value(item) for item in value]
+    if hasattr(value, "isoformat"):
+        return value.isoformat()
+    return value
+
+
 def _serialise(doc):
     if not doc:
         return None
-    result = dict(doc)
-    if "_id" in result:
-        result["id"] = str(result.pop("_id"))
-    for key, value in list(result.items()):
-        if isinstance(value, ObjectId):
-            result[key] = str(value)
-        elif hasattr(value, "isoformat"):
-            result[key] = value.isoformat()
+    result = _serialise_value(dict(doc))
+    if "_id" in doc:
+        result["id"] = str(doc["_id"])
     return result
 
 def _business(permission):
@@ -90,7 +97,7 @@ def _collections(business_id):
 @factory_bp.get("/factory/overview")
 @require_authenticated
 def factory_overview():
-    uid, business, _ = _business("dashboard.view")
+    uid, business, _ = _business("production.view")
     c = _collections(business["id"])
     base = {"business_id": business["id"]}
     batches = c["batches"]
@@ -385,7 +392,7 @@ def record_machine_reading(machine_id):
 @factory_bp.get("/factory/alerts")
 @require_authenticated
 def list_factory_alerts():
-    uid, business, _ = _business("dashboard.view")
+    uid, business, _ = _business("machines.view")
     rows = tenant_collection("jumuiya_factory_alerts", business["id"]).find(
         {"business_id": business["id"], "status": "open"}).sort("created_at", -1).limit(100)
     return ok([_serialise(row) for row in rows])
