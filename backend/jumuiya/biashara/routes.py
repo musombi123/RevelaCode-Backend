@@ -20,6 +20,7 @@ from backend.jumuiya.biashara import (
     schemas,
     services,
 )
+from backend.jumuiya.biashara.templates import TEMPLATES, template_config
 
 
 # =========================================================
@@ -166,6 +167,25 @@ def health():
 
 
 # =========================================================
+# INDUSTRY TEMPLATES
+# =========================================================
+
+@biashara_bp.get("/templates")
+def get_industry_templates():
+    return ok([
+        {"key": key, **template_config(key)}
+        for key in TEMPLATES
+    ])
+
+
+@biashara_bp.get("/templates/<template_key>")
+def get_industry_template(template_key):
+    config = template_config(template_key)
+    if not config:
+        raise APIError("Industry template not found.", 404, "industry_template_not_found")
+    return ok(config)
+
+
 # BUSINESS PROFILE
 # =========================================================
 

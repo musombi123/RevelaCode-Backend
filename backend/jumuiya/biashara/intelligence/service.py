@@ -1409,26 +1409,16 @@ def load_product_history(
 
     try:
 
-        business = (
-            biashara_services.get_business_for_user(
-                user_id
-            )
+        business = biashara_services._require_business(
+            user_id,
+            permission="sales.view",
         )
 
-        if not isinstance(
-            business,
-            dict,
-        ):
-            return []
-
-        business_id = business.get(
-            "id"
-        )
-
+        business_id = business.get("id") if isinstance(business, dict) else None
         if not business_id:
             return []
 
-        from backend.jumuiya.core.database import collection
+        from backend.jumuiya.biashara.tenant_store import biashara_collection as collection
 
         sales = collection(
             "jumuiya_sales"

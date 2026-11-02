@@ -4,16 +4,17 @@
 
 Biashara OS uses the existing RevelaCode/Jumuiya backend and the existing Biashara workspace. It is configuration-driven, not a second operating system or a separate backend fork. Elimu and Biashara may share identity, permissions, audit logging, offline-sync contracts and notification infrastructure, while each hub keeps its own domain rules.
 
-This branch introduces the first configuration step: an industry template, business scale and a simple/advanced workspace mode. It is **not** a claim that every planned module or external integration is already live.
+The working branches now extend the existing Biashara workspace with a company-tenant layer, industry manifests, server-side role permissions, factory and HR workflows, offline tenant scoping, invoice M-Pesa checkout and integration-readiness diagnostics. This is a development-branch status, not a production-deployment claim; the gated items in Section 9 remain gated.
 
 ## 1. Three architecture layers
 
 ### Tenant boundary
 - Every business-owned record must be scoped to an authenticated business ID; the server must resolve the selected business from the authenticated user's ownership or membership.
-- Add an explicit immutable **tenant_id** where it improves consistency, and enforce it in every read, update, delete, background job, export and sync operation.
+- Every company registry record receives a deterministic **tenant_id**. Operational database identity is derived from the verified business ID; never accept a tenant database name from a client.
 - Never trust a client-supplied business ID, role, owner ID or verification state.
-- Start with the existing shared database and strict tenant scoping. Do not create a separate database per customer by default; physical database-per-tenant can be evaluated later if scale, regulatory or contract requirements justify its operational and migration cost.
-- Subdomains such as **sarefactory.revelacode.co.ke** should resolve through a trusted tenant/domain registry, then be checked against the authenticated membership. A hostname must never grant access on its own.
+- Use one MongoDB database per Biashara company within the existing MongoDB cluster. The central database retains the company directory, identity, memberships, invitations, tenant registry and domain registry. Operational company collections are stored in a deterministic database named with the prefix `revelacode_biz_` plus a SHA-256 identifier prefix; customer slugs are never database names.
+- Migrate legacy company-owned records idempotently while retaining shared-database source records until a reviewed cleanup is approved. Provisioning uses a lease and schema version to avoid concurrent migrations. Fail closed if a tenant-owned collection is accessed without a verified company context. Background jobs must provide an explicit business ID.
+- Subdomains such as **sarefactory.revelacode.co.ke** resolve only when a domain registry record is verified and active. The API checks the authenticated membership and rejects an X-Business-ID that conflicts with a verified company Origin. The DNS wildcard and Render custom-domain binding are deployment prerequisites; new domain records remain pending until verified.
 
 ### Industry template
 Persist **industry_template** with a validated allow-list. Initial values:
@@ -120,8 +121,77 @@ Use a rule engine with **observe → alert → request review → approve → ex
 ## 8. Definition of done
 
 - New template and scale values are validated on the server and saved in the existing business record.
-- Existing businesses without these fields continue to load in advanced mode; no destructive database split or API contract break is introduced.
+- Existing businesses without these fields continue to load with safe defaults. Database provisioning copies legacy records idempotently and retains original shared-database records; no destructive migration or Elimu API contract change is permitted.
 - Simple navigation is consistent on desktop and mobile, but the backend still enforces authorization independently.
 - Tests cover invalid template values, profile updates, unverified business access, cross-tenant access and sync idempotency.
 - Integrations are shown as available only when credentials, provider responses, certification and production checks support that claim.
 - No feature is marked live merely because its menu item or configuration field exists.
+
+
+## 9. Current Core-Zero implementation status
+
+This status describes the working branches, not a production deployment.
+
+### Implemented on the working branches
+
+- Company database provisioning, hashed database names, central tenant registry, idempotent legacy record copy and strict tenant collection allow-list.
+- Verified-host lookup and request binding for subdomains, with membership validation still mandatory.
+- Server-validated industry templates, business scale/workspace mode persistence and enabled-module configuration.
+- Normalized company role aliases and server-side permission checks for common commerce, finance, HR and factory workflows.
+- Factory batch lifecycle: raw-material deduction, output/wastage/by-product reconciliation, quality hold/release, machine register, hourly readings and alerts.
+- Employee register, System IDs, invited-account linking, shift configuration, clock-in/out, late/overtime calculation and optional GPS.
+- Tenant-aware offline cache separation and business ID preservation during queued mutation replay.
+- Invoice M-Pesa STK Push, idempotent invoice checkout, unresolved-checkout lock, Daraja query verification, receipt/payer/amount matching and provider-verified invoice allocation.
+- Integration readiness UI for M-Pesa, eTIMS and WhatsApp.
+
+### Still gated or incomplete
+
+- Wildcard DNS, Render wildcard-domain routing and activation of verified company subdomains.
+- End-to-end test of tenant migration against a staging backup and cross-tenant security tests.
+- Daraja sandbox/production credential validation and controlled end-to-end reconciliation.
+- KRA OSCU/VSCU submission adapter, credential handling, sandbox tests, vetting and certification. The current eTIMS surface is readiness-only and does not submit tax invoices.
+- Biashara WhatsApp command handler and verified phone-to-user identity binding. The current status surface intentionally reports business commands disabled.
+- Payroll, payslip delivery, supplier auto-ordering, machine sensor/PLC integration and a native Android SQLite implementation.
+
+Do not advertise any gated integration as live until its independent acceptance tests pass.
+
+
+## 11. Biashara WhatsApp read-only assistant
+
+The Biashara WhatsApp webhook is implemented separately from Elimu's school finance webhook. It reuses the existing Meta Cloud API credentials and HMAC signature pattern.
+
+Webhook URL for Meta configuration:
+
+`https://revelacode-backend.onrender.com/api/jumuiya/biashara/whatsapp/webhook`
+
+The callback supports the GET subscription challenge and POST message notifications. POST requests require a valid `X-Hub-Signature-256` using `WHATSAPP_APP_SECRET`.
+
+### Identity and tenant security
+
+- HR links the employee's existing, accepted company user account to the employee record.
+- The backend stores a SHA-256 hash of the employee's normalized phone in a central identity lookup. The clear phone remains in the company's HR database and is not copied into the global lookup.
+- A sender phone must match exactly one active employee mapping. A phone linked to multiple company identities is treated as ambiguous and receives no company data.
+- The backend revalidates the user's active membership in the indexed company, the company's verified/active status, the employee link and the employee's current phone hash before reading company data.
+- Each report checks the member's server-side role permissions. A client-provided company ID or model-generated SQL is never used.
+
+### Supported commands
+
+- `sales today` — daily revenue, transaction count and top product.
+- `stock alerts` — items at or below their reorder threshold (default 10 units).
+- `production today` — batches started/completed, material input, output, wastage and yield.
+- `help` — the read-only command list.
+
+No write command, supplier order, payroll query or employee-management action is exposed through WhatsApp.
+
+### Activation
+
+Required existing Meta backend secrets:
+- `WHATSAPP_WEBHOOK_VERIFY_TOKEN`
+- `WHATSAPP_APP_SECRET`
+- `WHATSAPP_ACCESS_TOKEN`
+- `WHATSAPP_PHONE_NUMBER_ID`
+- Optional `WHATSAPP_API_VERSION` (defaults to `v26.0`)
+
+Set `WHATSAPP_BIASHARA_COMMANDS_ENABLED=true` only after the Meta webhook has been verified, the Business account is subscribed to the `messages` field, and a controlled end-to-end test confirms signature validation, employee mapping, role enforcement and message delivery. Keep the flag absent/false before that test.
+
+The integration readiness endpoint reports commands disabled until the explicit flag and all required configuration values are present.

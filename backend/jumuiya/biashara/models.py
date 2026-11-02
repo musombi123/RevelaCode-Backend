@@ -101,6 +101,10 @@ def business_document(
             "advanced",
         ),
 
+        "enabled_modules": list(payload.get("enabled_modules") or []),
+
+        "industry_template_version": int(payload.get("industry_template_version") or 1),
+
         # -------------------------------------------------
         # CONTACT
         # -------------------------------------------------
@@ -235,6 +239,11 @@ def product_document(
         "sku": payload.get(
             "sku",
             "",
+        ),
+
+        "production_type": payload.get(
+            "production_type",
+            "resale",
         ),
 
         # -------------------------------------------------

@@ -48,6 +48,13 @@ PRODUCT_STATUSES = {
     "archived",
 }
 
+PRODUCT_TYPES = {
+    "resale",
+    "raw_material",
+    "finished_good",
+    "consumable",
+}
+
 PAYMENT_METHODS = {
     "cash",
     "mpesa",
@@ -497,6 +504,14 @@ def product_payload(
             max_len=max_len,
         )
 
+    if not partial or "production_type" in data:
+        result["production_type"] = _choice(
+            data,
+            "production_type",
+            PRODUCT_TYPES,
+            default="resale",
+        )
+
     # -----------------------------------------------------
     # PRICE
     # -----------------------------------------------------
@@ -587,6 +602,11 @@ def product_payload(
             result.get("currency")
             or DEFAULT_CURRENCY
         ).upper()
+
+        result["production_type"] = (
+            result.get("production_type")
+            or "resale"
+        )
 
         result["unit"] = (
             result.get("unit")

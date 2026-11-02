@@ -148,9 +148,32 @@ def is_approved_frontend_origin(origin: str) -> bool:
             "public_profile_enabled": True,
             "is_demo": {"$ne": True},
         })
-        return bool(school)
+        if school:
+            return True
+
+        # Biashara company subdomains are approved only after DNS/domain
+        # verification and HTTPS activation. A company slug or pending
+        # registration is never sufficient for credentialed CORS.
+        biashara_domain = collection("jumuiya_biashara_domains").find_one({
+            "hostname": hostname,
+            "status": "active",
+            "verification_status": "verified",
+            "https_status": "active",
+        })
+        if not biashara_domain:
+            return False
+        try:
+            business_oid = ObjectId(str(biashara_domain.get("business_id") or ""))
+        except (InvalidId, TypeError, ValueError):
+            return False
+        business = collection("jumuiya_businesses").find_one({
+            "_id": business_oid,
+            "status": "active",
+            "verification_status": "verified",
+        })
+        return bool(business)
     except Exception:
-        logger.exception("Could not validate a custom school CORS origin")
+        logger.exception("Could not validate a custom school or Biashara CORS origin")
         return False
 
 
@@ -165,7 +188,7 @@ CORS_ALLOWED_METHODS_SET = {
 
 CORS_ALLOWED_HEADERS = (
     "Accept, Content-Type, Authorization, X-Revela-License, "
-    "X-ADMIN-KEY, X-ADMIN-API-KEY, x-api-key, Idempotency-Key, X-User-ID"
+    "X-ADMIN-KEY, X-ADMIN-API-KEY, x-api-key, Idempotency-Key, X-User-ID, X-Business-ID, X-Offline-Mutation-Id"
 )
 
 CORS_ALLOWED_HEADERS_SET = {
@@ -192,6 +215,8 @@ CORS(
         "x-api-key",
         "Idempotency-Key",
         "X-User-ID",
+        "X-Business-ID",
+        "X-Offline-Mutation-Id",
     ],
     methods=[
         "GET",
