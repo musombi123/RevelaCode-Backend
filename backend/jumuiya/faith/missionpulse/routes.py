@@ -138,7 +138,7 @@ def create_organization():
     org_type = _text(data.get("type"), 30).lower()
     name = _text(data.get("name"), 160)
     parent_id = _text(data.get("parent_id"), 64)
-    allowed = {"conference", "field", "district", "church", "department"}
+    allowed = {"conference", "field", "district", "church", "department", "partner"}
     if org_type not in allowed or not name:
         return _error("A valid organization type and name are required.")
     if not _is_platform_admin():
