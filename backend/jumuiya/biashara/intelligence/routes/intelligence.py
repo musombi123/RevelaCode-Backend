@@ -934,7 +934,7 @@ def forecast_business():
 
     business = biashara_services._require_business(
         user_id(),
-        allowed_roles={"owner", "admin", "manager", "sales"},
+        permission="dashboard.view",
     )
     business_id = str(business["id"])
 
