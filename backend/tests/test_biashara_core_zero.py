@@ -90,7 +90,7 @@ def test_company_templates_enable_common_business_modules(template):
     config = template_config(template)
     modules = set(config["modules"])
 
-    assert {"sales", "inventory", "finance", "hr", "mpesa", "etims", "debts", "sync"} <= modules
+    assert {"sales", "finance", "hr", "mpesa", "etims", "debts", "sync"} <= modules
 
 
 def test_factory_template_adds_production_machine_and_quality_modules():
@@ -172,3 +172,15 @@ def test_product_payload_defaults_existing_catalogue_records_to_resale():
 def test_product_payload_rejects_unknown_inventory_type():
     with pytest.raises(ValueError, match="production_type must be one of"):
         product_payload({"name": "Unknown", "price": 10, "production_type": "unknown"})
+
+
+
+def test_retail_and_factory_templates_include_inventory():
+    for template in ("retail_shop", "hardware", "factory"):
+        assert "inventory" in template_config(template)["modules"]
+
+
+def test_professional_services_template_uses_projects_and_invoicing():
+    modules = set(template_config("professional_services")["modules"])
+    assert {"projects", "invoicing", "finance", "sales"} <= modules
+    assert "inventory" not in modules
