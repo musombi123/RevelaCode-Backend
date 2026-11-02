@@ -9,7 +9,7 @@ from bson import ObjectId
 from bson.errors import InvalidId
 from pymongo import ReturnDocument
 
-from backend.jumuiya.biashara.tenant_store import biashara_collection as collection, set_business_tenant_context
+from backend.jumuiya.biashara.tenant_store import biashara_collection as collection, set_business_tenant_context, business_id_for_origin
 from backend.jumuiya.core.errors import APIError
 from backend.jumuiya.core.audit import log_action
 from backend.jumuiya.biashara.access import resolve_business_access
@@ -205,7 +205,15 @@ def get_active_business_for_user(user_id):
 def _require_business(user_id, allowed_roles=None, permission=None):
     """Resolve the active business and enforce its member role and verification."""
     requested_business_id = request.headers.get("X-Business-ID") if has_request_context() else None
-    access = resolve_business_access(user_id, requested_business_id or None)
+    origin_business_id = business_id_for_origin(request.headers.get("Origin")) if has_request_context() else None
+    if requested_business_id and origin_business_id and str(requested_business_id) != origin_business_id:
+        raise APIError(
+            "The selected business does not match this company subdomain.",
+            403,
+            "business_origin_mismatch",
+        )
+    selected_business_id = requested_business_id or origin_business_id
+    access = resolve_business_access(user_id, selected_business_id or None)
     business = serialise(access.get("business")) if access else None
 
     if not business:
