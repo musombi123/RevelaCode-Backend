@@ -73,11 +73,16 @@ def test_sales_today_report_is_company_scoped_and_uses_nairobi_day(monkeypatch):
         },
     ]
 
+    class FakeCursor:
+        def limit(self, count):
+            assert count == 5000
+            return fake_records
+
     class FakeSales:
         def find(self, query):
             assert query["business_id"] == "biz-1"
             assert query["created_at"]["$gte"] < query["created_at"]["$lt"]
-            return fake_records
+            return FakeCursor()
 
     monkeypatch.setattr(
         whatsapp,
