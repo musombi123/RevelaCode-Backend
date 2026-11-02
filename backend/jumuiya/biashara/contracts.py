@@ -43,7 +43,8 @@ def _owner_business(permission="business.manage"):
     """Resolve an authorized company member and attach its isolated tenant DB."""
     uid = str(current_user_id())
     preference = collection("jumuiya_biashara_active_business").find_one({"user_id": uid}) or {}
-    selected_id = str(preference.get("business_id") or "").strip()
+    requested_business_id = str(request.headers.get("X-Business-ID") or "").strip()
+    selected_id = requested_business_id or str(preference.get("business_id") or "").strip()
     context = resolve_business_access(uid, selected_id or None)
     if not context:
         raise APIError("Create a business profile or select an accessible business first.", 409, "business_required")
