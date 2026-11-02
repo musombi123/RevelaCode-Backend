@@ -510,9 +510,61 @@ def receive_biashara_mpesa_callback():
         _payment_index().update_one({"checkout_request_id": checkout_id}, {"$set": {"status": "failed", "updated_at": _now()}})
         return {"ResultCode": 0, "ResultDesc": "Payment result recorded"}, 200
     success, message = _finalize_confirmed_payment(business_id, intent_id, query_result, callback_meta)
-    if not success:
+    if success:
+        latest = c["intents"].find_one({"_id": intent["_id"], "business_id": business_id}) or {}
+        _payment_index().update_one({"checkout_request_id": checkout_id}, {"$set": {"status": "succeeded", "provider_receipt": latest.get("provider_receipt", ""), "updated_at": _now()}})
+    else:
         _payment_index().update_one({"checkout_request_id": checkout_id}, {"$set": {"status": "reconciliation_required", "message": message[:500], "updated_at": _now()}})
     return {"ResultCode": 0, "ResultDesc": "Callback accepted; reconciliation status recorded"}, 200
+
+
+@payments_bp.post("/finance/invoices/<invoice_id>/mpesa/refresh")
+@require_authenticated
+def refresh_invoice_mpesa_checkout(invoice_id):
+    uid, business = _business("invoices.view")
+    c = _collections(business["id"])
+    invoice = c["invoices"].find_one({"_id": _id(invoice_id), "business_id": business["id"]})
+    if not invoice:
+        raise APIError("Invoice was not found.", 404, "invoice_not_found")
+    intent = c["intents"].find_one(
+        {"business_id": business["id"], "invoice_id": str(invoice["_id"])}
+    )
+    if not intent:
+        raise APIError("No M-Pesa checkout exists for this invoice.", 404, "mpesa_checkout_not_found")
+    if intent.get("status") == "succeeded":
+        return ok(_serialize(intent), "Payment is already verified and allocated.")
+    if not intent.get("checkout_request_id"):
+        raise APIError(
+            "Daraja did not return a checkout identifier. This submission needs platform reconciliation; do not start another prompt.",
+            409,
+            "mpesa_submission_unknown",
+        )
+    try:
+        query_result = _query_daraja(intent)
+    except Exception:
+        _update_intent_status(c, intent, "awaiting_verification", "Daraja query is temporarily unavailable.")
+        raise APIError("Daraja could not be queried. The invoice remains locked against duplicate payment prompts.", 503, "mpesa_query_unavailable")
+    if (
+        str(query_result.get("CheckoutRequestID") or "") != str(intent.get("checkout_request_id") or "")
+        or str(query_result.get("MerchantRequestID") or "") != str(intent.get("merchant_request_id") or "")
+    ):
+        _update_intent_status(c, intent, "awaiting_verification", "Daraja query identifiers did not match the saved checkout.")
+        raise APIError("Daraja query identifiers did not match the stored checkout.", 409, "mpesa_query_mismatch")
+    if query_result.get("ResultCode") is None:
+        _update_intent_status(c, intent, "awaiting_verification", str(query_result.get("ResultDesc") or "Daraja has not returned a final result."))
+        return ok(_serialize(c["intents"].find_one({"_id": intent["_id"]})), "Payment is still awaiting a final provider result.")
+    if str(query_result.get("ResultCode")) != "0":
+        _update_intent_status(c, intent, "failed", str(query_result.get("ResultDesc") or "Payment was not completed."), clear_slot=True)
+        _payment_index().update_one({"checkout_request_id": intent["checkout_request_id"]}, {"$set": {"status": "failed", "updated_at": _now()}})
+        return ok(_serialize(c["intents"].find_one({"_id": intent["_id"]})), "Daraja confirmed that the payment was not completed.")
+    metadata = intent.get("last_callback_metadata") if isinstance(intent.get("last_callback_metadata"), dict) else {}
+    success, message = _finalize_confirmed_payment(business["id"], str(intent["_id"]), query_result, metadata)
+    status = c["intents"].find_one({"_id": intent["_id"], "business_id": business["id"]})
+    if success:
+        _payment_index().update_one({"checkout_request_id": intent["checkout_request_id"]}, {"$set": {"status": "succeeded", "provider_receipt": (status or {}).get("provider_receipt", ""), "updated_at": _now()}})
+        return ok(_serialize(status), message)
+    _payment_index().update_one({"checkout_request_id": intent["checkout_request_id"]}, {"$set": {"status": "reconciliation_required", "message": message[:500], "updated_at": _now()}})
+    return ok(_serialize(status), message)
 
 
 @payments_bp.get("/finance/invoices/<invoice_id>/mpesa/status")
