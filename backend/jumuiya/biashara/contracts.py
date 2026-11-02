@@ -243,7 +243,7 @@ def update_automation_rule(rule_id):
     if not result.matched_count:
         raise APIError("Automation rule not found.", 404, "resource_not_found")
     return ok(serialise(collection("jumuiya_biashara_automation_rules").find_one({
-        "_id": clean_id(rule_id), "owner_user_id": uid, "business_id": _business_id(business)
+        "_id": clean_id(rule_id), "business_id": _business_id(business)
     })))
 
 
