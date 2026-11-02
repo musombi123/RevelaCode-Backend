@@ -38,6 +38,7 @@ TENANT_COLLECTIONS = frozenset({
     "jumuiya_business_website_inquiries",
     "jumuiya_biashara_invoices",
     "jumuiya_biashara_payment_allocations",
+    "jumuiya_biashara_payment_intents",
     "jumuiya_biashara_automation_rules",
     "jumuiya_biashara_sync_jobs",
     "jumuiya_factory_production_batches",
@@ -151,6 +152,20 @@ def _ensure_tenant_indexes(database):
     database["jumuiya_factory_alerts"].create_index(
         [("business_id", ASCENDING), ("status", ASCENDING), ("created_at", DESCENDING)],
         name="ix_factory_alerts_status_created",
+    )
+    database["jumuiya_biashara_payment_intents"].create_index(
+        [("business_id", ASCENDING), ("idempotency_key", ASCENDING)],
+        unique=True, name="uq_biashara_mpesa_idempotency",
+    )
+    database["jumuiya_biashara_payment_intents"].create_index(
+        [("business_id", ASCENDING), ("invoice_id", ASCENDING), ("active_slot", ASCENDING)],
+        unique=True, partialFilterExpression={"active_slot": {"$type": "string"}},
+        name="uq_biashara_invoice_active_checkout",
+    )
+    database["jumuiya_biashara_payment_allocations"].create_index(
+        [("business_id", ASCENDING), ("provider_receipt", ASCENDING)],
+        unique=True, partialFilterExpression={"provider_receipt": {"$type": "string"}},
+        name="uq_biashara_mpesa_receipt",
     )
     database["jumuiya_biashara_employees"].create_index(
         [("business_id", ASCENDING), ("system_id", ASCENDING)],
