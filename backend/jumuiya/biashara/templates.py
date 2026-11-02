@@ -62,7 +62,7 @@ ROLE_PERMISSIONS = {
         "production.view", "production.create", "production.update", "production.materials.view",
         "machines.view", "machines.create", "machines.readings.create", "quality.view", "quality.inspect",
         "suppliers.view", "purchases.view", "purchases.create", "automations.view", "automations.manage",
-        "team.view", "team.manage", "attendance.view", "sync.view", "sync.request",
+        "team.view", "team.manage", "attendance.view", "sync.view", "sync.request", "hr.attendance.self",
     }),
     "manager": frozenset({
         "dashboard.view", "reports.view", "sales.view", "sales.create", "orders.view", "orders.create", "orders.update",
@@ -70,22 +70,22 @@ ROLE_PERMISSIONS = {
         "inventory.view", "inventory.create", "inventory.adjust", "inventory.manage",
         "production.view", "production.create", "production.update",
         "machines.view", "machines.readings.create", "quality.view", "quality.inspect", "team.view",
-        "sync.view", "sync.request", "expenses.view", "expenses.create",
+        "sync.view", "sync.request", "expenses.view", "expenses.create", "hr.attendance.self",
     }),
     "hr_manager": frozenset({
         "dashboard.view", "hr.view", "hr.employees.manage", "hr.attendance.view",
-        "hr.attendance.manage", "hr.leave.manage", "hr.payroll.prepare", "team.view", "team.manage",
+        "hr.attendance.manage", "hr.leave.manage", "hr.payroll.prepare", "team.view", "team.manage", "hr.attendance.self",
     }),
     "accountant": frozenset({
         "dashboard.view", "reports.view", "finance.view", "finance.create", "finance.allocate",
         "expenses.view", "expenses.create", "sales.view", "orders.view", "customers.view",
         "invoices.view", "invoices.create", "invoices.allocate", "mpesa.reconcile", "etims.view",
-        "sync.view", "sync.request",
+        "sync.view", "sync.request", "hr.attendance.self",
     }),
     "store_keeper": frozenset({
         "dashboard.view", "inventory.view", "inventory.create", "inventory.adjust", "inventory.manage",
         "suppliers.view", "suppliers.manage", "purchases.view", "purchases.create",
-        "production.materials.view", "sync.view", "sync.request",
+        "production.materials.view", "sync.view", "sync.request", "hr.attendance.self",
     }),
     "inventory": frozenset({
         "dashboard.view", "inventory.view", "inventory.create", "inventory.adjust", "inventory.manage",
@@ -94,17 +94,17 @@ ROLE_PERMISSIONS = {
     "factory_floor_lead": frozenset({
         "dashboard.view", "production.view", "production.create", "production.update",
         "machines.view", "machines.readings.create", "quality.view", "quality.inspect",
-        "inventory.view", "sync.view",
+        "inventory.view", "sync.view", "hr.attendance.self",
     }),
     "sales_agent": frozenset({
         "dashboard.view", "sales.view", "sales.create", "customers.view", "customers.create",
         "orders.view", "orders.create", "orders.update", "catalog.view", "inventory.view",
-        "website.inquiries.view", "sync.view",
+        "website.inquiries.view", "sync.view", "hr.attendance.self",
     }),
     "employee": frozenset({"dashboard.view", "hr.attendance.self", "sync.view"}),
     "sales": frozenset({
         "dashboard.view", "sales.view", "sales.create", "customers.view", "customers.create",
-        "orders.view", "orders.create", "catalog.view", "inventory.view",
+        "orders.view", "orders.create", "catalog.view", "inventory.view", "hr.attendance.self",
     }),
     "viewer": frozenset({
         "dashboard.view", "reports.view", "sales.view", "inventory.view", "customers.view", "orders.view",
