@@ -4,15 +4,16 @@
 
 Biashara OS uses the existing RevelaCode/Jumuiya backend and the existing Biashara workspace. It is configuration-driven, not a second operating system or a separate backend fork. Elimu and Biashara may share identity, permissions, audit logging, offline-sync contracts and notification infrastructure, while each hub keeps its own domain rules.
 
-This branch introduces the first configuration step: an industry template, business scale and a simple/advanced workspace mode. It is **not** a claim that every planned module or external integration is already live.
+The working branches now extend the existing Biashara workspace with a company-tenant layer, industry manifests, server-side role permissions, factory and HR workflows, offline tenant scoping, invoice M-Pesa checkout and integration-readiness diagnostics. This is a development-branch status, not a production-deployment claim; the gated items in Section 9 remain gated.
 
 ## 1. Three architecture layers
 
 ### Tenant boundary
 - Every business-owned record must be scoped to an authenticated business ID; the server must resolve the selected business from the authenticated user's ownership or membership.
-- Add an explicit immutable **tenant_id** where it improves consistency, and enforce it in every read, update, delete, background job, export and sync operation.
+- Every company registry record receives a deterministic **tenant_id**. Operational database identity is derived from the verified business ID; never accept a tenant database name from a client.
 - Never trust a client-supplied business ID, role, owner ID or verification state.
-- Use one MongoDB database per Biashara company within the existing MongoDB cluster. The central database retains the company directory, identity, memberships, invitations, tenant registry and domain registry. Operational company collections are stored in a deterministic database named with the prefix `revelacode_biz_` plus a SHA-256 identifier prefix; customer slugs are never database names.\n- Migrate legacy company-owned records idempotently on first verified access, retaining the shared-database source records until a reviewed cleanup is approved. Fail closed if a tenant-owned collection is accessed without a verified company context. Background jobs must provide an explicit business ID.
+- Use one MongoDB database per Biashara company within the existing MongoDB cluster. The central database retains the company directory, identity, memberships, invitations, tenant registry and domain registry. Operational company collections are stored in a deterministic database named with the prefix `revelacode_biz_` plus a SHA-256 identifier prefix; customer slugs are never database names.
+- Migrate legacy company-owned records idempotently while retaining shared-database source records until a reviewed cleanup is approved. Provisioning uses a lease and schema version to avoid concurrent migrations. Fail closed if a tenant-owned collection is accessed without a verified company context. Background jobs must provide an explicit business ID.
 - Subdomains such as **sarefactory.revelacode.co.ke** resolve only when a domain registry record is verified and active. The API checks the authenticated membership and rejects an X-Business-ID that conflicts with a verified company Origin. The DNS wildcard and Render custom-domain binding are deployment prerequisites; new domain records remain pending until verified.
 
 ### Industry template
@@ -120,7 +121,7 @@ Use a rule engine with **observe → alert → request review → approve → ex
 ## 8. Definition of done
 
 - New template and scale values are validated on the server and saved in the existing business record.
-- Existing businesses without these fields continue to load in advanced mode; no destructive database split or API contract break is introduced.
+- Existing businesses without these fields continue to load with safe defaults. Database provisioning copies legacy records idempotently and retains original shared-database records; no destructive migration or Elimu API contract change is permitted.
 - Simple navigation is consistent on desktop and mobile, but the backend still enforces authorization independently.
 - Tests cover invalid template values, profile updates, unverified business access, cross-tenant access and sync idempotency.
 - Integrations are shown as available only when credentials, provider responses, certification and production checks support that claim.
