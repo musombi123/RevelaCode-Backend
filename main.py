@@ -62,6 +62,8 @@ DEFAULT_FRONTEND_ORIGINS = {
     "http://127.0.0.1:4173",
     "http://localhost",
     "https://localhost",
+    # Tauri 2 Windows production WebView origin for the desktop frontend.
+    "http://tauri.localhost",
 }
 
 
