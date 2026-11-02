@@ -33,6 +33,15 @@ factory_bp = Blueprint("jumuiya_biashara_factory", __name__)
 def _now():
     return datetime.now(timezone.utc)
 
+def _idempotency_key():
+    value = request.headers.get("Idempotency-Key") or request.headers.get("X-Offline-Mutation-Id") or ""
+    value = str(value).strip()
+    if not value:
+        return None
+    if len(value) > 160:
+        raise APIError("Idempotency key is too long.", 422, "invalid_idempotency_key")
+    return value
+
 def _id(value):
     try:
         return ObjectId(str(value))
@@ -138,6 +147,11 @@ def create_production_batch():
     if not raw_product_id or not output_product_id:
         raise APIError("Select both a raw-material product and a finished-goods product.", 422, "validation_error")
     c = _collections(business["id"])
+    idempotency_key = _idempotency_key()
+    if idempotency_key:
+        existing = c["batches"].find_one({"business_id": business["id"], "idempotency_key": idempotency_key})
+        if existing:
+            return ok(_serialise(existing), "This production batch was already recorded.")
     raw_id, output_id = _id(raw_product_id), _id(output_product_id)
     now = _now()
     batch_id = ObjectId()
@@ -145,6 +159,7 @@ def create_production_batch():
         "_id": batch_id,
         "business_id": business["id"],
         "batch_number": batch_number,
+        "idempotency_key": idempotency_key,
         "raw_material_product_id": raw_product_id,
         "output_product_id": output_product_id,
         "input_quantity": float(material_quantity),
@@ -197,6 +212,10 @@ def create_production_batch():
                 c["movements"].insert_one(movement, session=session)
                 c["batches"].insert_one(batch, session=session)
     except DuplicateKeyError:
+        if idempotency_key:
+            existing = c["batches"].find_one({"business_id": business["id"], "idempotency_key": idempotency_key})
+            if existing:
+                return ok(_serialise(existing), "This production batch was already recorded.")
         raise APIError("A production batch with this number already exists.", 409, "duplicate_batch_number")
     except APIError:
         raise
@@ -219,7 +238,10 @@ def complete_production_batch(batch_id):
     batch = batch_collection.find_one({"_id": _id(batch_id), "business_id": business["id"]})
     if not batch:
         raise APIError("Production batch not found.", 404, "batch_not_found")
+    idempotency_key = _idempotency_key()
     if batch.get("status") != "in_progress":
+        if idempotency_key and batch.get("completion_idempotency_key") == idempotency_key:
+            return ok(_serialise(batch), "This production completion was already recorded.")
         raise APIError("Only an in-progress batch can be completed.", 409, "batch_state_conflict")
     total = actual + waste + byproducts
     if total > Decimal(str(batch["input_quantity"])):
@@ -236,6 +258,7 @@ def complete_production_batch(batch_id):
             "recoverable_byproducts_quantity": float(byproducts),
             "yield_percent": float(yield_percent),
             "completion_notes": str(data.get("notes") or "")[:2000],
+            "completion_idempotency_key": idempotency_key,
             "status": "quality_hold",
             "completed_by_user_id": uid,
             "completed_at": now,
@@ -243,6 +266,9 @@ def complete_production_batch(batch_id):
         }, "$push": {"events": {"event": "completed_pending_quality", "actor_user_id": uid, "at": now}}},
     )
     if not result.modified_count:
+        latest = batch_collection.find_one({"_id": batch["_id"], "business_id": business["id"]})
+        if idempotency_key and latest and latest.get("completion_idempotency_key") == idempotency_key:
+            return ok(_serialise(latest), "This production completion was already recorded.")
         raise APIError("The batch changed while it was being completed. Refresh and retry.", 409, "batch_state_conflict")
     return ok(_serialise(batch_collection.find_one({"_id": batch["_id"]})), "Batch completed and placed on quality hold.")
 
@@ -266,9 +292,18 @@ def inspect_quality():
     if grade not in {"A", "B", "C", "REJECTED"}:
         raise APIError("grade must be A, B, C or REJECTED.", 422, "invalid_grade")
     c = _collections(business["id"])
+    idempotency_key = _idempotency_key()
+    if idempotency_key:
+        existing = c["checks"].find_one({"business_id": business["id"], "idempotency_key": idempotency_key})
+        if existing:
+            return ok(_serialise(existing), "This quality inspection was already recorded.")
+    existing_for_batch = c["checks"].find_one({"business_id": business["id"], "batch_id": str(batch_id)})
+    if existing_for_batch:
+        raise APIError("This batch already has a quality inspection.", 409, "quality_check_exists")
     now = _now()
     check = {
         "_id": ObjectId(), "business_id": business["id"], "batch_id": str(batch_id),
+        "idempotency_key": idempotency_key,
         "grade": grade, "result": "passed" if grade in {"A", "B", "C"} else "rejected",
         "inspection_notes": str(data.get("inspection_notes") or "")[:3000],
         "measurements": data.get("measurements") if isinstance(data.get("measurements"), dict) else {},
@@ -312,6 +347,10 @@ def inspect_quality():
                     session=session,
                 )
     except DuplicateKeyError:
+        if idempotency_key:
+            existing = c["checks"].find_one({"business_id": business["id"], "idempotency_key": idempotency_key})
+            if existing:
+                return ok(_serialise(existing), "This quality inspection was already recorded.")
         raise APIError("This batch already has a quality inspection.", 409, "quality_check_exists")
     except APIError:
         raise
@@ -345,9 +384,20 @@ def create_machine():
         "minimum_output_per_hour": float(min_rate), "status": "active",
         "created_by_user_id": uid, "created_at": _now(), "updated_at": _now(),
     }
+    idempotency_key = _idempotency_key()
+    doc["idempotency_key"] = idempotency_key
+    machines = tenant_collection("jumuiya_factory_machines", business["id"])
+    if idempotency_key:
+        existing = machines.find_one({"business_id": business["id"], "idempotency_key": idempotency_key})
+        if existing:
+            return ok(_serialise(existing), "This machine registration was already recorded.")
     try:
-        tenant_collection("jumuiya_factory_machines", business["id"]).insert_one(doc)
+        machines.insert_one(doc)
     except DuplicateKeyError:
+        if idempotency_key:
+            existing = machines.find_one({"business_id": business["id"], "idempotency_key": idempotency_key})
+            if existing:
+                return ok(_serialise(existing), "This machine registration was already recorded.")
         raise APIError("That machine_code already exists in this business.", 409, "duplicate_machine_code")
     return created(_serialise(doc), "Machine registered.")
 
@@ -366,14 +416,28 @@ def record_machine_reading(machine_id):
     if not machine:
         raise APIError("Active machine not found.", 404, "machine_not_found")
     rate = (output / hours).quantize(Decimal("0.01"))
+    idempotency_key = _idempotency_key()
+    readings = tenant_collection("jumuiya_factory_machine_readings", business["id"])
+    if idempotency_key:
+        existing = readings.find_one({"business_id": business["id"], "idempotency_key": idempotency_key})
+        if existing:
+            return ok(_serialise(existing), "This machine reading was already recorded.")
     reading = {
-        "_id": ObjectId(), "business_id": business["id"], "machine_id": str(machine["_id"]),
+        "_id": ObjectId(), "business_id": business["id"], "idempotency_key": idempotency_key,
+        "machine_id": str(machine["_id"]),
         "machine_code": machine["machine_code"], "operating_hours": float(hours),
         "output_quantity": float(output), "output_per_hour": float(rate),
         "operator_user_id": uid, "notes": str(data.get("notes") or "")[:1500],
         "recorded_at": now,
     }
-    tenant_collection("jumuiya_factory_machine_readings", business["id"]).insert_one(reading)
+    try:
+        readings.insert_one(reading)
+    except DuplicateKeyError:
+        if idempotency_key:
+            existing = readings.find_one({"business_id": business["id"], "idempotency_key": idempotency_key})
+            if existing:
+                return ok(_serialise(existing), "This machine reading was already recorded.")
+        raise APIError("Machine reading was already submitted.", 409, "duplicate_machine_reading")
     min_rate = Decimal(str(machine.get("minimum_output_per_hour", 0) or 0))
     alert = None
     if min_rate > 0 and rate < min_rate:
