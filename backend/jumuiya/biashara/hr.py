@@ -76,15 +76,27 @@ def _serialize(document):
     return result
 
 
+def _idempotency_key():
+    value = request.headers.get("Idempotency-Key") or request.headers.get("X-Offline-Mutation-Id") or ""
+    value = str(value).strip()
+    if not value:
+        return None
+    if len(value) > 160:
+        raise APIError("Idempotency key is too long.", 422, "invalid_idempotency_key")
+    return value
+
+
 def _company(permission):
     uid = str(current_user_id())
     business = services._require_business(uid, permission=permission)
+    _ensure_indexes(business["id"])
     return uid, business
 
 
 def _self_employee():
     uid = str(current_user_id())
     business = services._require_business(uid, permission="hr.attendance.self")
+    _ensure_indexes(business["id"])
     employees = tenant_collection("jumuiya_biashara_employees", business["id"])
     employee = employees.find_one({"business_id": business["id"], "user_id": uid, "status": "active"})
     if not employee:
@@ -141,6 +153,11 @@ def _ensure_indexes(business_id):
         unique=True, partialFilterExpression={"user_id": {"$type": "string"}},
         name="uq_biashara_employee_user",
     )
+    employees.create_index(
+        [("business_id", ASCENDING), ("idempotency_key", ASCENDING)],
+        unique=True, partialFilterExpression={"idempotency_key": {"$type": "string"}},
+        name="uq_biashara_employee_idempotency",
+    )
     attendance.create_index(
         [("business_id", ASCENDING), ("user_id", ASCENDING), ("local_date", DESCENDING)],
         name="ix_biashara_attendance_user_date",
@@ -150,12 +167,22 @@ def _ensure_indexes(business_id):
         unique=True, partialFilterExpression={"open_shift": True},
         name="uq_biashara_attendance_open_shift",
     )
+    attendance.create_index(
+        [("business_id", ASCENDING), ("clock_in_idempotency_key", ASCENDING)],
+        unique=True, partialFilterExpression={"clock_in_idempotency_key": {"$type": "string"}},
+        name="uq_biashara_attendance_clockin_idempotency",
+    )
+    attendance.create_index(
+        [("business_id", ASCENDING), ("clock_out_idempotency_key", ASCENDING)],
+        unique=True, partialFilterExpression={"clock_out_idempotency_key": {"$type": "string"}},
+        name="uq_biashara_attendance_clockout_idempotency",
+    )
 
 
 @hr_bp.get("/hr/employees")
 @require_authenticated
 def list_employees():
-    uid, business = _company("hr.employees.view")
+    uid, business = _company("hr.view")
     _ensure_indexes(business["id"])
     rows = tenant_collection("jumuiya_biashara_employees", business["id"]).find(
         {"business_id": business["id"], "status": {"$ne": "deleted"}}
@@ -181,6 +208,12 @@ def create_employee():
     if role not in allowed_roles:
         raise APIError("Select a valid employee role. Executive and administrator roles cannot be assigned through HR.", 422, "invalid_employee_role")
     linked_user_id = _text(data.get("user_id"), "User ID", 160)
+    idempotency_key = _idempotency_key()
+    employees = tenant_collection("jumuiya_biashara_employees", business["id"])
+    if idempotency_key:
+        existing = employees.find_one({"business_id": business["id"], "idempotency_key": idempotency_key})
+        if existing:
+            return ok(_serialize(existing), "This employee registration was already recorded.")
     if linked_user_id:
         member = resolve_business_access(linked_user_id, business["id"])
         if not member:
@@ -209,6 +242,7 @@ def create_employee():
         "department": _text(data.get("department"), "Department", 100),
         "job_title": _text(data.get("job_title"), "Job title", 120),
         "role": role,
+        "idempotency_key": idempotency_key,
         "shift_start": start_time.strftime("%H:%M"),
         "shift_end": end_time.strftime("%H:%M"),
         "late_grace_minutes": grace,
@@ -217,10 +251,13 @@ def create_employee():
         "created_at": now,
         "updated_at": now,
     }
-    employees = tenant_collection("jumuiya_biashara_employees", business["id"])
     try:
         employees.insert_one(employee)
     except DuplicateKeyError:
+        if idempotency_key:
+            existing = employees.find_one({"business_id": business["id"], "idempotency_key": idempotency_key})
+            if existing:
+                return ok(_serialize(existing), "This employee registration was already recorded.")
         raise APIError("This account is already linked to an employee or the System ID collided. Retry the registration.", 409, "employee_already_registered")
     return created(_serialize(employee), "Employee registered. Share the System ID through your approved onboarding process.")
 
@@ -230,7 +267,7 @@ def create_employee():
 def update_employee(employee_id):
     uid, business = _company("hr.employees.manage")
     data = _body()
-    allowed = {"name", "phone", "email", "department", "job_title", "role", "shift_start", "shift_end", "late_grace_minutes", "status"}
+    allowed = {"name", "phone", "email", "department", "job_title", "role", "user_id", "shift_start", "shift_end", "late_grace_minutes", "status"}
     update = {}
     for field in allowed:
         if field not in data:
@@ -239,6 +276,15 @@ def update_employee(employee_id):
             update[field] = _text(data[field], field.replace("_", " ").title(), 160, required=True)
         elif field in {"email", "department", "job_title"}:
             update[field] = _text(data[field], field.replace("_", " ").title(), 254 if field == "email" else 120)
+        elif field == "user_id":
+            value = _text(data[field], "User ID", 160)
+            if value:
+                member = resolve_business_access(value, business["id"])
+                if not member:
+                    raise APIError("The linked account must first accept an invitation to this company.", 422, "employee_membership_required")
+                if member.get("is_owner") or str(member.get("role") or "") in {"ceo", "director", "admin", "owner"}:
+                    raise APIError("Executive accounts cannot be linked as ordinary employees.", 422, "employee_role_conflict")
+            update[field] = value or None
         elif field == "role":
             value = _text(data[field], "Role", 48).lower().replace("-", "_").replace(" ", "_")
             if value not in {"employee", "sales_agent", "store_keeper", "factory_floor_lead", "accountant", "hr_manager", "operations_manager", "manager"}:
@@ -302,9 +348,13 @@ def list_attendance():
 @require_authenticated
 def clock_in():
     uid, business, employee = _self_employee()
-    _ensure_indexes(business["id"])
     data = _body()
     attendance = tenant_collection("jumuiya_biashara_attendance", business["id"])
+    idempotency_key = _idempotency_key()
+    if idempotency_key:
+        previous = attendance.find_one({"business_id": business["id"], "clock_in_idempotency_key": idempotency_key})
+        if previous:
+            return ok(_serialize(previous), "This clock-in was already recorded.")
     existing = attendance.find_one({"business_id": business["id"], "user_id": uid, "open_shift": True})
     if existing:
         raise APIError("You are already clocked in. Clock out before starting another shift.", 409, "shift_already_open")
@@ -324,6 +374,7 @@ def clock_in():
         "local_date": local.date().isoformat(),
         "clock_in_at": now,
         "clock_in_gps": gps,
+        "clock_in_idempotency_key": idempotency_key,
         "late_minutes": late_minutes,
         "clock_out_at": None,
         "clock_out_gps": None,
@@ -336,6 +387,10 @@ def clock_in():
     try:
         attendance.insert_one(record)
     except DuplicateKeyError:
+        if idempotency_key:
+            previous = attendance.find_one({"business_id": business["id"], "clock_in_idempotency_key": idempotency_key})
+            if previous:
+                return ok(_serialize(previous), "This clock-in was already recorded.")
         raise APIError("You are already clocked in on another device.", 409, "shift_already_open")
     return created(_serialize(record), "Clock-in recorded.")
 
@@ -345,6 +400,11 @@ def clock_in():
 def clock_out():
     uid, business, employee = _self_employee()
     attendance = tenant_collection("jumuiya_biashara_attendance", business["id"])
+    idempotency_key = _idempotency_key()
+    if idempotency_key:
+        previous = attendance.find_one({"business_id": business["id"], "clock_out_idempotency_key": idempotency_key})
+        if previous:
+            return ok(_serialize(previous), "This clock-out was already recorded.")
     record = attendance.find_one({"business_id": business["id"], "user_id": uid, "open_shift": True})
     if not record:
         raise APIError("There is no open shift to clock out.", 409, "no_open_shift")
@@ -354,7 +414,6 @@ def clock_out():
     clock_in = record["clock_in_at"]
     worked_minutes = max(0, int((now - clock_in).total_seconds() // 60))
     local_start = clock_in.astimezone(LOCAL_ZONE)
-    local_end = now.astimezone(LOCAL_ZONE)
     shift_start = _shift_time(employee.get("shift_start"), "shift_start", "08:00")
     shift_end = _shift_time(employee.get("shift_end"), "shift_end", "17:00")
     shift_start_dt = datetime.combine(local_start.date(), shift_start, tzinfo=LOCAL_ZONE)
@@ -368,6 +427,7 @@ def clock_out():
         {"$set": {
             "clock_out_at": now,
             "clock_out_gps": gps,
+            "clock_out_idempotency_key": idempotency_key,
             "worked_minutes": worked_minutes,
             "overtime_minutes": overtime_minutes,
             "open_shift": False,
@@ -375,6 +435,10 @@ def clock_out():
         }},
     )
     if not result.modified_count:
+        if idempotency_key:
+            previous = attendance.find_one({"business_id": business["id"], "clock_out_idempotency_key": idempotency_key})
+            if previous:
+                return ok(_serialize(previous), "This clock-out was already recorded.")
         raise APIError("The shift was changed by another request. Refresh attendance and try again.", 409, "shift_state_conflict")
     return ok(_serialize(attendance.find_one({"_id": record["_id"], "business_id": business["id"]})), "Clock-out recorded.")
 
@@ -383,11 +447,9 @@ def clock_out():
 @require_authenticated
 def my_attendance():
     uid, business, employee = _self_employee()
-    rows = tenant_collection("jumuiya_biashara_attendance", business["id"]).find(
-        {"business_id": business["id"], "user_id": uid}
-    ).sort("clock_in_at", DESCENDING).limit(30)
-    open_shift = next((row for row in rows if row.get("open_shift")), None)
     recent = tenant_collection("jumuiya_biashara_attendance", business["id"]).find(
         {"business_id": business["id"], "user_id": uid}
     ).sort("clock_in_at", DESCENDING).limit(30)
-    return ok({"employee": _serialize(employee), "open_shift": _serialize(open_shift), "recent": [_serialize(row) for row in recent]})
+    recent_rows = list(recent)
+    open_shift = next((row for row in recent_rows if row.get("open_shift")), None)
+    return ok({"employee": _serialize(employee), "open_shift": _serialize(open_shift), "recent": [_serialize(row) for row in recent_rows]})
