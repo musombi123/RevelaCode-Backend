@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timezone, timedelta
 from typing import Any
 
-from backend.jumuiya.core.database import collection
+from backend.jumuiya.biashara.tenant_store import biashara_collection as collection
 
 from backend.jumuiya.biashara.services import (
     _require_business,
