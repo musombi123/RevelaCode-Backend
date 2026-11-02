@@ -22,6 +22,7 @@ from backend.jumuiya.biashara.contracts import contracts_bp
 from backend.jumuiya.biashara.factory import factory_bp
 from backend.jumuiya.biashara.hr import hr_bp
 from backend.jumuiya.biashara.payments import payments_bp
+from backend.jumuiya.biashara.integrations import integrations_bp
 from backend.jumuiya.biashara.analytics.routes import (
     analytics_bp,
 )
@@ -226,6 +227,11 @@ def register_jumuiya(app):
 
     app.register_blueprint(
         payments_bp,
+        url_prefix="/api/jumuiya/biashara",
+    )
+
+    app.register_blueprint(
+        integrations_bp,
         url_prefix="/api/jumuiya/biashara",
     )
 
