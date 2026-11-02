@@ -10,7 +10,7 @@ from __future__ import annotations
 import hashlib
 import re
 import secrets
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from flask import g, has_request_context
 from urllib.parse import urlsplit
@@ -24,6 +24,8 @@ from backend.jumuiya.core.errors import APIError
 TENANT_DB_PREFIX = "revelacode_biz_"
 TENANT_REGISTRY = "jumuiya_biashara_tenants"
 DOMAIN_REGISTRY = "jumuiya_biashara_domains"
+TENANT_SCHEMA_VERSION = 2
+MIGRATION_LOCK_MINUTES = 10
 
 # These are operational records, not global identity, membership, or business
 # directory records. They move to the company's database as part of migration.
@@ -204,82 +206,163 @@ def _copy_legacy_business_records(database, business_id):
         copied += result.upserted_count + result.modified_count
     return copied
 
-def ensure_business_tenant(business_id, *, business_slug=None, migrate_legacy=True):
-    """Create or resume a business database and its central registry record.
+def _register_business_domain(business_id, business_slug, tenant_id):
+    if not business_slug:
+        return
+    slug = re.sub(r"[^a-z0-9-]", "", str(business_slug).lower()).strip("-")
+    if not slug:
+        return
+    hostname = slug + ".revelacode.co.ke"
+    _domain_registry().update_one(
+        {"hostname": hostname, "business_id": business_id},
+        {"$setOnInsert": {
+            "hostname": hostname,
+            "business_id": business_id,
+            "tenant_id": tenant_id,
+            "verification_token": secrets.token_urlsafe(24),
+            "status": "pending_dns",
+            "verification_status": "pending",
+            "created_at": _now(),
+        }, "$set": {"updated_at": _now()}},
+        upsert=True,
+    )
 
-    Provisioning is idempotent. Migration copies each business-scoped source
-    document with its original _id and never deletes shared-database records.
+
+def ensure_business_tenant(business_id, *, business_slug=None, migrate_legacy=True):
+    """Provision, resume or schema-upgrade one company database.
+
+    Only one request owns the migration lease at a time. Legacy copies are
+    idempotent and retain their source records until a reviewed cleanup.
     """
     key = _business_key(business_id)
     db_name = database_name_for_business(key)
+    tenant_id = "biz_" + hashlib.sha256(key.encode("utf-8")).hexdigest()[:20]
     registry = _registry()
     now = _now()
     existing = registry.find_one({"business_id": key})
-    if existing and existing.get("status") == "active" and existing.get("database_name") == db_name:
+    if existing and existing.get("database_name") not in (None, db_name):
+        raise APIError("The company tenant registry points to an unexpected database.", 503, "business_tenant_registry_mismatch")
+
+    if (
+        existing
+        and existing.get("status") == "active"
+        and existing.get("database_name") == db_name
+        and int(existing.get("schema_version", 0) or 0) >= TENANT_SCHEMA_VERSION
+        and (not migrate_legacy or existing.get("migration_status") == "complete")
+    ):
         database = client[db_name]
         _ensure_tenant_indexes(database)
+        _register_business_domain(key, business_slug, existing.get("tenant_id") or tenant_id)
         return existing
 
     registry.update_one(
         {"business_id": key},
         {"$setOnInsert": {
             "business_id": key,
-            "tenant_id": "biz_" + hashlib.sha256(key.encode("utf-8")).hexdigest()[:20],
+            "tenant_id": tenant_id,
             "database_name": db_name,
             "status": "provisioning",
+            "schema_version": 0,
+            "migration_status": "pending",
             "created_at": now,
         }, "$set": {"updated_at": now}},
         upsert=True,
     )
+
+    lock_token = secrets.token_urlsafe(24)
+    claim_query = {
+        "business_id": key,
+        "$or": [
+            {
+                "status": {"$in": ["provisioning", "migration_failed"]},
+                "$or": [
+                    {"migration_lock_until": {"$lte": now}},
+                    {"migration_lock_until": {"$exists": False}},
+                ],
+            },
+            {"status": "migrating", "migration_lock_until": {"$lte": now}},
+            {
+                "status": "active",
+                "$or": [
+                    {"schema_version": {"$lt": TENANT_SCHEMA_VERSION}},
+                    {"schema_version": {"$exists": False}},
+                    {"migration_status": "new_tenant"},
+                ],
+            },
+        ],
+    }
+    claim = registry.update_one(
+        claim_query,
+        {"$set": {
+            "database_name": db_name,
+            "tenant_id": tenant_id,
+            "status": "migrating",
+            "migration_lock_token": lock_token,
+            "migration_lock_until": now + timedelta(minutes=MIGRATION_LOCK_MINUTES),
+            "updated_at": now,
+        }},
+    )
+    if not claim.modified_count:
+        current = registry.find_one({"business_id": key}) or {}
+        if (
+            current.get("status") == "active"
+            and current.get("database_name") == db_name
+            and int(current.get("schema_version", 0) or 0) >= TENANT_SCHEMA_VERSION
+            and (not migrate_legacy or current.get("migration_status") == "complete")
+        ):
+            database = client[db_name]
+            _ensure_tenant_indexes(database)
+            _register_business_domain(key, business_slug, current.get("tenant_id") or tenant_id)
+            return current
+        raise APIError(
+            "Company database provisioning or migration is already in progress. Retry after the current operation completes.",
+            503,
+            "business_tenant_provisioning",
+        )
+
     database = client[db_name]
     metadata = database["jumuiya_tenant_metadata"]
-    metadata.update_one(
-        {"_id": "tenant"},
-        {"$set": {"business_id": key, "database_name": db_name, "schema_version": 1, "updated_at": now},
-         "$setOnInsert": {"created_at": now}},
-        upsert=True,
-    )
-
     try:
         copied = _copy_legacy_business_records(database, key) if migrate_legacy else 0
         _ensure_tenant_indexes(database)
+        schema_version = TENANT_SCHEMA_VERSION if migrate_legacy else 0
+        metadata.update_one(
+            {"_id": "tenant"},
+            {"$set": {
+                "business_id": key,
+                "tenant_id": tenant_id,
+                "database_name": db_name,
+                "schema_version": schema_version,
+                "updated_at": _now(),
+            }, "$setOnInsert": {"created_at": now}},
+            upsert=True,
+        )
         registry.update_one(
-            {"business_id": key},
+            {"business_id": key, "migration_lock_token": lock_token, "status": "migrating"},
             {"$set": {
                 "database_name": db_name,
+                "tenant_id": tenant_id,
+                "schema_version": schema_version,
                 "status": "active",
                 "migration_status": "complete" if migrate_legacy else "new_tenant",
                 "legacy_documents_copied": copied,
                 "updated_at": _now(),
-            }},
+            }, "$unset": {"migration_lock_token": "", "migration_lock_until": "", "migration_error": ""}},
         )
     except Exception as exc:
         registry.update_one(
-            {"business_id": key},
-            {"$set": {"status": "migration_failed", "migration_error": str(exc)[:500], "updated_at": _now()}},
+            {"business_id": key, "migration_lock_token": lock_token},
+            {"$set": {
+                "status": "migration_failed",
+                "migration_error": str(exc)[:500],
+                "updated_at": _now(),
+            }, "$unset": {"migration_lock_token": "", "migration_lock_until": ""}},
         )
         raise
 
-    # Subdomains are registered as pending until wildcard DNS and the serving
-    # platform are configured and the hostname has been verified.
-    if business_slug:
-        slug = re.sub(r"[^a-z0-9-]", "", str(business_slug).lower()).strip("-")
-        if slug:
-            hostname = slug + ".revelacode.co.ke"
-            _domain_registry().update_one(
-                {"hostname": hostname, "business_id": key},
-                {"$setOnInsert": {
-                    "hostname": hostname,
-                    "business_id": key,
-                    "tenant_id": "biz_" + hashlib.sha256(key.encode("utf-8")).hexdigest()[:20],
-                    "verification_token": secrets.token_urlsafe(24),
-                    "status": "pending_dns",
-                    "verification_status": "pending",
-                    "created_at": _now(),
-                }, "$set": {"updated_at": _now()}},
-                upsert=True,
-            )
+    _register_business_domain(key, business_slug, tenant_id)
     return registry.find_one({"business_id": key})
+
 
 def set_business_tenant_context(business_id, *, business_slug=None, migrate_legacy=True):
     """Attach the trusted resolved tenant to this request after membership checks."""
