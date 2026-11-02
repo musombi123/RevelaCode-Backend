@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 from datetime import datetime, timezone
-from decimal import Decimal
+from bson import ObjectId
 
 from backend.jumuiya.biashara import whatsapp
 
@@ -116,3 +116,64 @@ def test_command_parser_does_not_execute_unrecognized_actions():
 
     assert "do not recognize" in reply.lower()
     assert "employee" not in reply.lower() or "read-only" in reply.lower()
+
+
+
+def test_linked_company_owner_can_be_resolved_without_changing_company_role(monkeypatch):
+    employee_id = ObjectId()
+    digest = whatsapp.phone_hash("0712345678")
+    identity = {
+        "business_id": "biz-owner",
+        "employee_id": str(employee_id),
+        "user_id": "owner-user",
+        "phone_hash": digest,
+        "status": "active",
+    }
+
+    class FakeCursor:
+        def limit(self, count):
+            assert count == 3
+            return [identity]
+
+    class FakeRegistry:
+        def find(self, query):
+            assert query == {"phone_hash": digest, "status": "active"}
+            return FakeCursor()
+
+    class FakeEmployees:
+        def find_one(self, query):
+            assert query == {
+                "_id": employee_id,
+                "business_id": "biz-owner",
+                "user_id": "owner-user",
+                "status": "active",
+            }
+            return {
+                "_id": employee_id,
+                "business_id": "biz-owner",
+                "user_id": "owner-user",
+                "phone": "0712345678",
+                "status": "active",
+            }
+
+    monkeypatch.setattr(whatsapp, "ensure_whatsapp_identity_indexes", lambda: None)
+    monkeypatch.setattr(whatsapp, "core_collection", lambda name: FakeRegistry())
+    monkeypatch.setattr(
+        whatsapp,
+        "resolve_business_access",
+        lambda user_id, business_id: {
+            "business": {"_id": "biz-owner", "name": "Sare Factory", "slug": "sarefactory", "status": "active", "verification_status": "verified"},
+            "role": "ceo",
+            "is_owner": True,
+            "membership": None,
+        } if user_id == "owner-user" and business_id == "biz-owner" else None,
+    )
+    monkeypatch.setattr(whatsapp, "set_business_tenant_context", lambda *args, **kwargs: None)
+    monkeypatch.setattr(whatsapp, "tenant_collection", lambda name, business_id: FakeEmployees())
+
+    resolved, error = whatsapp._resolve_employee("+254712345678")
+
+    assert error == ""
+    assert resolved["role"] == "owner"
+    assert resolved["user_id"] == "owner-user"
+    assert resolved["employee"]["_id"] == employee_id
