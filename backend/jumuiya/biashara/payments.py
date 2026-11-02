@@ -237,26 +237,11 @@ def _finalize_confirmed_payment(business_id, intent_id, query_result, callback_m
     ):
         return False, "Daraja did not confirm this exact checkout as successful."
 
-    receipt = str(callback_meta.get("MpesaReceiptNumber") or "").strip().upper()
-    callback_amount = callback_meta.get("Amount")
-    callback_phone = callback_meta.get("PhoneNumber")
-    if not receipt or len(receipt) > 40:
-        _update_intent_status(c, intent, "receipt_conflict", "Final success was queried, but a valid M-Pesa receipt was not supplied.")
-        return False, "A provider receipt is required before allocation."
     try:
-        received_amount = Decimal(str(callback_amount)).quantize(Decimal("0.01"))
-    except (InvalidOperation, TypeError, ValueError):
-        received_amount = Decimal("-1")
-    if received_amount != Decimal(str(intent["amount"])).quantize(Decimal("0.01")):
-        _update_intent_status(c, intent, "receipt_conflict", "Callback amount did not match the invoice checkout.")
-        return False, "Callback amount did not match the stored invoice intent."
-    try:
-        received_phone = _phone(str(callback_phone))
-    except APIError:
-        received_phone = ""
-    if received_phone != intent.get("phone"):
-        _update_intent_status(c, intent, "receipt_conflict", "Callback payer did not match the STK recipient.")
-        return False, "Callback payer did not match the intended phone number."
+        receipt = daraja._validated_callback_receipt(intent, callback_meta)
+    except (ValueError, APIError, InvalidOperation, TypeError):
+        _update_intent_status(c, intent, "receipt_conflict", "Callback receipt, amount or payer did not match the stored invoice checkout.")
+        return False, "Callback receipt, amount or payer did not match the stored invoice intent."
 
     invoice = c["invoices"].find_one({
         "_id": _id(intent["invoice_id"]),
@@ -357,9 +342,9 @@ def start_invoice_stk_push(invoice_id):
     if not config["ready"]:
         raise APIError("Biashara M-Pesa checkout is not configured for production.", 503, "mpesa_not_configured")
 
-    raw_idempotency = request.headers.get("Idempotency-Key") or ""
+    raw_idempotency = request.headers.get("Idempotency-Key") or request.headers.get("X-Offline-Mutation-Id") or ""
     idempotency_key = str(raw_idempotency).strip()
-    if not idempotency_key or len(idempotency_key) > 160:
+    if not re.fullmatch(r"[A-Za-z0-9._:-]{1,160}", idempotency_key):
         raise APIError("A valid Idempotency-Key request header is required.", 422, "idempotency_key_required")
     phone = _phone(data.get("phone"))
     c = _collections(business["id"])
@@ -454,16 +439,33 @@ def start_invoice_stk_push(invoice_id):
             "updated_at": _now(),
         }},
     )
-    _payment_index().insert_one({
-        "business_id": business["id"],
-        "intent_id": str(intent["_id"]),
-        "invoice_id": str(invoice["_id"]),
-        "checkout_request_id": checkout_id,
-        "merchant_request_id": merchant_id,
-        "status": "pending",
-        "created_at": now,
-        "updated_at": _now(),
-    })
+    try:
+        _payment_index().insert_one({
+            "business_id": business["id"],
+            "intent_id": str(intent["_id"]),
+            "invoice_id": str(invoice["_id"]),
+            "checkout_request_id": checkout_id,
+            "merchant_request_id": merchant_id,
+            "status": "pending",
+            "created_at": now,
+            "updated_at": _now(),
+        })
+    except DuplicateKeyError:
+        existing_index = _payment_index().find_one({"checkout_request_id": checkout_id})
+        if not existing_index or existing_index.get("business_id") != business["id"] or existing_index.get("intent_id") != str(intent["_id"]):
+            _update_intent_status(
+                c, intent, "awaiting_verification",
+                "Daraja returned a checkout identifier that is already indexed elsewhere. Manual reconciliation is required.",
+            )
+            return ok(_serialize(c["intents"].find_one({"_id": intent["_id"]})),
+                      "Payment prompt may have been submitted; callback index conflict requires reconciliation. Do not retry.")
+    except Exception:
+        _update_intent_status(
+            c, intent, "awaiting_verification",
+            "The STK prompt was submitted, but the callback index could not be confirmed. Manual reconciliation is required.",
+        )
+        return ok(_serialize(c["intents"].find_one({"_id": intent["_id"]})),
+                  "Payment prompt may have been submitted; callback routing requires reconciliation. Do not retry.")
     intent = c["intents"].find_one({"_id": intent["_id"], "business_id": business["id"]})
     return created(_serialize(intent), "STK Push submitted. Payment remains pending until provider reconciliation confirms it.")
 
@@ -502,6 +504,7 @@ def receive_biashara_mpesa_callback():
         _update_intent_status(c, intent, "awaiting_verification", "Provider query is temporarily unavailable.")
         return {"ResultCode": 0, "ResultDesc": "Callback acknowledged for reconciliation"}, 200
     query_code = query_result.get("ResultCode")
+    callback_code = callback.get("ResultCode")
     if query_code is None:
         _update_intent_status(c, intent, "awaiting_verification", "Provider query has not returned a final result.")
         return {"ResultCode": 0, "ResultDesc": "Callback acknowledged for reconciliation"}, 200
@@ -509,6 +512,9 @@ def receive_biashara_mpesa_callback():
         _update_intent_status(c, intent, "failed", str(query_result.get("ResultDesc") or "Payment was not completed."), clear_slot=True)
         _payment_index().update_one({"checkout_request_id": checkout_id}, {"$set": {"status": "failed", "updated_at": _now()}})
         return {"ResultCode": 0, "ResultDesc": "Payment result recorded"}, 200
+    if str(callback_code) != "0":
+        _update_intent_status(c, intent, "awaiting_verification", "Daraja query and callback result codes did not both confirm success.")
+        return {"ResultCode": 0, "ResultDesc": "Payment awaits reconciliation"}, 200
     success, message = _finalize_confirmed_payment(business_id, intent_id, query_result, callback_meta)
     if success:
         latest = c["intents"].find_one({"_id": intent["_id"], "business_id": business_id}) or {}
