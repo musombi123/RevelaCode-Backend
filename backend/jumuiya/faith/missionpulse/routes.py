@@ -126,7 +126,7 @@ def me():
     memberships = list(collection("jumuiya_missionpulse_memberships").find({
         "user_id": current_user_id(), "status": "active"
     }).limit(100))
-    return jsonify(success=True, platform_admin=_is_platform_admin(),
+    return jsonify(success=True, user_id=current_user_id(), platform_admin=_is_platform_admin(),
                    memberships=[_json(x) for x in memberships]), 200
 
 
