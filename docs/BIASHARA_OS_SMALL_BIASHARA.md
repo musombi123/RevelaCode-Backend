@@ -154,3 +154,44 @@ This status describes the working branches, not a production deployment.
 - Payroll, payslip delivery, supplier auto-ordering, machine sensor/PLC integration and a native Android SQLite implementation.
 
 Do not advertise any gated integration as live until its independent acceptance tests pass.
+
+
+## 11. Biashara WhatsApp read-only assistant
+
+The Biashara WhatsApp webhook is implemented separately from Elimu's school finance webhook. It reuses the existing Meta Cloud API credentials and HMAC signature pattern.
+
+Webhook URL for Meta configuration:
+
+`https://revelacode-backend.onrender.com/api/jumuiya/biashara/whatsapp/webhook`
+
+The callback supports the GET subscription challenge and POST message notifications. POST requests require a valid `X-Hub-Signature-256` using `WHATSAPP_APP_SECRET`.
+
+### Identity and tenant security
+
+- HR links the employee's existing, accepted company user account to the employee record.
+- The backend stores a SHA-256 hash of the employee's normalized phone in a central identity lookup. The clear phone remains in the company's HR database and is not copied into the global lookup.
+- A sender phone must match exactly one active employee mapping. A phone linked to multiple company identities is treated as ambiguous and receives no company data.
+- The backend revalidates the user's active membership in the indexed company, the company's verified/active status, the employee link and the employee's current phone hash before reading company data.
+- Each report checks the member's server-side role permissions. A client-provided company ID or model-generated SQL is never used.
+
+### Supported commands
+
+- `sales today` — daily revenue, transaction count and top product.
+- `stock alerts` — items at or below their reorder threshold (default 10 units).
+- `production today` — batches started/completed, material input, output, wastage and yield.
+- `help` — the read-only command list.
+
+No write command, supplier order, payroll query or employee-management action is exposed through WhatsApp.
+
+### Activation
+
+Required existing Meta backend secrets:
+- `WHATSAPP_WEBHOOK_VERIFY_TOKEN`
+- `WHATSAPP_APP_SECRET`
+- `WHATSAPP_ACCESS_TOKEN`
+- `WHATSAPP_PHONE_NUMBER_ID`
+- Optional `WHATSAPP_API_VERSION` (defaults to `v26.0`)
+
+Set `WHATSAPP_BIASHARA_COMMANDS_ENABLED=true` only after the Meta webhook has been verified, the Business account is subscribed to the `messages` field, and a controlled end-to-end test confirms signature validation, employee mapping, role enforcement and message delivery. Keep the flag absent/false before that test.
+
+The integration readiness endpoint reports commands disabled until the explicit flag and all required configuration values are present.
