@@ -102,6 +102,7 @@ def business_id_for_hostname(hostname):
         "hostname": host,
         "status": "active",
         "verification_status": "verified",
+        "https_status": "active",
     })
     return str(record.get("business_id")) if record and record.get("business_id") else None
 
