@@ -12,6 +12,7 @@ from uuid import uuid4
 from bson import ObjectId
 from bson.errors import InvalidId
 from flask import Blueprint, jsonify, request
+from backend.db import get_db
 
 from backend.jumuiya.core.database import collection
 from backend.jumuiya.core.permissions import (
@@ -188,6 +189,12 @@ def grant_membership():
     org_oid = _oid(org_id)
     if not org_oid or not target_user or role not in allowed_roles:
         return _error("Valid org_id, user_id and role are required.")
+    user_terms = [{"id": target_user}, {"user_id": target_user}]
+    target_oid = _oid(target_user)
+    if target_oid:
+        user_terms.insert(0, {"_id": target_oid})
+    if not get_db()["users"].find_one({"$or": user_terms}, {"_id": 1}):
+        return _error("The selected RevelaCode user does not exist.", 404, "user_not_found")
     org = collection("jumuiya_missionpulse_organizations").find_one({"_id": org_oid, "status": "active"})
     if not org:
         return _error("Organization not found.", 404, "not_found")
