@@ -16,9 +16,9 @@ from flask import Blueprint, jsonify, request
 from backend.jumuiya.core.database import collection
 from backend.jumuiya.core.permissions import (
     current_user_id,
-    current_user_roles,
     require_authenticated,
 )
+from backend.utils.current_role_auth import PLATFORM_ADMIN_ROLES, resolve_current_actor
 
 missionpulse_bp = Blueprint("missionpulse", __name__)
 
@@ -67,11 +67,14 @@ def _json(doc):
 
 
 def _is_platform_admin():
-    roles = {r.lower() for r in current_user_roles()}
-    return bool(roles.intersection({
-        "platform_admin", "super_admin", "system_admin", "revelacode_admin", "admin",
-        "founder", "root_admin",
-    }))
+    # Privileged bootstrap and cross-Conference access must use current DB roles,
+    # never a role claim supplied only by a potentially stale JWT.
+    actor, error, _status = resolve_current_actor(request)
+    if error or not actor:
+        return False
+    roles = {str(role).casefold() for role in actor.get("roles", [])}
+    roles.add(str(actor.get("role") or "").casefold())
+    return bool(roles.intersection(PLATFORM_ADMIN_ROLES))
 
 
 def _membership(org_id, roles=None):
