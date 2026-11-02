@@ -213,7 +213,11 @@ def _require_business(user_id, allowed_roles=None, permission=None):
             "business_origin_mismatch",
         )
     selected_business_id = requested_business_id or origin_business_id
-    access = resolve_business_access(user_id, selected_business_id or None)
+    access = (
+        resolve_business_access(user_id, selected_business_id)
+        if selected_business_id
+        else resolve_business_access(user_id)
+    )
     business = serialise(access.get("business")) if access else None
 
     if not business:
