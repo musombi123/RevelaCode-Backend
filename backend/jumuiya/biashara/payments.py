@@ -492,6 +492,10 @@ def receive_biashara_mpesa_callback():
         _update_intent_status(c, intent, "awaiting_verification", "Callback identifiers did not match the stored checkout.")
         return {"ResultCode": 0, "ResultDesc": "Callback acknowledged for reconciliation"}, 200
     callback_meta = _callback_metadata(callback)
+    c["intents"].update_one(
+        {"_id": intent["_id"], "business_id": business_id},
+        {"$set": {"last_callback_metadata": callback_meta, "callback_received_at": _now(), "updated_at": _now()}},
+    )
     try:
         query_result = _query_daraja(intent)
     except Exception:
@@ -519,6 +523,5 @@ def invoice_mpesa_status(invoice_id):
     invoice = c["invoices"].find_one({"_id": _id(invoice_id), "business_id": business["id"]})
     if not invoice:
         raise APIError("Invoice was not found.", 404, "invoice_not_found")
-    row = c["intents"].find_one({"business_id": business["id"], "invoice_id": str(invoice["_id"])}).sort("created_at", -1) if False else None
     rows = c["intents"].find({"business_id": business["id"], "invoice_id": str(invoice["_id"])}).sort("created_at", -1).limit(5)
     return ok({"invoice_id": str(invoice["_id"]), "checkouts": [_serialize(item) for item in rows]})
