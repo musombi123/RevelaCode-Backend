@@ -21,7 +21,8 @@ from backend.jumuiya.core.database import collection as core_collection
 from backend.jumuiya.core.errors import APIError
 
 
-TENANT_DB_PREFIX = "revelacode_biz_"
+TENANT_DB_PREFIX = "rcb_"
+LEGACY_TENANT_DB_PREFIX = "revelacode_biz_"
 TENANT_REGISTRY = "jumuiya_biashara_tenants"
 DOMAIN_REGISTRY = "jumuiya_biashara_domains"
 TENANT_SCHEMA_VERSION = 2
@@ -70,10 +71,36 @@ def _business_key(business_id):
     return value
 
 def database_name_for_business(business_id):
-    """Derive a stable, Mongo-safe database name; never use a user slug as a DB name."""
+    """Return a deterministic database name within MongoDB's 38-byte Atlas limit.
+
+    A 128-bit digest keeps tenant names short while avoiding slug disclosure and
+    retaining a negligible collision probability for the expected tenant count.
+    """
+    key = _business_key(business_id)
+    digest = hashlib.sha256(key.encode("utf-8")).hexdigest()[:32]
+    return TENANT_DB_PREFIX + digest
+
+
+def _legacy_database_name_for_business(business_id):
+    """Return the pre-fix name so failed provisioning records can be recovered."""
     key = _business_key(business_id)
     digest = hashlib.sha256(key.encode("utf-8")).hexdigest()[:24]
-    return TENANT_DB_PREFIX + digest
+    return LEGACY_TENANT_DB_PREFIX + digest
+
+
+def _legacy_tenant_registry_can_resume(existing, legacy_db_name, now):
+    """Only repoint a legacy name when its prior migration is incomplete and idle."""
+    if not existing or existing.get("database_name") != legacy_db_name:
+        return False
+    if existing.get("migration_status") == "complete":
+        return False
+
+    status = existing.get("status")
+    lock_until = existing.get("migration_lock_until")
+    if lock_until and lock_until > now:
+        return False
+    return status in {"provisioning", "migration_failed", "migrating"}
+
 
 def _registry():
     registry = core_collection(TENANT_REGISTRY)
@@ -241,6 +268,39 @@ def ensure_business_tenant(business_id, *, business_slug=None, migrate_legacy=Tr
     registry = _registry()
     now = _now()
     existing = registry.find_one({"business_id": key})
+    legacy_db_name = _legacy_database_name_for_business(key)
+    if existing and existing.get("database_name") == legacy_db_name:
+        if _legacy_tenant_registry_can_resume(existing, legacy_db_name, now):
+            registry.update_one(
+                {
+                    "business_id": key,
+                    "database_name": legacy_db_name,
+                    "migration_status": {"$ne": "complete"},
+                    "$or": [
+                        {
+                            "status": {"$in": ["provisioning", "migration_failed"]},
+                            "$or": [
+                                {"migration_lock_until": {"$lte": now}},
+                                {"migration_lock_until": {"$exists": False}},
+                            ],
+                        },
+                        {"status": "migrating", "migration_lock_until": {"$lte": now}},
+                    ],
+                },
+                {"$set": {
+                    "database_name": db_name,
+                    "tenant_id": tenant_id,
+                    "updated_at": now,
+                }},
+            )
+            existing = registry.find_one({"business_id": key})
+        if existing and existing.get("database_name") == legacy_db_name:
+            raise APIError(
+                "The previous company database name is incompatible with this MongoDB cluster. "
+                "Its migration is not in a safe retry state and needs controlled recovery.",
+                503,
+                "business_tenant_legacy_migration_required",
+            )
     if existing and existing.get("database_name") not in (None, db_name):
         raise APIError("The company tenant registry points to an unexpected database.", 503, "business_tenant_registry_mismatch")
 

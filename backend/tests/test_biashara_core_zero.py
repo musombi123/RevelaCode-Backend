@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -12,16 +13,51 @@ from backend.jumuiya.biashara.schemas import product_payload
 from backend.jumuiya.core.errors import APIError
 
 
-def test_business_database_name_is_stable_hashed_and_not_slug_derived():
+def test_business_database_name_is_stable_hashed_and_within_mongodb_limit():
     first = tenant_store.database_name_for_business("65f123456789abcdef123456")
     again = tenant_store.database_name_for_business("65f123456789abcdef123456")
     second = tenant_store.database_name_for_business("65f123456789abcdef123457")
 
     assert first == again
-    assert first.startswith("revelacode_biz_")
-    assert re.fullmatch(r"revelacode_biz_[a-f0-9]{24}", first)
+    assert first.startswith("rcb_")
+    assert re.fullmatch(r"rcb_[a-f0-9]{32}", first)
+    assert len(first.encode("utf-8")) <= 38
     assert first != second
     assert "sarefactory" not in tenant_store.database_name_for_business("sarefactory")
+
+
+def test_failed_legacy_tenant_registry_can_resume_but_completed_tenants_are_not_repointed():
+    business_id = "65f123456789abcdef123456"
+    legacy_name = tenant_store._legacy_database_name_for_business(business_id)
+    now = datetime.now(timezone.utc)
+
+    failed = {
+        "database_name": legacy_name,
+        "status": "migration_failed",
+        "migration_status": "pending",
+    }
+    expired_migration = {
+        "database_name": legacy_name,
+        "status": "migrating",
+        "migration_status": "pending",
+        "migration_lock_until": now - timedelta(seconds=1),
+    }
+    active_migration = {
+        "database_name": legacy_name,
+        "status": "migrating",
+        "migration_status": "pending",
+        "migration_lock_until": now + timedelta(minutes=5),
+    }
+    completed = {
+        "database_name": legacy_name,
+        "status": "active",
+        "migration_status": "complete",
+    }
+
+    assert tenant_store._legacy_tenant_registry_can_resume(failed, legacy_name, now)
+    assert tenant_store._legacy_tenant_registry_can_resume(expired_migration, legacy_name, now)
+    assert not tenant_store._legacy_tenant_registry_can_resume(active_migration, legacy_name, now)
+    assert not tenant_store._legacy_tenant_registry_can_resume(completed, legacy_name, now)
 
 
 def test_tenant_collection_fails_closed_without_a_verified_request_context(monkeypatch):
