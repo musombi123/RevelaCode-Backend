@@ -62,7 +62,7 @@ ROLE_PERMISSIONS = {
         "production.view", "production.create", "production.update", "production.materials.view",
         "machines.view", "machines.create", "machines.readings.create", "quality.view", "quality.inspect",
         "suppliers.view", "purchases.view", "purchases.create", "automations.view", "automations.manage",
-        "team.view", "team.manage", "attendance.view", "hr.view", "hr.attendance.view", "sync.view", "sync.request", "hr.attendance.self",
+        "team.view", "team.manage", "attendance.view", "hr.view", "hr.attendance.view", "sync.view", "sync.request", "hr.attendance.self", "integrations.view",
     }),
     "manager": frozenset({
         "dashboard.view", "reports.view", "sales.view", "sales.create", "orders.view", "orders.create", "orders.update",
@@ -70,7 +70,7 @@ ROLE_PERMISSIONS = {
         "inventory.view", "inventory.create", "inventory.adjust", "inventory.manage",
         "production.view", "production.create", "production.update",
         "machines.view", "machines.readings.create", "quality.view", "quality.inspect", "team.view",
-        "sync.view", "sync.request", "expenses.view", "expenses.create", "hr.attendance.self",
+        "sync.view", "sync.request", "expenses.view", "expenses.create", "hr.attendance.self", "integrations.view",
     }),
     "hr_manager": frozenset({
         "dashboard.view", "hr.view", "hr.employees.manage", "hr.attendance.view",
@@ -80,7 +80,7 @@ ROLE_PERMISSIONS = {
         "dashboard.view", "reports.view", "finance.view", "finance.create", "finance.allocate",
         "expenses.view", "expenses.create", "sales.view", "orders.view", "customers.view",
         "invoices.view", "invoices.create", "invoices.allocate", "mpesa.reconcile", "etims.view",
-        "sync.view", "sync.request", "hr.attendance.self",
+        "sync.view", "sync.request", "hr.attendance.self", "integrations.view",
     }),
     "store_keeper": frozenset({
         "dashboard.view", "inventory.view", "inventory.create", "inventory.adjust", "inventory.manage",
