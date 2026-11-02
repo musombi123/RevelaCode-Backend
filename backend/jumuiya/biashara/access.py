@@ -8,7 +8,7 @@ from backend.jumuiya.core.database import collection
 
 
 ACTIVE_STATUSES = ("active", "accepted")
-ASSIGNABLE_ROLES = {"admin", "manager", "sales", "inventory", "viewer"}
+ASSIGNABLE_ROLES = {"admin", "manager", "sales", "inventory", "viewer", "operations_manager", "hr_manager", "accountant", "store_keeper", "factory_floor_lead", "sales_agent"}
 
 
 def clean_business_id(value):
