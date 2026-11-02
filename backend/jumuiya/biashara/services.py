@@ -187,11 +187,19 @@ def get_business_for_user(
 
 
 def get_active_business_for_user(user_id):
-    """Return the active owned/member business without weakening owner-only lookup."""
+    """Return the active business and the authenticated member's actual company role."""
     context = resolve_business_access(user_id)
     if not context:
         return None
-    return serialise(context.get("business"))
+    business = serialise(context.get("business"))
+    if not business:
+        return None
+    business["access_role"] = "owner" if context.get("is_owner") else str(context.get("role") or "viewer")
+    business["is_owner"] = bool(context.get("is_owner"))
+    membership = context.get("membership") or {}
+    if membership.get("_id"):
+        business["membership_id"] = str(membership["_id"])
+    return business
 
 
 def _require_business(user_id, allowed_roles=None, permission=None):
@@ -208,6 +216,11 @@ def _require_business(user_id, allowed_roles=None, permission=None):
         )
 
     role = str((access or {}).get("role") or "owner").strip().lower()
+    business["access_role"] = "owner" if (access or {}).get("is_owner") else role
+    business["is_owner"] = bool((access or {}).get("is_owner"))
+    membership = (access or {}).get("membership") or {}
+    if membership.get("_id"):
+        business["membership_id"] = str(membership["_id"])
     if permission:
         permitted = has_permission(role, permission)
     else:
