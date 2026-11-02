@@ -165,7 +165,7 @@ CORS_ALLOWED_METHODS_SET = {
 
 CORS_ALLOWED_HEADERS = (
     "Accept, Content-Type, Authorization, X-Revela-License, "
-    "X-ADMIN-KEY, X-ADMIN-API-KEY, x-api-key, Idempotency-Key, X-User-ID"
+    "X-ADMIN-KEY, X-ADMIN-API-KEY, x-api-key, Idempotency-Key, X-User-ID, X-Business-ID, X-Offline-Mutation-Id"
 )
 
 CORS_ALLOWED_HEADERS_SET = {
@@ -192,6 +192,8 @@ CORS(
         "x-api-key",
         "Idempotency-Key",
         "X-User-ID",
+        "X-Business-ID",
+        "X-Offline-Mutation-Id",
     ],
     methods=[
         "GET",
