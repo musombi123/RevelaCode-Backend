@@ -13,6 +13,7 @@ import secrets
 from datetime import datetime, timezone
 
 from flask import g, has_request_context
+from urllib.parse import urlsplit
 from pymongo import ASCENDING, DESCENDING, ReplaceOne
 
 from backend.db import client, get_db
@@ -75,6 +76,36 @@ def _registry():
     registry = core_collection(TENANT_REGISTRY)
     registry.create_index([("business_id", ASCENDING)], unique=True, name="uq_biashara_tenant_business")
     return registry
+
+
+def _domain_registry():
+    registry = core_collection(DOMAIN_REGISTRY)
+    registry.create_index([("hostname", ASCENDING)], unique=True, name="uq_biashara_hostname")
+    registry.create_index([("business_id", ASCENDING), ("status", ASCENDING)], name="ix_biashara_domain_business")
+    return registry
+
+
+def business_id_for_hostname(hostname):
+    """Resolve only an explicitly verified company hostname; never trust raw host input."""
+    raw = str(hostname or "").strip()
+    try:
+        parsed = urlsplit(raw if "://" in raw else "//" + raw)
+        host = (parsed.hostname or "").lower().rstrip(".")
+    except ValueError:
+        return None
+    if not host or len(host) > 253:
+        return None
+    record = _domain_registry().find_one({
+        "hostname": host,
+        "status": "active",
+        "verification_status": "verified",
+    })
+    return str(record.get("business_id")) if record and record.get("business_id") else None
+
+
+def business_id_for_origin(origin):
+    """Map a browser Origin to a verified tenant; membership is still checked later."""
+    return business_id_for_hostname(origin)
 
 def _ensure_tenant_indexes(database):
     for name in TENANT_COLLECTIONS:
@@ -220,8 +251,8 @@ def ensure_business_tenant(business_id, *, business_slug=None, migrate_legacy=Tr
         slug = re.sub(r"[^a-z0-9-]", "", str(business_slug).lower()).strip("-")
         if slug:
             hostname = slug + ".revelacode.co.ke"
-            core_collection(DOMAIN_REGISTRY).update_one(
-                {"hostname": hostname},
+            _domain_registry().update_one(
+                {"hostname": hostname, "business_id": key},
                 {"$setOnInsert": {
                     "hostname": hostname,
                     "business_id": key,
@@ -272,9 +303,18 @@ def tenant_collection(name, business_id=None):
     return tenant_database(business_id)[name]
 
 def biashara_collection(name):
-    """Use the tenant DB for company records and the central DB for shared registries."""
+    """Use the tenant DB for company records and the central DB for shared registries.
+
+    Tenant-owned records fail closed when a verified request context is missing.
+    Background jobs must call tenant_collection(name, explicit_business_id).
+    """
     if name in TENANT_COLLECTIONS:
         business_id = current_business_id()
-        if business_id:
-            return tenant_collection(name, business_id)
+        if not business_id:
+            raise APIError(
+                "A verified Biashara company context is required for this record.",
+                409,
+                "business_context_required",
+            )
+        return tenant_collection(name, business_id)
     return core_collection(name)
