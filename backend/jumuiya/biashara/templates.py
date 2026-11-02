@@ -62,7 +62,7 @@ ROLE_PERMISSIONS = {
         "production.view", "production.create", "production.update", "production.materials.view",
         "machines.view", "machines.create", "machines.readings.create", "quality.view", "quality.inspect",
         "suppliers.view", "purchases.view", "purchases.create", "automations.view", "automations.manage",
-        "team.view", "team.manage", "attendance.view", "sync.view", "sync.request", "hr.attendance.self",
+        "team.view", "team.manage", "attendance.view", "hr.view", "hr.attendance.view", "sync.view", "sync.request", "hr.attendance.self",
     }),
     "manager": frozenset({
         "dashboard.view", "reports.view", "sales.view", "sales.create", "orders.view", "orders.create", "orders.update",
@@ -117,7 +117,7 @@ LEGACY_ROLE_ALIASES = {
     "chief_executive": "ceo",
     "operations": "operations_manager",
     "principal": "operations_manager",
-    "teacher": "sales_agent",
+    "teacher": "employee",
     "bursar": "accountant",
     "store": "store_keeper",
     "storekeeper": "store_keeper",
