@@ -12,16 +12,18 @@ from decimal import Decimal, InvalidOperation
 
 from flask import Blueprint, request
 
-from backend.jumuiya.core.database import collection
+from backend.jumuiya.biashara.tenant_store import biashara_collection as collection, set_business_tenant_context
 from backend.jumuiya.core.permissions import require_authenticated, current_user, current_user_id
 from backend.jumuiya.core.responses import ok, created
 from backend.jumuiya.core.errors import APIError
-from backend.jumuiya.biashara.services import get_business_for_user, clean_id, serialise, serialise_many
-from backend.jumuiya.biashara.access import resolve_business_access, list_business_access
+from backend.jumuiya.biashara.services import clean_id, serialise, serialise_many
+from backend.jumuiya.biashara.access import resolve_business_access, list_business_access, ASSIGNABLE_ROLES
+from backend.jumuiya.biashara.templates import has_permission
 from backend.jumuiya.core.audit import log_action
 
 contracts_bp = Blueprint("jumuiya_biashara_contracts", __name__)
-ROLES = {"admin", "manager", "sales", "inventory", "viewer"}
+ROLES = ASSIGNABLE_ROLES
+INVITABLE_ROLES = ROLES - {"admin"}
 AUTOMATION_STATUSES = {"enabled", "disabled"}
 SYNC_STATUSES = {"queued", "running", "succeeded", "failed", "cancelled"}
 
@@ -37,24 +39,23 @@ def _body():
     return data
 
 
-def _owner_business():
-    """Resolve the selected business, keeping finance/team contracts owner-only."""
+def _owner_business(permission="business.manage"):
+    """Resolve an authorized company member and attach its isolated tenant DB."""
     uid = str(current_user_id())
     preference = collection("jumuiya_biashara_active_business").find_one({"user_id": uid}) or {}
     selected_id = str(preference.get("business_id") or "").strip()
-    if selected_id:
-        context = resolve_business_access(uid, selected_id)
-        if not context:
-            raise APIError("The selected business is no longer accessible to this account.", 403, "business_access_denied")
-        if not context.get("is_owner"):
-            raise APIError("This operation is reserved for the business owner.", 403, "business_owner_required")
-        business = serialise(context.get("business"))
-    else:
-        business = get_business_for_user(uid)
+    context = resolve_business_access(uid, selected_id or None)
+    if not context:
+        raise APIError("Create a business profile or select an accessible business first.", 409, "business_required")
+    business = serialise(context.get("business"))
     if not business:
-        raise APIError("Create a business profile first.", 409, "business_required")
+        raise APIError("The selected business is unavailable.", 404, "business_not_found")
+    role = "owner" if context.get("is_owner") else str(context.get("role") or "viewer")
+    if not has_permission(role, permission):
+        raise APIError("Your business role does not permit this operation.", 403, "business_permission_denied")
     if business.get("verification_status") != "verified" or business.get("status") != "active":
         raise APIError("Business verification is required for this operation.", 403, "business_verification_required")
+    set_business_tenant_context(_business_id(business), business_slug=business.get("slug"), migrate_legacy=True)
     return uid, business
 
 def _business_id(business):
@@ -74,7 +75,6 @@ def _decimal_amount(value, field="amount"):
 def _owned(resource, uid, business_id, resource_id):
     doc = collection(resource).find_one({
         "_id": clean_id(resource_id),
-        "owner_user_id": uid,
         "business_id": business_id,
     })
     if not doc:
@@ -86,9 +86,9 @@ def _owned(resource, uid, business_id, resource_id):
 @contracts_bp.get("/finance/invoices")
 @require_authenticated
 def list_invoices():
-    uid, business = _owner_business()
+    uid, business = _owner_business("invoices.view")
     docs = collection("jumuiya_biashara_invoices").find({
-        "owner_user_id": uid, "business_id": _business_id(business)
+        "business_id": _business_id(business)
     }).sort("created_at", -1).limit(100)
     return ok(serialise_many(docs))
 
@@ -96,7 +96,7 @@ def list_invoices():
 @contracts_bp.post("/finance/invoices")
 @require_authenticated
 def create_invoice():
-    uid, business = _owner_business()
+    uid, business = _owner_business("invoices.create")
     data = _body()
     customer_name = str(data.get("customer_name") or "").strip()
     currency = str(data.get("currency") or "KES").strip().upper()
@@ -142,7 +142,7 @@ def create_invoice():
 @contracts_bp.post("/finance/invoices/<invoice_id>/allocations")
 @require_authenticated
 def allocate_invoice_payment(invoice_id):
-    uid, business = _owner_business()
+    uid, business = _owner_business("invoices.allocate")
     data = _body()
     amount = Decimal(_decimal_amount(data.get("amount")))
     invoice = _owned("jumuiya_biashara_invoices", uid, _business_id(business), invoice_id)
@@ -164,7 +164,7 @@ def allocate_invoice_payment(invoice_id):
     new_allocated = allocated + amount
     status = "fully_allocated_unverified" if new_allocated == total else "partially_allocated_unverified"
     collection("jumuiya_biashara_invoices").update_one(
-        {"_id": invoice["_id"], "owner_user_id": uid, "business_id": _business_id(business)},
+        {"_id": invoice["_id"], "business_id": _business_id(business)},
         {"$set": {"allocated_amount": str(new_allocated), "status": status, "updated_at": now}})
     allocation["_id"] = result.inserted_id
     log_action(uid, "biashara.invoice.allocation_recorded", "biashara_invoice", invoice["_id"],
@@ -175,10 +175,10 @@ def allocate_invoice_payment(invoice_id):
 @contracts_bp.get("/finance/invoices/<invoice_id>/allocations")
 @require_authenticated
 def list_invoice_allocations(invoice_id):
-    uid, business = _owner_business()
+    uid, business = _owner_business("invoices.view")
     invoice = _owned("jumuiya_biashara_invoices", uid, _business_id(business), invoice_id)
     docs = collection("jumuiya_biashara_payment_allocations").find({
-        "owner_user_id": uid, "business_id": _business_id(business), "invoice_id": str(invoice["_id"])
+        "business_id": _business_id(business), "invoice_id": str(invoice["_id"])
     }).sort("created_at", -1).limit(100)
     return ok(serialise_many(docs))
 
@@ -187,9 +187,9 @@ def list_invoice_allocations(invoice_id):
 @contracts_bp.get("/automations/rules")
 @require_authenticated
 def list_automation_rules():
-    uid, business = _owner_business()
+    uid, business = _owner_business("automations.view")
     docs = collection("jumuiya_biashara_automation_rules").find({
-        "owner_user_id": uid, "business_id": _business_id(business)
+        "business_id": _business_id(business)
     }).sort("updated_at", -1).limit(100)
     return ok(serialise_many(docs))
 
@@ -197,7 +197,7 @@ def list_automation_rules():
 @contracts_bp.post("/automations/rules")
 @require_authenticated
 def create_automation_rule():
-    uid, business = _owner_business()
+    uid, business = _owner_business("automations.manage")
     data = _body()
     name = str(data.get("name") or "").strip()
     trigger = str(data.get("trigger") or "").strip().lower()
@@ -220,7 +220,7 @@ def create_automation_rule():
 @contracts_bp.patch("/automations/rules/<rule_id>")
 @require_authenticated
 def update_automation_rule(rule_id):
-    uid, business = _owner_business()
+    uid, business = _owner_business("automations.manage")
     data = _body()
     update = {}
     if "name" in data:
@@ -238,7 +238,7 @@ def update_automation_rule(rule_id):
         raise APIError("Provide name or enabled.", 422, "validation_error")
     update["updated_at"] = _now()
     result = collection("jumuiya_biashara_automation_rules").update_one({
-        "_id": clean_id(rule_id), "owner_user_id": uid, "business_id": _business_id(business)
+        "_id": clean_id(rule_id), "business_id": _business_id(business)
     }, {"$set": update})
     if not result.matched_count:
         raise APIError("Automation rule not found.", 404, "resource_not_found")
@@ -251,9 +251,9 @@ def update_automation_rule(rule_id):
 @contracts_bp.get("/sync/jobs")
 @require_authenticated
 def list_sync_jobs():
-    uid, business = _owner_business()
+    uid, business = _owner_business("sync.view")
     docs = collection("jumuiya_biashara_sync_jobs").find({
-        "owner_user_id": uid, "business_id": _business_id(business)
+        "business_id": _business_id(business)
     }).sort("created_at", -1).limit(100)
     return ok(serialise_many(docs))
 
@@ -261,7 +261,7 @@ def list_sync_jobs():
 @contracts_bp.post("/sync/jobs")
 @require_authenticated
 def create_sync_job():
-    uid, business = _owner_business()
+    uid, business = _owner_business("sync.request")
     data = _body()
     source = str(data.get("source") or "").strip().lower()
     direction = str(data.get("direction") or "pull").strip().lower()
@@ -282,7 +282,7 @@ def create_sync_job():
 @contracts_bp.get("/team")
 @require_authenticated
 def list_team():
-    uid, business = _owner_business()
+    uid, business = _owner_business("team.view")
     bid = _business_id(business)
     members = list(collection("jumuiya_biashara_memberships").find(
         {"business_id": bid}, {"invitation_token": 0, "invitation_token_hash": 0, "claimed_by_user_id": 0, "claimed_at": 0}).sort("created_at", -1).limit(200))
@@ -294,11 +294,11 @@ def list_team():
 @contracts_bp.post("/team/invitations")
 @require_authenticated
 def invite_team_member():
-    uid, business = _owner_business()
+    uid, business = _owner_business("team.manage")
     data = _body()
     email = str(data.get("email") or "").strip().lower()
     role = str(data.get("role") or "").strip().lower()
-    if "@" not in email or len(email) > 254 or role not in ROLES - {"admin"}:
+    if "@" not in email or len(email) > 254 or role not in INVITABLE_ROLES:
         raise APIError("Provide a valid email and a supported non-admin role.", 422, "validation_error")
     bid = _business_id(business)
     invites = collection("jumuiya_biashara_invitations")
@@ -424,11 +424,11 @@ def accept_team_invitation():
 @contracts_bp.delete("/team/members/<member_id>")
 @require_authenticated
 def remove_team_member(member_id):
-    uid, business = _owner_business()
+    uid, business = _owner_business("team.manage")
     bid = _business_id(business)
     result = collection("jumuiya_biashara_memberships").delete_one({
-        "_id": clean_id(member_id), "business_id": bid, "owner_user_id": uid,
-        "role": {"$ne": "owner"}
+        "_id": clean_id(member_id), "business_id": bid,
+        "role": {"$nin": ["owner", "ceo", "director", "admin"]}
     })
     if not result.deleted_count:
         raise APIError("Member not found or owner membership cannot be removed.", 404, "resource_not_found")
