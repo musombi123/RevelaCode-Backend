@@ -241,6 +241,11 @@ def product_document(
             "",
         ),
 
+        "production_type": payload.get(
+            "production_type",
+            "resale",
+        ),
+
         # -------------------------------------------------
         # PRICING
         # -------------------------------------------------
