@@ -69,13 +69,17 @@ def _whatsapp_status():
         "webhook_verify_token_present": bool(os.getenv("WHATSAPP_WEBHOOK_VERIFY_TOKEN", "").strip()),
     }
     configured = all(checks.values())
+    explicitly_enabled = os.getenv("WHATSAPP_BIASHARA_COMMANDS_ENABLED", "").strip().lower() == "true"
+    enabled = configured and explicitly_enabled
     return {
         "provider": "WhatsApp Cloud API",
-        "state": "configuration_present" if configured else "not_configured",
-        "checks": checks,
-        "blockers": [key for key, valid in checks.items() if not valid],
-        "business_commands_enabled": False,
-        "note": "Meta credentials being present does not mean Biashara employee verification or the sales-report command handler is active.",
+        "state": "commands_enabled" if enabled else ("configuration_present" if configured else "not_configured"),
+        "checks": {**checks, "biashara_commands_flag": explicitly_enabled},
+        "blockers": [key for key, valid in checks.items() if not valid] + ([] if explicitly_enabled else ["biashara_commands_flag"]),
+        "business_commands_enabled": enabled,
+        "webhook_path": "/api/jumuiya/biashara/whatsapp/webhook",
+        "supported_commands": ["sales today", "stock alerts", "production today", "help"],
+        "note": "Commands are read-only and require a unique hash-matched active employee identity, active company membership and matching server-side role permission. Configure the Meta webhook URL, subscribe to messages, test the callback and only then set WHATSAPP_BIASHARA_COMMANDS_ENABLED=true.",
     }
 
 
