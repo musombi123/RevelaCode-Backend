@@ -82,17 +82,37 @@ def _ensure_tenant_indexes(database):
         [("business_id", ASCENDING), ("batch_number", ASCENDING)],
         unique=True, name="uq_factory_business_batch",
     )
+    database["jumuiya_factory_production_batches"].create_index(
+        [("business_id", ASCENDING), ("idempotency_key", ASCENDING)],
+        unique=True, partialFilterExpression={"idempotency_key": {"$type": "string"}},
+        name="uq_factory_batch_idempotency",
+    )
     database["jumuiya_factory_machines"].create_index(
         [("business_id", ASCENDING), ("machine_code", ASCENDING)],
         unique=True, name="uq_factory_business_machine",
+    )
+    database["jumuiya_factory_machines"].create_index(
+        [("business_id", ASCENDING), ("idempotency_key", ASCENDING)],
+        unique=True, partialFilterExpression={"idempotency_key": {"$type": "string"}},
+        name="uq_factory_machine_idempotency",
     )
     database["jumuiya_factory_quality_checks"].create_index(
         [("business_id", ASCENDING), ("batch_id", ASCENDING)],
         unique=True, name="uq_factory_quality_batch",
     )
+    database["jumuiya_factory_quality_checks"].create_index(
+        [("business_id", ASCENDING), ("idempotency_key", ASCENDING)],
+        unique=True, partialFilterExpression={"idempotency_key": {"$type": "string"}},
+        name="uq_factory_quality_idempotency",
+    )
     database["jumuiya_factory_machine_readings"].create_index(
         [("business_id", ASCENDING), ("machine_id", ASCENDING), ("recorded_at", DESCENDING)],
         name="ix_factory_machine_readings",
+    )
+    database["jumuiya_factory_machine_readings"].create_index(
+        [("business_id", ASCENDING), ("idempotency_key", ASCENDING)],
+        unique=True, partialFilterExpression={"idempotency_key": {"$type": "string"}},
+        name="uq_factory_reading_idempotency",
     )
     database["jumuiya_factory_alerts"].create_index(
         [("business_id", ASCENDING), ("status", ASCENDING), ("created_at", DESCENDING)],
