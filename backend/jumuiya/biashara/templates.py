@@ -55,34 +55,39 @@ ROLE_PERMISSIONS = {
     "director": ALL,
     "admin": ALL,
     "operations_manager": frozenset({
-        "dashboard.view", "reports.view", "sales.view", "orders.view", "orders.update",
-        "inventory.view", "production.view", "production.create", "production.update",
+        "dashboard.view", "reports.view", "sales.view", "sales.create", "orders.view", "orders.create", "orders.update",
+        "customers.view", "customers.create", "catalog.view", "catalog.manage", "website.view", "website.manage",
+        "website.inquiries.view", "inventory.view", "inventory.create", "inventory.adjust", "inventory.manage",
+        "production.view", "production.create", "production.update", "production.materials.view",
         "machines.view", "machines.create", "machines.readings.create", "quality.view", "quality.inspect",
-        "suppliers.view", "purchases.view", "purchases.create", "automations.view",
-        "team.view", "team.manage", "attendance.view", "sync.view", "sync.request", "automations.view", "automations.manage",
+        "suppliers.view", "purchases.view", "purchases.create", "automations.view", "automations.manage",
+        "team.view", "team.manage", "attendance.view", "sync.view", "sync.request",
     }),
     "manager": frozenset({
-        "dashboard.view", "reports.view", "sales.view", "orders.view", "orders.update",
-        "inventory.view", "inventory.adjust", "production.view", "production.create",
-        "production.update", "machines.view", "machines.readings.create",
-        "quality.view", "quality.inspect", "team.view",
+        "dashboard.view", "reports.view", "sales.view", "sales.create", "orders.view", "orders.create", "orders.update",
+        "customers.view", "customers.create", "catalog.view", "catalog.manage",
+        "inventory.view", "inventory.create", "inventory.adjust", "inventory.manage",
+        "production.view", "production.create", "production.update",
+        "machines.view", "machines.readings.create", "quality.view", "quality.inspect", "team.view",
+        "sync.view", "sync.request",
     }),
     "hr_manager": frozenset({
         "dashboard.view", "hr.view", "hr.employees.manage", "hr.attendance.view",
-        "hr.attendance.manage", "hr.leave.manage", "hr.payroll.prepare", "team.view",
+        "hr.attendance.manage", "hr.leave.manage", "hr.payroll.prepare", "team.view", "team.manage",
     }),
     "accountant": frozenset({
-        "dashboard.view", "reports.view", "finance.view", "finance.create",
-        "finance.allocate", "sales.view", "invoices.view", "invoices.create",
-        "invoices.allocate", "mpesa.reconcile", "etims.view", "sync.view", "sync.request",
+        "dashboard.view", "reports.view", "finance.view", "finance.create", "finance.allocate",
+        "expenses.view", "expenses.create", "sales.view", "orders.view", "customers.view",
+        "invoices.view", "invoices.create", "invoices.allocate", "mpesa.reconcile", "etims.view",
+        "sync.view", "sync.request",
     }),
     "store_keeper": frozenset({
-        "dashboard.view", "inventory.view", "inventory.create", "inventory.adjust",
+        "dashboard.view", "inventory.view", "inventory.create", "inventory.adjust", "inventory.manage",
         "suppliers.view", "suppliers.manage", "purchases.view", "purchases.create",
         "production.materials.view", "sync.view", "sync.request",
     }),
     "inventory": frozenset({
-        "dashboard.view", "inventory.view", "inventory.create", "inventory.adjust",
+        "dashboard.view", "inventory.view", "inventory.create", "inventory.adjust", "inventory.manage",
         "suppliers.view", "purchases.view",
     }),
     "factory_floor_lead": frozenset({
@@ -92,13 +97,16 @@ ROLE_PERMISSIONS = {
     }),
     "sales_agent": frozenset({
         "dashboard.view", "sales.view", "sales.create", "customers.view", "customers.create",
-        "orders.view", "orders.create", "orders.update", "sync.view",
+        "orders.view", "orders.create", "orders.update", "catalog.view", "inventory.view",
+        "website.inquiries.view", "sync.view",
     }),
     "sales": frozenset({
         "dashboard.view", "sales.view", "sales.create", "customers.view", "customers.create",
-        "orders.view", "orders.create",
+        "orders.view", "orders.create", "catalog.view", "inventory.view",
     }),
-    "viewer": frozenset({"dashboard.view", "reports.view", "sales.view", "inventory.view"}),
+    "viewer": frozenset({
+        "dashboard.view", "reports.view", "sales.view", "inventory.view", "customers.view", "orders.view",
+    }),
 }
 
 LEGACY_ROLE_ALIASES = {
