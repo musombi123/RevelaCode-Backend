@@ -41,6 +41,7 @@ ROLE_LABELS = {
     "store_keeper": "Store Keeper",
     "factory_floor_lead": "Factory Floor Lead",
     "sales_agent": "Sales Agent",
+    "employee": "Employee",
     "admin": "Business Administrator",
     "manager": "Manager",
     "sales": "Sales Staff",
@@ -100,6 +101,7 @@ ROLE_PERMISSIONS = {
         "orders.view", "orders.create", "orders.update", "catalog.view", "inventory.view",
         "website.inquiries.view", "sync.view",
     }),
+    "employee": frozenset({"dashboard.view", "hr.attendance.self", "sync.view"}),
     "sales": frozenset({
         "dashboard.view", "sales.view", "sales.create", "customers.view", "customers.create",
         "orders.view", "orders.create", "catalog.view", "inventory.view",
@@ -122,6 +124,7 @@ LEGACY_ROLE_ALIASES = {
     "hr": "hr_manager",
     "factory_floor": "factory_floor_lead",
     "librarian": "sales_agent",
+    "staff": "employee",
 }
 
 def normalize_role(role):
