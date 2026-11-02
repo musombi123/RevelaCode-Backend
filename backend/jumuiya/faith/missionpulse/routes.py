@@ -145,6 +145,8 @@ def create_organization():
         "conference_id": (str((parent_doc or {}).get("conference_id")) if (parent_doc or {}).get("conference_id") else (str(parent) if parent and parent_doc and parent_doc.get("type") == "conference" else None)),
         "county": _text(data.get("county"), 100),
         "town": _text(data.get("town"), 100),
+        "latitude": float(data["latitude"]) if data.get("latitude") not in (None, "") else None,
+        "longitude": float(data["longitude"]) if data.get("longitude") not in (None, "") else None,
         "status": "active", "created_by": current_user_id(),
         "created_at": _now(), "updated_at": _now(),
     }
@@ -506,3 +508,41 @@ def sync_queue():
         _audit(kind + ".synced", kind, result.inserted_id, org_id, {"client_id": client_id})
         results.append({"client_id": client_id, "ok": True, "duplicate": False, "server_id": str(result.inserted_id)})
     return jsonify(success=True, results=results), 200
+
+
+@missionpulse_bp.get("/memberships")
+@require_authenticated
+def list_memberships():
+    org_id = _text(request.args.get("org_id"), 64)
+    if not org_id or not _require_org(org_id, {"conference_admin", "field_admin", "district_coordinator", "church_admin"}):
+        return _error("Organization administrator access is required.", 403, "forbidden")
+    docs = list(collection("jumuiya_missionpulse_memberships").find({
+        "org_id": org_id, "status": "active"
+    }, {"user_id": 1, "role": 1, "created_at": 1}).sort("role", 1).limit(500))
+    return jsonify(success=True, members=[_json(x) for x in docs]), 200
+
+
+@missionpulse_bp.get("/map/<conference_id>")
+@require_authenticated
+def mission_map(conference_id):
+    if not _is_platform_admin() and not _require_org(conference_id, {"conference_admin", "report_viewer"}):
+        return _error("Conference-level map access is required.", 403, "forbidden")
+    churches = list(collection("jumuiya_missionpulse_organizations").find({
+        "conference_id": conference_id, "type": "church", "status": "active",
+        "latitude": {"$ne": None}, "longitude": {"$ne": None},
+    }, {"name": 1, "county": 1, "town": 1, "latitude": 1, "longitude": 1, "_id": 1}).limit(500))
+    pins = []
+    for church in churches:
+        church_id = str(church["_id"])
+        pins.append({
+            "church_id": church_id,
+            "name": church.get("name"),
+            "county": church.get("county"),
+            "town": church.get("town"),
+            "latitude": church.get("latitude"),
+            "longitude": church.get("longitude"),
+            "cases_registered": collection("jumuiya_missionpulse_cases").count_documents({"church_id": church_id}),
+            "programmes_completed": collection("jumuiya_missionpulse_outreach").count_documents({"church_id": church_id, "status": "completed"}),
+        })
+    return jsonify(success=True, pins=pins,
+                   privacy="Only church locations and aggregated activity are shown; beneficiary locations are never exposed."), 200
