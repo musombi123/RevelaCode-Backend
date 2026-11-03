@@ -150,7 +150,7 @@ def test_daraja_callback_configuration_uses_public_safe_path(monkeypatch):
     assert mpesa.checkout_is_configured() is True
     assert mpesa.checkout_is_production_configured() is True
 
-    monkeypatch.setenv("MPESA_CALLBACK_URL", "https://revelacode-backend.onrender.com/api/revenue/providers/payment-callback")
+    monkeypatch.setenv("MPESA_CALLBACK_URL", "https://revelacode-backend.onrender.com/api/revenue/providers/mpesa/callback")
     assert mpesa.checkout_is_configured() is False
 
 
@@ -1121,7 +1121,7 @@ def test_production_readiness_diagnostics_do_not_return_secret_values(monkeypatc
     monkeypatch.setenv("MPESA_PASSKEY", "sample-passkey")
     monkeypatch.setenv(
         "MPESA_CALLBACK_URL",
-        "https://revelacode-backend.onrender.com/api/revenue/providers/mpesa/callback",
+        "https://revelacode-backend.onrender.com/api/revenue/providers/payment-callback",
     )
     monkeypatch.delenv("MPESA_ENCRYPTION_KEY", raising=False)
 
