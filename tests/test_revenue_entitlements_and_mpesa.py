@@ -135,15 +135,6 @@ def test_proposed_plan_cannot_activate_paid_subscription(monkeypatch, revenue_ap
     assert response.get_json()["code"] == "plan_not_purchasable"
 
 
-@pytest.mark.parametrize(
-    ("raw", "expected"),
-    [
-        ("0712345678", "254712345678"),
-        ("254712345678", "254712345678"),
-        ("+254 712 345 678", "254712345678"),
-        ("0112345678", "254112345678"),
-    ],
-)
 def test_daraja_callback_configuration_uses_public_safe_path(monkeypatch):
     monkeypatch.setenv("MPESA_ENV", "production")
     monkeypatch.setenv("MPESA_STK_URL", "https://api.safaricom.co.ke")
@@ -169,6 +160,15 @@ def test_daraja_timestamp_is_nairobi_format():
     assert re.fullmatch(r"\d{14}", mpesa._timestamp())
 
 
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("0712345678", "254712345678"),
+        ("254712345678", "254712345678"),
+        ("+254 712 345 678", "254712345678"),
+        ("0112345678", "254112345678"),
+    ],
+)
 def test_mpesa_phone_normalization(raw, expected):
     assert mpesa._phone(raw) == expected
 
