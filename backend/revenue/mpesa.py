@@ -351,6 +351,7 @@ def _access_token():
         key, secret = _env("MPESA_CONSUMER_KEY"), _env("MPESA_CONSUMER_SECRET")
         if not key or not secret or not _base_url():
             raise RuntimeError("M-Pesa Daraja credentials are not configured.")
+        logger.info("Daraja OAuth request sent | environment=%s", _environment())
         try:
             response = requests.get(
                 _base_url() + "/oauth/v1/generate",
@@ -363,6 +364,7 @@ def _access_token():
             )
         except requests.RequestException:
             raise RuntimeError("Daraja authentication service is unavailable.") from None
+        logger.info("Daraja OAuth response received | status=%s", response.status_code)
         if 300 <= response.status_code < 400 or response.status_code != 200:
             raise RuntimeError("Daraja authentication request was rejected.")
         try:
@@ -388,6 +390,7 @@ def _daraja_post(path, payload):
     response = None
     for attempt in range(2):
         token = _access_token()
+        logger.info("Daraja request sent | endpoint=%s attempt=%s", resolved_path, attempt + 1)
         try:
             response = requests.post(
                 _base_url() + resolved_path,
@@ -399,6 +402,7 @@ def _daraja_post(path, payload):
             )
         except requests.RequestException:
             raise RuntimeError("Daraja payment service is unavailable.") from None
+        logger.info("Daraja HTTP response received | endpoint=%s status=%s", resolved_path, response.status_code)
         if response.status_code != 401 or attempt == 1:
             break
         with TOKEN_LOCK:
@@ -456,6 +460,12 @@ def _daraja_post(path, payload):
         raise RuntimeError("Daraja returned an invalid response.") from None
     if not isinstance(data, dict):
         raise RuntimeError("Daraja returned an invalid response.")
+    logger.info(
+        "Daraja application response received | endpoint=%s response_code=%s checkout_reference_present=%s",
+        resolved_path,
+        str(data.get("ResponseCode") or data.get("ResultCode") or "")[:24],
+        bool(data.get("CheckoutRequestID")),
+    )
     return data
 
 
@@ -489,7 +499,8 @@ def _public_checkout(row):
         "created_at": row.get("created_at").isoformat() if hasattr(row.get("created_at"), "isoformat") else row.get("created_at"),
         "updated_at": row.get("updated_at").isoformat() if hasattr(row.get("updated_at"), "isoformat") else row.get("updated_at"),
         "message": row.get("message"),
-        "result_description": row.get("result_description"),
+        "result_code": row.get("result_code") or row.get("callback_result_code"),
+        "result_description": row.get("result_description") or row.get("callback_result_description"),
         "subscription": row.get("subscription"),
         "billing_enabled": checkout_is_production_configured(),
     }
@@ -647,6 +658,18 @@ def revenue_start_checkout():
         user_id, plan_code, _mask_phone(phone),
     )
     rows = _checkout_rows()
+    rate_window_start = now_utc() - timedelta(minutes=1)
+    recent_attempts = rows.count_documents({
+        "user_id": user_id,
+        "created_at": {"$gte": rate_window_start},
+    })
+    if recent_attempts >= 5:
+        logger.warning("Checkout rate limit reached | user_id=%s attempts_last_minute=%s", user_id, recent_attempts)
+        return _error(
+            "Too many payment attempts. Wait one minute before trying again.",
+            429,
+            "checkout_rate_limited",
+        )
     existing = rows.find_one({"user_id": user_id, "idempotency_key": idempotency_key})
     retry_failed_initiation = bool(
         existing
