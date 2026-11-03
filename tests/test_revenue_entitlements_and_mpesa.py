@@ -599,6 +599,33 @@ def test_active_paid_subscription_can_purchase_an_extension(monkeypatch, revenue
     }
     rows = Mock()
     rows.find_one.return_value = None
+    stored = {}
+
+    def store_insert(document):
+        stored.update(document)
+        stored["_id"] = "checkout-renewal-row"
+        return type("InsertResult", (), {"inserted_id": stored["_id"]})()
+
+    def store_update(query, update):
+        if stored and query.get("_id") == stored.get("_id"):
+            stored.update(update.get("$set", {}))
+            for key in update.get("$unset", {}):
+                stored.pop(key, None)
+            return type("UpdateResult", (), {"modified_count": 1})()
+        return type("UpdateResult", (), {"modified_count": 0})()
+
+    def store_find(query, sort=None):
+        if stored and query.get("_id") == stored.get("_id"):
+            return dict(stored)
+        if stored and query.get("user_id") == "user-1" and query.get("idempotency_key"):
+            return dict(stored) if stored.get("idempotency_key") == query.get("idempotency_key") else None
+        if stored and query.get("user_id") == "user-1" and query.get("hub") == "smart_ai" and query.get("status", {}).get("$in"):
+            return None
+        return None
+
+    rows.insert_one.side_effect = store_insert
+    rows.update_one.side_effect = store_update
+    rows.find_one.side_effect = store_find
     request_payload = {}
 
     def accepted_stk(_path, payload):
