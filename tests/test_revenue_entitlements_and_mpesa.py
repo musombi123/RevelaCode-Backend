@@ -589,6 +589,8 @@ def test_mpesa_password_builder_is_pure_and_uses_configured_credentials(monkeypa
 
 
 def test_active_paid_subscription_can_purchase_an_extension(monkeypatch, revenue_app):
+    from types import SimpleNamespace
+
     plan = {
         "code": "ai_plus",
         "hub": "smart_ai",
@@ -597,35 +599,39 @@ def test_active_paid_subscription_can_purchase_an_extension(monkeypatch, revenue
         "amount": "199.00",
         "currency": "KES",
     }
-    rows = Mock()
-    rows.find_one.return_value = None
-    stored = {}
 
-    def store_insert(document):
-        stored.update(document)
-        stored["_id"] = "checkout-renewal-row"
-        return type("InsertResult", (), {"inserted_id": stored["_id"]})()
+    class FakeRows:
+        def __init__(self):
+            self.row = None
+            self.insert_count = 0
 
-    def store_update(query, update):
-        if stored and query.get("_id") == stored.get("_id"):
-            stored.update(update.get("$set", {}))
-            for key in update.get("$unset", {}):
-                stored.pop(key, None)
-            return type("UpdateResult", (), {"modified_count": 1})()
-        return type("UpdateResult", (), {"modified_count": 0})()
+        def count_documents(self, _query):
+            return 0
 
-    def store_find(query, sort=None):
-        if stored and query.get("_id") == stored.get("_id"):
-            return dict(stored)
-        if stored and query.get("user_id") == "user-1" and query.get("idempotency_key"):
-            return dict(stored) if stored.get("idempotency_key") == query.get("idempotency_key") else None
-        if stored and query.get("user_id") == "user-1" and query.get("hub") == "smart_ai" and query.get("status", {}).get("$in"):
+        def find_one(self, query, sort=None):
+            if self.row is None:
+                return None
+            if query.get("_id") == self.row.get("_id"):
+                return dict(self.row)
+            if query.get("user_id") == self.row.get("user_id") and query.get("idempotency_key"):
+                return dict(self.row) if query.get("idempotency_key") == self.row.get("idempotency_key") else None
             return None
-        return None
 
-    rows.insert_one.side_effect = store_insert
-    rows.update_one.side_effect = store_update
-    rows.find_one.side_effect = store_find
+        def insert_one(self, document):
+            self.insert_count += 1
+            self.row = dict(document)
+            self.row["_id"] = "checkout-renewal-row"
+            return SimpleNamespace(inserted_id=self.row["_id"])
+
+        def update_one(self, query, update):
+            if self.row is None or query.get("_id") != self.row.get("_id"):
+                return SimpleNamespace(modified_count=0)
+            self.row.update(update.get("$set", {}))
+            for key in update.get("$unset", {}):
+                self.row.pop(key, None)
+            return SimpleNamespace(modified_count=1)
+
+    rows = FakeRows()
     request_payload = {}
 
     def accepted_stk(_path, payload):
@@ -659,7 +665,7 @@ def test_active_paid_subscription_can_purchase_an_extension(monkeypatch, revenue
     assert response.get_json()["checkout"]["checkout_request_id"] == "ws_CO_renewal"
     assert request_payload["Amount"] == 199
     assert request_payload["PhoneNumber"] == "254712345678"
-    rows.insert_one.assert_called_once()
+    assert rows.insert_count == 1
 
 
 def test_unknown_stk_submission_requires_admin_provider_reconciliation_before_release(monkeypatch, revenue_app):
