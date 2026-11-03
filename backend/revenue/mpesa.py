@@ -342,7 +342,7 @@ def _password(timestamp):
 def _access_token():
     global _TOKEN, _TOKEN_EXPIRES
     now = time.monotonic()
-    if _TOKEN and now < _TOKEN_EXPIRES - 60:
+    if _TOKEN and now < _TOKEN_EXPIRES - 300:
         return _TOKEN
     with TOKEN_LOCK:
         now = time.monotonic()
