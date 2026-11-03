@@ -407,6 +407,39 @@ def _error(message, status=400, code="invalid_request"):
         "error": {"message": message, "code": code},
         "code": code,
     }), status
+@revenue_bp.get("/subscription/me")
+@require_authenticated
+def revenue_my_subscription():
+    """Return the authenticated user's current paid premium entitlement summary."""
+    user_id = str(current_user_id())
+    active = {}
+    for hub in sorted(HUBS - {"community", "faith"}):
+        row = _active_subscription(user_id, hub)
+        if row:
+            active[str(row.get("_id", f"{hub}:{row.get('plan_code', '')}"))] = row
+
+    subscriptions = [_public_subscription(row) for row in active.values()]
+    subscriptions.sort(key=lambda item: item.get("ends_at") or "", reverse=True)
+    primary = subscriptions[0] if subscriptions else None
+    snapshot = {}
+    if primary:
+        row = next((item for item in active.values() if str(item.get("_id")) == primary["id"]), {})
+        snapshot = row.get("plan_snapshot") if isinstance(row.get("plan_snapshot"), dict) else {}
+    plan = None if not primary else {
+        "code": primary.get("plan_code"),
+        "name": snapshot.get("name") or primary.get("plan_code"),
+        "hub": primary.get("hub"),
+        "interval": snapshot.get("interval") or active[next(iter(active))].get("interval"),
+    }
+    return jsonify({
+        "success": True,
+        "isPremium": bool(subscriptions),
+        "plan": plan,
+        "expiresAt": primary.get("ends_at") if primary else None,
+        "subscriptions": subscriptions,
+    }), 200
+
+
 def require_revenue_entitlement(hub, feature):
     """Protect a premium hub capability while preserving essential free access."""
     def decorator(fn):
