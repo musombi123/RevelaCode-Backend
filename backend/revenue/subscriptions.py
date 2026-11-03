@@ -831,6 +831,38 @@ def revenue_my_subscriptions():
     return jsonify({"success": True, "items": items}), 200
 
 
+@revenue_bp.get("/subscription/me")
+@require_authenticated
+def revenue_my_subscription_summary():
+    """Return the current user's active premium state without exposing other accounts."""
+    user_id = current_user_id()
+    rows = _subscription_collection().find({"user_id": user_id}).sort("created_at", DESCENDING)
+    items = [_public_subscription(row) for row in rows.limit(100)]
+    now = _as_utc(now_utc())
+    active = [
+        item for item in items
+        if item.get("status") == "active"
+        and (not item.get("ends_at") or _as_utc(item.get("ends_at")) > now)
+    ]
+    current = active[0] if active else None
+    plan = None
+    if current:
+        plan = {
+            "code": current.get("plan_code"),
+            "hub": current.get("hub"),
+            "amount": current.get("amount"),
+            "currency": current.get("currency", CURRENCY_DEFAULT),
+            "interval": current.get("interval"),
+        }
+    return jsonify({
+        "success": True,
+        "isPremium": bool(current),
+        "plan": plan,
+        "expiresAt": current.get("ends_at") if current else None,
+        "subscriptions": items,
+    }), 200
+
+
 @revenue_bp.get("/admin/checkouts")
 @require_authenticated
 @require_roles(*ADMIN_ROLES)
