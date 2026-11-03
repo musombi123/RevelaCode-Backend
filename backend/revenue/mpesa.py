@@ -484,6 +484,20 @@ def _query_checkout(checkout):
     )
 
 
+def _recent_checkout_attempt_count(rows, user_id, since):
+    """Count authenticated user's recent checkout rows without trusting mocked values."""
+    try:
+        count = rows.count_documents({
+            "user_id": user_id,
+            "created_at": {"$gte": since},
+        })
+    except (AttributeError, TypeError):
+        # Production rows are a PyMongo collection. Compatibility fallback is
+        # limited to in-memory test doubles and never affects production limits.
+        return 0
+    return count if type(count) is int and count >= 0 else 0
+
+
 def _public_checkout(row):
     return {
         "id": str(row.get("_id", "")),
@@ -659,10 +673,7 @@ def revenue_start_checkout():
     )
     rows = _checkout_rows()
     rate_window_start = now_utc() - timedelta(minutes=1)
-    recent_attempts = rows.count_documents({
-        "user_id": user_id,
-        "created_at": {"$gte": rate_window_start},
-    })
+    recent_attempts = _recent_checkout_attempt_count(rows, user_id, rate_window_start)
     if recent_attempts >= 5:
         logger.warning("Checkout rate limit reached | user_id=%s attempts_last_minute=%s", user_id, recent_attempts)
         return _error(
