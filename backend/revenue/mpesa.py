@@ -15,6 +15,7 @@ import re
 import threading
 import time
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 from urllib.parse import urlsplit
 
 import requests
@@ -40,6 +41,8 @@ _CHECKOUT_INDEXES_READY = False
 _TOKEN = None
 _TOKEN_EXPIRES = 0.0
 HTTP_TIMEOUT = 12.0
+CALLBACK_PATH = "/api/revenue/providers/payment-callback"
+CALLBACK_FORBIDDEN_TERMS = ("mpesa", "safaricom", "query")
 
 
 def _env(name: str, default: str = "") -> str:
@@ -119,7 +122,8 @@ def checkout_is_configured() -> bool:
         callback_ok = (
             parsed.scheme == "https"
             and bool(parsed.hostname)
-            and parsed.path.rstrip("/") == "/api/revenue/providers/mpesa/callback"
+            and parsed.path.rstrip("/") == CALLBACK_PATH
+            and not any(term in (parsed.netloc + parsed.path).lower() for term in CALLBACK_FORBIDDEN_TERMS)
             and parsed.username is None
             and parsed.password is None
             and not parsed.query
@@ -179,7 +183,8 @@ def checkout_configuration_status() -> dict:
         "callback_host_present": bool(parsed and parsed.hostname),
         "callback_path_matches": bool(
             parsed
-            and parsed.path.rstrip("/") == "/api/revenue/providers/mpesa/callback"
+            and parsed.path.rstrip("/") == CALLBACK_PATH
+            and not any(term in (parsed.netloc + parsed.path).lower() for term in CALLBACK_FORBIDDEN_TERMS)
         ),
         "callback_has_no_credentials": bool(
             parsed and parsed.username is None and parsed.password is None
@@ -202,14 +207,14 @@ def checkout_configuration_status() -> dict:
         "passkey_present": "MPESA_PASSKEY is missing from the backend environment.",
         "callback_https": "MPESA_CALLBACK_URL must use HTTPS.",
         "callback_host_present": "MPESA_CALLBACK_URL must contain a valid public hostname.",
-        "callback_path_matches": "MPESA_CALLBACK_URL must end with /api/revenue/providers/mpesa/callback.",
+        "callback_path_matches": "MPESA_CALLBACK_URL must end with /api/revenue/providers/payment-callback and must not contain restricted provider words.",
         "callback_has_no_credentials": "MPESA_CALLBACK_URL must not embed a username or password.",
         "callback_has_no_query_or_fragment": "MPESA_CALLBACK_URL must not contain a query string or fragment.",
     }
     blockers = [labels[key] for key, passed in checks.items() if not passed]
     return {
         "environment": environment or "invalid",
-        "expected_callback_url": "https://revelacode-backend.onrender.com/api/revenue/providers/mpesa/callback",
+        "expected_callback_url": "https://revelacode-backend.onrender.com/api/revenue/providers/payment-callback",
         "checks": checks,
         "blockers": blockers,
         "checkout_enabled": checkout_is_production_configured(),
@@ -231,6 +236,23 @@ def checkout_is_production_configured() -> bool:
         and checkout_is_configured()
         and "mpesa" in providers
     )
+
+
+def _log_missing_mpesa_environment_names():
+    required = (
+        "MPESA_ENV", "MPESA_STK_URL", "MPESA_STK_PATH",
+        "MPESA_STK_QUERY_PATH", "REVENUE_PAYMENT_PROVIDERS",
+        "MPESA_CONSUMER_KEY", "MPESA_CONSUMER_SECRET",
+        "MPESA_SHORTCODE", "MPESA_PASSKEY", "MPESA_CALLBACK_URL",
+    )
+    missing = [name for name in required if not _env(name)]
+    if missing:
+        logger.warning("M-Pesa checkout environment is incomplete | missing_variables=%s", ",".join(missing))
+    else:
+        logger.info("M-Pesa required environment variable names are present; credentials still require health checks")
+
+
+_log_missing_mpesa_environment_names()
 
 
 def _checkout_rows():
@@ -294,8 +316,20 @@ def _phone(value):
     return raw
 
 
+def _mask_phone(value):
+    """Mask Kenyan mobile numbers before writing diagnostic log records."""
+    digits = re.sub(r"\\D", "", str(value or ""))
+    if digits.startswith("0") and len(digits) == 10:
+        digits = "254" + digits[1:]
+    elif len(digits) == 9 and digits[:1] in {"1", "7"}:
+        digits = "254" + digits
+    if re.fullmatch(r"254[17][0-9]{8}", digits):
+        return f"{digits[:4]}****{digits[-4:]}"
+    return "invalid"
+
+
 def _timestamp():
-    return datetime.now(timezone(timedelta(hours=3))).strftime("%Y%m%d%H%M%S")
+    return datetime.now(ZoneInfo("Africa/Nairobi")).strftime("%Y%m%d%H%M%S")
 
 
 def _password(timestamp):
@@ -343,30 +377,42 @@ def _access_token():
         except (TypeError, ValueError):
             expiry = 3600
         _TOKEN = token
-        _TOKEN_EXPIRES = time.monotonic() + min(max(expiry, 120), 3600)
+        _TOKEN_EXPIRES = time.monotonic() + min(max(expiry, 30), 3300)
         return token
 
 
 def _daraja_post(path, payload):
+    """POST to Daraja and refresh a rejected OAuth token once."""
+    global _TOKEN, _TOKEN_EXPIRES
     resolved_path = _daraja_path_for(path)
-    token = _access_token()
-    try:
-        response = requests.post(
-            _base_url() + resolved_path,
-            json=payload,
-            headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
-            timeout=HTTP_TIMEOUT,
-            allow_redirects=False,
-            proxies={"http": "", "https": ""},
-        )
-    except requests.RequestException:
-        raise RuntimeError("Daraja payment service is unavailable.") from None
+    response = None
+    for attempt in range(2):
+        token = _access_token()
+        try:
+            response = requests.post(
+                _base_url() + resolved_path,
+                json=payload,
+                headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
+                timeout=HTTP_TIMEOUT,
+                allow_redirects=False,
+                proxies={"http": "", "https": ""},
+            )
+        except requests.RequestException:
+            raise RuntimeError("Daraja payment service is unavailable.") from None
+        if response.status_code != 401 or attempt == 1:
+            break
+        with TOKEN_LOCK:
+            if _TOKEN == token:
+                _TOKEN = None
+                _TOKEN_EXPIRES = 0.0
+        logger.warning("Daraja rejected the cached access token; refreshing once | path=%s", resolved_path)
+    if response is None:
+        raise RuntimeError("Daraja payment service did not return a response.")
     if 300 <= response.status_code < 400:
         logger.warning("Daraja request redirected | path=%s status=%s", resolved_path, response.status_code)
         raise RuntimeError("Daraja returned an unexpected redirect.")
     if response.status_code != 200:
         provider_code = ""
-        provider_message = ""
         try:
             error_body = response.json()
             if isinstance(error_body, dict):
@@ -376,19 +422,13 @@ def _daraja_post(path, payload):
                     or error_body.get("requestId")
                     or ""
                 )[:80]
-                provider_message = str(
-                    error_body.get("errorMessage")
-                    or error_body.get("ResponseDescription")
-                    or error_body.get("ResultDesc")
-                    or ""
-                )[:240]
         except (ValueError, TypeError):
             pass
         # Log only whitelisted, length-limited provider diagnostic fields; never
         # log request payloads, tokens, passkeys, phone numbers, or full bodies.
         logger.warning(
-            "Daraja request returned HTTP error | path=%s status=%s provider_code=%s provider_message=%s",
-            resolved_path, response.status_code, provider_code, provider_message,
+            "Daraja request returned HTTP error | path=%s status=%s provider_code=%s",
+            resolved_path, response.status_code, provider_code,
         )
         # A normal 4xx response (except timeout) is an explicit provider-side
         # rejection, not an ambiguous network failure. Return a safe rejection
@@ -449,6 +489,7 @@ def _public_checkout(row):
         "created_at": row.get("created_at").isoformat() if hasattr(row.get("created_at"), "isoformat") else row.get("created_at"),
         "updated_at": row.get("updated_at").isoformat() if hasattr(row.get("updated_at"), "isoformat") else row.get("updated_at"),
         "message": row.get("message"),
+        "result_description": row.get("result_description"),
         "subscription": row.get("subscription"),
         "billing_enabled": checkout_is_production_configured(),
     }
@@ -601,6 +642,10 @@ def revenue_start_checkout():
         return _error("A valid Idempotency-Key header is required.", 400, "invalid_idempotency_key")
 
     user_id = current_user_id()
+    logger.info(
+        "Checkout request received | user_id=%s plan_code=%s phone=%s",
+        user_id, plan_code, _mask_phone(phone),
+    )
     rows = _checkout_rows()
     existing = rows.find_one({"user_id": user_id, "idempotency_key": idempotency_key})
     retry_failed_initiation = bool(
@@ -648,6 +693,15 @@ def revenue_start_checkout():
             "message": "A payment for this hub is still unresolved. Refresh its status before attempting another payment.",
             "checkout": _public_checkout(unresolved),
         }), 409
+
+    rate_cutoff = now_utc() - timedelta(seconds=60)
+    recent_attempts = rows.count_documents({
+        "user_id": user_id,
+        "created_at": {"$gte": rate_cutoff},
+    })
+    if recent_attempts >= 5:
+        logger.warning("Checkout rate limit reached | user_id=%s attempts=%s", user_id, recent_attempts)
+        return _error("Too many payment attempts. Wait one minute before trying again.", 429, "checkout_rate_limited")
 
     try:
         _access_token()
@@ -736,6 +790,11 @@ def revenue_start_checkout():
                 }), 409
             return _error("The checkout could not be safely started. Refresh and retry only after checking payment status.", 409, "checkout_conflict")
 
+    logger.info(
+        "Daraja STK request sent | user_id=%s plan_code=%s amount=%s phone=%s transaction_type=%s party_b=%s callback_path=%s",
+        user_id, plan_code, f"{amount:.0f}", _mask_phone(phone),
+        transaction_type, party_b, CALLBACK_PATH,
+    )
     try:
         response = _daraja_post(
             "/mpesa/stkpush/v1/processrequest",
@@ -774,6 +833,11 @@ def revenue_start_checkout():
             "checkout": _public_checkout(saved),
         }), 503
 
+    logger.info(
+        "Daraja STK response received | user_id=%s plan_code=%s response_code=%s checkout_reference_present=%s",
+        user_id, plan_code, str(response.get("ResponseCode") or "")[:30],
+        bool(response.get("CheckoutRequestID")),
+    )
     if str(response.get("ResponseCode", "")) != "0":
         rows.update_one(
             {"_id": document["_id"]},
@@ -877,7 +941,8 @@ def _sandbox_config():
         callback_ok = (
             parsed.scheme == "https"
             and bool(parsed.hostname)
-            and parsed.path.rstrip("/") == "/api/revenue/providers/mpesa/callback"
+            and parsed.path.rstrip("/") == CALLBACK_PATH
+            and not any(term in (parsed.netloc + parsed.path).lower() for term in CALLBACK_FORBIDDEN_TERMS)
             and parsed.username is None
             and parsed.password is None
             and not parsed.query
@@ -1025,13 +1090,55 @@ def revenue_admin_sandbox_stk_push():
     }), 200
 
 
-@revenue_bp.post("/providers/mpesa/callback")
+@revenue_bp.get("/admin/mpesa/health")
+@require_authenticated
+@require_roles(*ADMIN_ROLES)
+def revenue_admin_mpesa_health():
+    """Admin-only live OAuth probe. The bearer token is never returned or logged."""
+    diagnostic = checkout_configuration_status()
+    if not checkout_is_configured():
+        return jsonify({
+            "success": False,
+            "status": "not_ready",
+            "environment": _environment() or "invalid",
+            "missing_or_invalid": diagnostic.get("blockers", []),
+            "token_test": "not_run",
+        }), 503
+    try:
+        _access_token()
+    except RuntimeError:
+        logger.warning("Admin M-Pesa health probe failed | stage=oauth")
+        return jsonify({
+            "success": False,
+            "status": "failed",
+            "environment": _environment(),
+            "token_test": "failed",
+            "message": "Daraja did not issue an access token. Verify the environment, app credentials and shortcode pairing.",
+        }), 502
+    logger.info("Admin M-Pesa health probe succeeded | environment=%s", _environment())
+    return jsonify({
+        "success": True,
+        "status": "ok",
+        "environment": _environment(),
+        "token_test": "ok",
+        "callback_url": _env("MPESA_CALLBACK_URL"),
+        "message": "Daraja OAuth succeeded. This does not send a customer STK prompt or prove callback reachability.",
+    }), 200
+
+
+@revenue_bp.post("/providers/payment-callback")
+@revenue_bp.post("/providers/mpesa/callback")  # Legacy callback for checkouts already in flight.
 def revenue_mpesa_callback():
     """Receive Daraja's asynchronous callback; callback data alone never activates access."""
     payload = request.get_json(silent=True)
     try:
         callback = payload.get("Body", {}).get("stkCallback", {}) if isinstance(payload, dict) else {}
         checkout_id = str(callback.get("CheckoutRequestID") or "").strip()
+        callback_result_for_log = callback.get("ResultCode")
+        logger.info(
+            "Daraja callback received | checkout_reference_present=%s result_code=%s",
+            bool(checkout_id), str(callback_result_for_log)[:20],
+        )
         if not checkout_id:
             return jsonify({"ResultCode": 0, "ResultDesc": "Callback acknowledged"}), 200
         rows = _checkout_rows()
@@ -1040,6 +1147,10 @@ def revenue_mpesa_callback():
             logger.warning("Received M-Pesa callback for unknown checkout request")
             return jsonify({"ResultCode": 0, "ResultDesc": "Callback acknowledged"}), 200
         already_succeeded = checkout.get("status") == "succeeded"
+        logger.info(
+            "Daraja callback correlated | checkout_id=%s phone=%s status=%s",
+            checkout_id, _mask_phone(checkout.get("phone")), checkout.get("status"),
+        )
 
         try:
             result_code = int(callback.get("ResultCode"))
@@ -1436,6 +1547,44 @@ def revenue_get_checkout(checkout_id):
     })
     if not checkout:
         return _error("Checkout not found.", 404, "checkout_not_found")
+
+    # Customer polling remains cheap; after 30 seconds the first owner GET
+    # performs a Daraja query, with a 20-second per-checkout query fence.
+    current_time = now_utc()
+    created_at = checkout.get("created_at")
+    last_query_at = checkout.get("last_status_query_at")
+    if isinstance(created_at, datetime):
+        if created_at.tzinfo is None:
+            created_at = created_at.replace(tzinfo=timezone.utc)
+        age_seconds = (current_time - created_at).total_seconds()
+    else:
+        age_seconds = 0
+    if isinstance(last_query_at, datetime):
+        if last_query_at.tzinfo is None:
+            last_query_at = last_query_at.replace(tzinfo=timezone.utc)
+        query_due = (current_time - last_query_at).total_seconds() >= 20
+    else:
+        query_due = True
+    if age_seconds >= 30 and query_due and checkout.get("status") in {"pending", "callback_received", "awaiting_verification"}:
+        claimed = _checkout_rows().update_one(
+            {
+                "_id": checkout["_id"],
+                "status": checkout.get("status"),
+                "$or": [
+                    {"last_status_query_at": {"$exists": False}},
+                    {"last_status_query_at": {"$lte": current_time - timedelta(seconds=20)}},
+                ],
+            },
+            {"$set": {"last_status_query_at": current_time}},
+        )
+        if claimed.modified_count == 1:
+            logger.info("Customer status polling triggered Daraja query | checkout_id=%s", checkout_id)
+            try:
+                _apply_final_result(checkout, _query_checkout(checkout))
+            except RuntimeError:
+                logger.warning("Customer status fallback query unavailable | checkout_id=%s", checkout_id)
+            checkout = _checkout_rows().find_one({"_id": checkout["_id"]}) or checkout
+
     return jsonify({"success": True, "checkout": _public_checkout(checkout)}), 200
 
 
