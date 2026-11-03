@@ -318,7 +318,7 @@ def _phone(value):
 
 def _mask_phone(value):
     """Mask Kenyan mobile numbers before writing diagnostic log records."""
-    digits = re.sub(r"\\D", "", str(value or ""))
+    digits = re.sub(r"\D", "", str(value or ""))
     if digits.startswith("0") and len(digits) == 10:
         digits = "254" + digits[1:]
     elif len(digits) == 9 and digits[:1] in {"1", "7"}:
