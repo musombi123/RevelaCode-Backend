@@ -166,7 +166,7 @@ def test_daraja_callback_configuration_uses_public_safe_path(monkeypatch):
 def test_daraja_timestamp_is_nairobi_format():
     import re
 
-    assert re.fullmatch(r"\\d{14}", mpesa._timestamp())
+    assert re.fullmatch(r"\d{14}", mpesa._timestamp())
 
 
 def test_mpesa_phone_normalization(raw, expected):
