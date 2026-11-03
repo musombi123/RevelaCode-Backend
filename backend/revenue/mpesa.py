@@ -1180,6 +1180,11 @@ def revenue_admin_mpesa_health():
     }), 200
 
 
+def _callback_ack():
+    """Safaricom expects an HTTP 200 acknowledgment even when reconciliation is deferred."""
+    return jsonify({"ResultCode": 0, "ResultDesc": "Accepted"}), 200
+
+
 @revenue_bp.post("/providers/payment-callback")
 @revenue_bp.post("/providers/mpesa/callback")  # Legacy callback for checkouts already in flight.
 def revenue_mpesa_callback():
@@ -1194,12 +1199,12 @@ def revenue_mpesa_callback():
             bool(checkout_id), str(callback_result_for_log)[:20],
         )
         if not checkout_id:
-            return jsonify({"ResultCode": 0, "ResultDesc": "Callback acknowledged"}), 200
+            return _callback_ack()
         rows = _checkout_rows()
         checkout = rows.find_one({"checkout_request_id": checkout_id})
         if not checkout:
             logger.warning("Received M-Pesa callback for unknown checkout request")
-            return jsonify({"ResultCode": 0, "ResultDesc": "Callback acknowledged"}), 200
+            return _callback_ack()
         already_succeeded = checkout.get("status") == "succeeded"
         logger.info(
             "Daraja callback correlated | checkout_id=%s phone=%s status=%s",
@@ -1213,7 +1218,7 @@ def revenue_mpesa_callback():
         if already_succeeded and result_code != 0:
             # Do not let a late/duplicate failure notification downgrade a
             # checkout that was already confirmed by a server-side Daraja query.
-            return jsonify({"ResultCode": 0, "ResultDesc": "Callback already applied"}), 200
+            return _callback_ack()
 
         callback_meta = {}
         raw_items = (callback.get("CallbackMetadata") or {}).get("Item", [])
@@ -1245,7 +1250,7 @@ def revenue_mpesa_callback():
                     "updated_at": now_utc(),
                 }},
             )
-            return jsonify({"ResultCode": 0, "ResultDesc": "Callback acknowledged for reconciliation"}), 200
+            return _callback_ack()
 
         validated_receipt = None
         if result_code == 0:
@@ -1268,7 +1273,7 @@ def revenue_mpesa_callback():
                     }},
                 )
                 logger.warning("M-Pesa success callback failed amount/payer/receipt validation")
-                return jsonify({"ResultCode": 0, "ResultDesc": "Callback acknowledged for reconciliation"}), 200
+                return _callback_ack()
 
         if already_succeeded:
             # A public callback cannot supply a trusted receipt by itself. Query
@@ -1292,7 +1297,7 @@ def revenue_mpesa_callback():
                         "updated_at": now_utc(),
                     }},
                 )
-                return jsonify({"ResultCode": 0, "ResultDesc": "Callback acknowledged for reconciliation"}), 200
+                return _callback_ack()
 
             receipt_event = {
                 "provider": "mpesa",
@@ -1340,7 +1345,7 @@ def revenue_mpesa_callback():
                         "updated_at": now_utc(),
                     }},
                 )
-            return jsonify({"ResultCode": 0, "ResultDesc": "Callback acknowledged"}), 200
+            return _callback_ack()
 
         # A callback is still reconciled against Daraja's query before changing
         # final state. Save its receipt only after the amount/payer checks above.
@@ -1370,7 +1375,7 @@ def revenue_mpesa_callback():
                     "updated_at": now_utc(),
                 }},
             )
-            return jsonify({"ResultCode": 0, "ResultDesc": "Callback acknowledged; verification pending"}), 200
+            return _callback_ack()
 
         query_merchant_id = str(query_result.get("MerchantRequestID") or "").strip()
         if (
@@ -1401,12 +1406,12 @@ def revenue_mpesa_callback():
                 )
                 checkout["receipt"] = validated_receipt
             _apply_final_result(checkout, query_result)
-        return jsonify({"ResultCode": 0, "ResultDesc": "Callback acknowledged"}), 200
+        return _callback_ack()
     except Exception:
         logger.exception("M-Pesa callback processing failed")
         # Return 200 so the callback is not retried indefinitely; checkout stays
         # pending for the authenticated status/reconciliation endpoint.
-        return jsonify({"ResultCode": 0, "ResultDesc": "Callback acknowledged for reconciliation"}), 200
+        return _callback_ack()
 
 
 @revenue_bp.post("/admin/checkouts/<checkout_id>/refresh")
