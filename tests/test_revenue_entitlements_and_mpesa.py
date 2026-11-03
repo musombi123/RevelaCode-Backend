@@ -186,6 +186,31 @@ def test_daraja_readiness_rejects_invalid_transaction_type_or_party_b(monkeypatc
     assert mpesa.checkout_configuration_status()["checks"]["party_b_numeric"] is False
 
 
+def test_paybill_party_b_must_match_shortcode_but_till_may_differ(monkeypatch):
+    monkeypatch.setenv("MPESA_ENV", "production")
+    monkeypatch.setenv("MPESA_STK_URL", "https://api.safaricom.co.ke")
+    monkeypatch.setenv("MPESA_STK_PATH", "/mpesa/stkpush/v1/processrequest")
+    monkeypatch.setenv("MPESA_STK_QUERY_PATH", "/mpesa/stkpushquery/v1/query")
+    monkeypatch.setenv("MPESA_CONSUMER_KEY", "test-consumer-key")
+    monkeypatch.setenv("MPESA_CONSUMER_SECRET", "test-consumer-secret")
+    monkeypatch.setenv("MPESA_SHORTCODE", "123456")
+    monkeypatch.setenv("MPESA_PASSKEY", "test-passkey")
+    monkeypatch.setenv("MPESA_CALLBACK_URL", "https://revelacode-backend.onrender.com/api/revenue/providers/payment-callback")
+    monkeypatch.setenv("REVENUE_PAYMENT_PROVIDERS", "mpesa")
+
+    monkeypatch.setenv("MPESA_TRANSACTION_TYPE", "CustomerPayBillOnline")
+    monkeypatch.setenv("MPESA_PARTY_B", "654321")
+    assert mpesa.checkout_is_configured() is False
+    diagnostics = mpesa.checkout_configuration_status()
+    assert diagnostics["checks"]["party_b_matches_shortcode_for_paybill"] is False
+
+    monkeypatch.setenv("MPESA_TRANSACTION_TYPE", "CustomerBuyGoodsOnline")
+    monkeypatch.setenv("MPESA_PARTY_B", "654321")
+    assert mpesa.checkout_is_configured() is True
+    diagnostics = mpesa.checkout_configuration_status()
+    assert diagnostics["checks"]["party_b_matches_shortcode_for_paybill"] is True
+
+
 def test_daraja_callback_always_returns_standard_http_200_ack(revenue_app):
     with revenue_app.test_request_context(
         "/api/revenue/providers/payment-callback",
