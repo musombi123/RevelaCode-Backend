@@ -113,6 +113,16 @@ def _daraja_path_for(path: str) -> str:
             return resolved
     raise RuntimeError("Unsupported Daraja endpoint path.")
 
+def _transaction_configuration() -> tuple[str, str, bool]:
+    """Resolve and validate PayBill/Till routing without guessing the merchant target."""
+    transaction_type = _env("MPESA_TRANSACTION_TYPE", "CustomerPayBillOnline")
+    shortcode = _env("MPESA_SHORTCODE")
+    party_b = _env("MPESA_PARTY_B") or shortcode
+    valid_type = transaction_type in {"CustomerPayBillOnline", "CustomerBuyGoodsOnline"}
+    valid_party = bool(party_b) and party_b.isdigit()
+    return transaction_type, party_b, valid_type and valid_party
+
+
 
 def _callback_host_is_public(hostname: str) -> bool:
     host = str(hostname or "").strip().lower().rstrip(".")
@@ -130,6 +140,7 @@ def _callback_host_is_public(hostname: str) -> bool:
 def checkout_is_configured() -> bool:
     """Return Daraja configuration readiness without exposing credentials."""
     callback = _env("MPESA_CALLBACK_URL")
+    transaction_type, party_b, transaction_config_ok = _transaction_configuration()
     try:
         from urllib.parse import urlsplit
         parsed = urlsplit(callback)
@@ -154,6 +165,7 @@ def checkout_is_configured() -> bool:
         and _env("MPESA_SHORTCODE").isdigit()
         and _env("MPESA_PASSKEY")
         and callback_ok
+        and transaction_config_ok
     )
 
 
@@ -182,6 +194,7 @@ def checkout_configuration_status() -> dict:
 
     configured_stk_url = _env("MPESA_STK_URL")
     expected_stk_url = _expected_base_url()
+    transaction_type, party_b, transaction_config_ok = _transaction_configuration()
     checks = {
         "production_environment": environment == "production",
         "stk_url_present": bool(configured_stk_url),
@@ -193,6 +206,9 @@ def checkout_configuration_status() -> dict:
         "consumer_secret_present": bool(_env("MPESA_CONSUMER_SECRET")),
         "shortcode_numeric": bool(_env("MPESA_SHORTCODE")) and _env("MPESA_SHORTCODE").isdigit(),
         "passkey_present": bool(_env("MPESA_PASSKEY")),
+        "transaction_type_supported": transaction_type in {"CustomerPayBillOnline", "CustomerBuyGoodsOnline"},
+        "party_b_numeric": bool(party_b) and party_b.isdigit(),
+        "transaction_configuration_valid": transaction_config_ok,
         "callback_https": bool(parsed and parsed.scheme == "https"),
         "callback_host_present": bool(parsed and parsed.hostname),
         "callback_host_public_shape": bool(parsed and _callback_host_is_public(parsed.hostname)),
@@ -220,6 +236,9 @@ def checkout_configuration_status() -> dict:
         "consumer_secret_present": "MPESA_CONSUMER_SECRET is missing from the backend environment.",
         "shortcode_numeric": "MPESA_SHORTCODE must be the numeric shortcode registered for the live Daraja account.",
         "passkey_present": "MPESA_PASSKEY is missing from the backend environment.",
+        "transaction_type_supported": "MPESA_TRANSACTION_TYPE must be CustomerPayBillOnline for PayBill or CustomerBuyGoodsOnline for Buy Goods/Till.",
+        "party_b_numeric": "MPESA_PARTY_B (or the shortcode default) must be a numeric destination shortcode/Till.",
+        "transaction_configuration_valid": "Correct the PayBill/Till transaction type and destination shortcode before enabling checkout.",
         "callback_https": "MPESA_CALLBACK_URL must use HTTPS.",
         "callback_host_present": "MPESA_CALLBACK_URL must contain a valid public hostname.",
         "callback_host_public_shape": "MPESA_CALLBACK_URL must not use localhost, a private IP address, or an internal-only hostname.",
