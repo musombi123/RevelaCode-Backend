@@ -186,6 +186,18 @@ def test_daraja_readiness_rejects_invalid_transaction_type_or_party_b(monkeypatc
     assert mpesa.checkout_configuration_status()["checks"]["party_b_numeric"] is False
 
 
+def test_daraja_callback_always_returns_standard_http_200_ack(revenue_app):
+    with revenue_app.test_request_context(
+        "/api/revenue/providers/payment-callback",
+        method="POST",
+        json={},
+    ):
+        response, status = mpesa.revenue_mpesa_callback()
+
+    assert status == 200
+    assert response.get_json() == {"ResultCode": 0, "ResultDesc": "Accepted"}
+
+
 def test_daraja_timestamp_is_nairobi_format():
     import re
 
