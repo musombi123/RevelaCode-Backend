@@ -204,6 +204,42 @@ def farmer_payload(data):
     }
 
 
+def soil_test_payload(data):
+    """Validate a soil pH test record without treating an image estimate as a measurement."""
+    if not isinstance(data, dict):
+        raise ValueError("JSON object required.")
+
+    method = _text(data, "method", True, 40).lower()
+    if method not in {"digital_meter", "test_strip", "colorimetric_kit", "laboratory"}:
+        raise ValueError("method must be digital_meter, test_strip, colorimetric_kit or laboratory.")
+
+    measured_ph = _optional_number(data, "measured_ph", 0, 14)
+    if measured_ph is not None and round(measured_ph, 2) != measured_ph:
+        measured_ph = round(measured_ph, 2)
+
+    calibration_status = _text(data, "calibration_status", False, 30).lower() or "not_applicable"
+    if calibration_status not in {"calibrated", "uncalibrated", "overdue", "not_applicable"}:
+        raise ValueError("calibration_status is not supported.")
+
+    if method == "digital_meter" and measured_ph is not None and calibration_status != "calibrated":
+        # Keep the reading, but make its calibration state explicit for later review.
+        pass
+
+    sample_depth_cm = _optional_number(data, "sample_depth_cm", 0, 100)
+    return {
+        "method": method,
+        "measured_ph": measured_ph,
+        "calibration_status": calibration_status,
+        "calibration_date": _text(data, "calibration_date", False, 40),
+        "kit_name": _text(data, "kit_name", False, 120),
+        "sample_depth_cm": sample_depth_cm,
+        "sample_location": _text(data, "sample_location", False, 160),
+        "ai_visual_estimate": _text(data, "ai_visual_estimate", False, 2000),
+        "ai_assessment": _text(data, "ai_assessment", False, 4000),
+        "notes": _text(data, "notes", False, 1000),
+    }
+
+
 def farmer_review_payload(data):
     if not isinstance(data, dict):
         raise ValueError("JSON object required.")
