@@ -2745,13 +2745,24 @@ def create_soil_test(user_id: str, farm_id: str, payload: dict) -> dict:
 
     now = now_utc()
     measured_ph = payload.get("measured_ph")
+    method = payload.get("method", "")
+    calibration_status = payload.get("calibration_status", "not_applicable")
+    trusted_numeric_reading = (
+        measured_ph is not None
+        and (method != "digital_meter" or calibration_status == "calibrated")
+    )
+    measurement_status = (
+        "measured" if trusted_numeric_reading
+        else "uncalibrated_reading" if measured_ph is not None
+        else "visual_estimate_only"
+    )
     document = {
         "owner_user_id": str(user_id),
         "farm_id": str(farm_id),
-        "method": payload.get("method", ""),
+        "method": method,
         "measured_ph": measured_ph,
-        "measurement_status": "measured" if measured_ph is not None else "visual_estimate_only",
-        "calibration_status": payload.get("calibration_status", "not_applicable"),
+        "measurement_status": measurement_status,
+        "calibration_status": calibration_status,
         "calibration_date": payload.get("calibration_date", ""),
         "kit_name": payload.get("kit_name", ""),
         "sample_depth_cm": payload.get("sample_depth_cm"),
@@ -2766,7 +2777,7 @@ def create_soil_test(user_id: str, farm_id: str, payload: dict) -> dict:
     saved = _collection(SOIL_TESTS).find_one({"_id": result.inserted_id})
 
     # A visually inferred estimate is never allowed to overwrite the farm's measured pH.
-    if measured_ph is not None:
+    if trusted_numeric_reading:
         _collection(FARMS).update_one(
             _farm_filter(user_id, farm_id),
             {"$set": {
