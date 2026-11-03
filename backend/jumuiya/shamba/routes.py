@@ -440,6 +440,28 @@ def add_crop(farm_id):
 
 
 # ============================================================
+# SOIL pH TESTS
+# ============================================================
+
+@shamba_bp.get("/farms/<farm_id>/soil-tests")
+@require_authenticated
+@require_farm_rights_review
+def get_soil_tests(farm_id):
+    return ok(services.list_soil_tests(current_user_id(), farm_id))
+
+
+@shamba_bp.post("/farms/<farm_id>/soil-tests")
+@require_authenticated
+@require_farm_rights_review
+def add_soil_test(farm_id):
+    payload = validate(schemas.soil_test_payload, body())
+    return created(
+        services.create_soil_test(current_user_id(), farm_id, payload),
+        "Soil pH test saved.",
+    )
+
+
+# ============================================================
 # FARM ACTIVITIES
 # ============================================================
 
