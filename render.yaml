@@ -10,6 +10,9 @@ services:
         value: production
       - key: PORT
         value: 5000
+      # Explicit allow-list for production web, Tauri Windows and Capacitor Android clients.
+      - key: FRONTEND_ORIGINS
+        value: "https://revelacode.co.ke,https://www.revelacode.co.ke,https://revelacode-frontend.onrender.com,http://tauri.localhost,https://localhost,http://localhost,http://localhost:5173,http://127.0.0.1:5173"
       # Backend-originated AI tasks use the public RevelaAI /ai contract.
       - key: REVELA_AI_URL
         value: "https://revelaai.onrender.com/ai"
