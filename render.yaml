@@ -10,6 +10,12 @@ services:
         value: production
       - key: PORT
         value: 5000
+      # Backend-originated AI tasks use the public RevelaAI /ai contract.
+      - key: REVELA_AI_URL
+        value: "https://revelaai.onrender.com/ai"
+      # Must match RevelaAI's REVELAAI_SERVICE_KEY for the protected AI context gateway.
+      - key: REVELAAI_SERVICE_KEY
+        sync: false
 
   - type: cron
     name: revelacode-market-data-refresh
