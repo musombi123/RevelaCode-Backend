@@ -111,8 +111,8 @@ def _validate_features(value):
 
 def _validate_plan_values(data, *, creating, existing=None):
     existing = existing or {}
-    allowed = {"code", "name", "hub", "amount", "interval", "status", "features"} if creating else {
-        "name", "amount", "interval", "status", "features"
+    allowed = {"code", "name", "hub", "amount", "interval", "status", "features", "best_value"} if creating else {
+        "name", "amount", "interval", "status", "features", "best_value"
     }
     extra = set(data) - allowed
     if extra:
@@ -157,6 +157,10 @@ def _validate_plan_values(data, *, creating, existing=None):
 
     features = data.get("features", existing.get("features", []))
     values["features"] = _validate_features(features)
+    best_value = data.get("best_value", existing.get("best_value", False))
+    if not isinstance(best_value, bool):
+        raise ValueError("Best value must be a boolean.")
+    values["best_value"] = best_value
     values["currency"] = "KES"
 
     plan_hub = str(values.get("hub", existing.get("hub", "")) or "").strip().lower()
