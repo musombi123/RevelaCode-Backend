@@ -183,7 +183,7 @@ PLANS = [
     },
 ]
 
-_EDITABLE_FIELDS = ("name", "amount", "interval", "status", "features")
+_EDITABLE_FIELDS = ("name", "amount", "interval", "status", "features", "best_value")
 
 
 def _load_overrides():
@@ -232,6 +232,7 @@ def list_plans(hub=None, *, include_retired=False):
                 item[key] = override[key]
 
         item["features"] = list(item.get("features") or [])
+        item["best_value"] = bool(item.get("best_value", False))
         if str(item.get("hub") or "").strip().lower() in BILLING_DISABLED_HUBS:
             continue
         if not include_retired and item.get("status") == "retired":
@@ -255,6 +256,7 @@ def list_plans(hub=None, *, include_retired=False):
             "interval": stored.get("interval", "month"),
             "status": stored.get("status", "proposed"),
             "features": list(stored.get("features") or []),
+            "best_value": bool(stored.get("best_value", False)),
         }
         if str(item.get("hub") or "").strip().lower() in BILLING_DISABLED_HUBS:
             continue
