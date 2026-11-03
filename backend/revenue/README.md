@@ -17,7 +17,7 @@ Set these in the **RevelaCode-Backend** deployment environment, never in the fro
 | `MPESA_CONSUMER_SECRET` | Daraja app consumer secret |
 | `MPESA_SHORTCODE` | Registered PayBill/Till shortcode |
 | `MPESA_PASSKEY` | STK Push passkey supplied for the shortcode |
-| `MPESA_CALLBACK_URL` | Public HTTPS URL ending in `/api/revenue/providers/mpesa/callback` |
+| `MPESA_CALLBACK_URL` | Public HTTPS URL ending in `/api/revenue/providers/payment-callback` (the route name intentionally avoids Safaricom-restricted callback URL keywords) |
 | `MPESA_TRANSACTION_TYPE` | Optional: `CustomerPayBillOnline` by default or `CustomerBuyGoodsOnline` |
 | `MPESA_PARTY_B` | Optional: destination shortcode; defaults to `MPESA_SHORTCODE` |
 
@@ -31,9 +31,9 @@ A platform administrator can create a draft subscription plan with `POST /api/re
 
 1. An authenticated client calls `POST /api/revenue/checkout` with only `plan_code` and a Kenyan `phone`, plus an `Idempotency-Key` header. The amount is taken from the backend plan catalogue.
 2. The backend creates a tracked checkout record before calling Daraja STK Push.
-3. The callback is treated as a notification. The backend queries the same Daraja `CheckoutRequestID`; only a final successful result for that checkout can activate a subscription.
+3. The public callback is `POST /api/revenue/providers/payment-callback` and is treated as a notification. The backend queries the same Daraja `CheckoutRequestID`; only a final successful result for that checkout can activate a subscription. Do not configure the legacy `/providers/mpesa/callback` alias as the callback URL: Safaricom callback URL restrictions reject provider keywords and the readiness check requires the safe `payment-callback` path.
 4. Subscription activation and the confirmed revenue transaction are idempotent. A retry repairs a missing transaction-history entry where an earlier successful activation was already recorded.
-5. An authenticated customer can inspect `GET /api/revenue/checkout/{checkoutRequestId}` or call `POST /api/revenue/checkout/{checkoutRequestId}/refresh` to reconcile a pending result.
+5. An authenticated customer can poll `GET /api/revenue/checkout/{checkoutRequestId}` (owner-only; the server runs an STK Query fallback after 30 seconds) or call `POST /api/revenue/checkout/{checkoutRequestId}/refresh` to request immediate reconciliation.
 
 A browser redirect, an unsigned callback body, an STK initiation response, or a pending query is not proof of payment. If Daraja returns no final `ResultCode`, checkout remains awaiting verification; it must not grant access.
 
