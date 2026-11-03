@@ -149,9 +149,41 @@ def test_daraja_callback_configuration_uses_public_safe_path(monkeypatch):
 
     assert mpesa.checkout_is_configured() is True
     assert mpesa.checkout_is_production_configured() is True
+    diagnostics = mpesa.checkout_configuration_status()
+    assert diagnostics["checks"]["transaction_type_supported"] is True
+    assert diagnostics["checks"]["party_b_numeric"] is True
+    assert diagnostics["checks"]["transaction_configuration_valid"] is True
+
 
     monkeypatch.setenv("MPESA_CALLBACK_URL", "https://revelacode-backend.onrender.com/api/revenue/providers/mpesa/callback")
     assert mpesa.checkout_is_configured() is False
+
+
+
+def test_daraja_readiness_rejects_invalid_transaction_type_or_party_b(monkeypatch):
+    monkeypatch.setenv("MPESA_ENV", "production")
+    monkeypatch.setenv("MPESA_STK_URL", "https://api.safaricom.co.ke")
+    monkeypatch.setenv("MPESA_STK_PATH", "/mpesa/stkpush/v1/processrequest")
+    monkeypatch.setenv("MPESA_STK_QUERY_PATH", "/mpesa/stkpushquery/v1/query")
+    monkeypatch.setenv("MPESA_CONSUMER_KEY", "test-consumer-key")
+    monkeypatch.setenv("MPESA_CONSUMER_SECRET", "test-consumer-secret")
+    monkeypatch.setenv("MPESA_SHORTCODE", "123456")
+    monkeypatch.setenv("MPESA_PASSKEY", "test-passkey")
+    monkeypatch.setenv("MPESA_CALLBACK_URL", "https://revelacode-backend.onrender.com/api/revenue/providers/payment-callback")
+    monkeypatch.setenv("REVENUE_PAYMENT_PROVIDERS", "mpesa")
+
+    monkeypatch.setenv("MPESA_TRANSACTION_TYPE", "CustomerPayBillOnline")
+    monkeypatch.setenv("MPESA_PARTY_B", "123456")
+    assert mpesa.checkout_is_configured() is True
+
+    monkeypatch.setenv("MPESA_TRANSACTION_TYPE", "CustomerPayBill")
+    assert mpesa.checkout_is_configured() is False
+    assert mpesa.checkout_configuration_status()["checks"]["transaction_type_supported"] is False
+
+    monkeypatch.setenv("MPESA_TRANSACTION_TYPE", "CustomerBuyGoodsOnline")
+    monkeypatch.setenv("MPESA_PARTY_B", "not-a-till")
+    assert mpesa.checkout_is_configured() is False
+    assert mpesa.checkout_configuration_status()["checks"]["party_b_numeric"] is False
 
 
 def test_daraja_timestamp_is_nairobi_format():
