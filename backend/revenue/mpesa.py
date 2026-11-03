@@ -728,15 +728,6 @@ def revenue_start_checkout():
             "checkout": _public_checkout(unresolved),
         }), 409
 
-    rate_cutoff = now_utc() - timedelta(seconds=60)
-    recent_attempts = rows.count_documents({
-        "user_id": user_id,
-        "created_at": {"$gte": rate_cutoff},
-    })
-    if recent_attempts >= 5:
-        logger.warning("Checkout rate limit reached | user_id=%s attempts=%s", user_id, recent_attempts)
-        return _error("Too many payment attempts. Wait one minute before trying again.", 429, "checkout_rate_limited")
-
     try:
         _access_token()
     except RuntimeError as exc:
