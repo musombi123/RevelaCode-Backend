@@ -144,6 +144,31 @@ def test_proposed_plan_cannot_activate_paid_subscription(monkeypatch, revenue_ap
         ("0112345678", "254112345678"),
     ],
 )
+def test_daraja_callback_configuration_uses_public_safe_path(monkeypatch):
+    monkeypatch.setenv("MPESA_ENV", "production")
+    monkeypatch.setenv("MPESA_STK_URL", "https://api.safaricom.co.ke")
+    monkeypatch.setenv("MPESA_STK_PATH", "/mpesa/stkpush/v1/processrequest")
+    monkeypatch.setenv("MPESA_STK_QUERY_PATH", "/mpesa/stkpushquery/v1/query")
+    monkeypatch.setenv("MPESA_CONSUMER_KEY", "test-consumer-key")
+    monkeypatch.setenv("MPESA_CONSUMER_SECRET", "test-consumer-secret")
+    monkeypatch.setenv("MPESA_SHORTCODE", "123456")
+    monkeypatch.setenv("MPESA_PASSKEY", "test-passkey")
+    monkeypatch.setenv("MPESA_CALLBACK_URL", "https://revelacode-backend.onrender.com/api/revenue/providers/payment-callback")
+    monkeypatch.setenv("REVENUE_PAYMENT_PROVIDERS", "mpesa")
+
+    assert mpesa.checkout_is_configured() is True
+    assert mpesa.checkout_is_production_configured() is True
+
+    monkeypatch.setenv("MPESA_CALLBACK_URL", "https://revelacode-backend.onrender.com/api/revenue/providers/mpesa/callback")
+    assert mpesa.checkout_is_configured() is False
+
+
+def test_daraja_timestamp_is_nairobi_format():
+    import re
+
+    assert re.fullmatch(r"\\d{14}", mpesa._timestamp())
+
+
 def test_mpesa_phone_normalization(raw, expected):
     assert mpesa._phone(raw) == expected
 
