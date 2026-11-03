@@ -32,6 +32,25 @@ logging.basicConfig(
 
 logger = logging.getLogger("revelacode.main")
 
+# Report configuration names only; never print credential values.
+_REQUIRED_MPESA_ENV = (
+    "MPESA_ENV",
+    "MPESA_STK_URL",
+    "MPESA_STK_PATH",
+    "MPESA_STK_QUERY_PATH",
+    "MPESA_CONSUMER_KEY",
+    "MPESA_CONSUMER_SECRET",
+    "MPESA_SHORTCODE",
+    "MPESA_PASSKEY",
+    "MPESA_CALLBACK_URL",
+    "REVENUE_PAYMENT_PROVIDERS",
+)
+_missing_mpesa_env = [name for name in _REQUIRED_MPESA_ENV if not os.getenv(name, "").strip()]
+if _missing_mpesa_env:
+    logger.warning("M-Pesa configuration variables missing | names=%s", ",".join(_missing_mpesa_env))
+else:
+    logger.info("M-Pesa configuration variables present | count=%s", len(_REQUIRED_MPESA_ENV))
+
 
 # =========================================================
 # APP
