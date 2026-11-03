@@ -9,6 +9,7 @@ query response, the checkout remains pending for later reconciliation.
 from __future__ import annotations
 
 import base64
+import ipaddress
 import logging
 import os
 import re
@@ -113,6 +114,19 @@ def _daraja_path_for(path: str) -> str:
     raise RuntimeError("Unsupported Daraja endpoint path.")
 
 
+def _callback_host_is_public(hostname: str) -> bool:
+    host = str(hostname or "").strip().lower().rstrip(".")
+    if not host or host in {"localhost", "localhost.localdomain"} or host.endswith((".localhost", ".local", ".internal")):
+        return False
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        # A DNS hostname is accepted here; public reachability is separately
+        # checked by Safaricom delivery and the admin health diagnostic note.
+        return "." in host and not host.endswith(".test")
+    return address.is_global
+
+
 def checkout_is_configured() -> bool:
     """Return Daraja configuration readiness without exposing credentials."""
     callback = _env("MPESA_CALLBACK_URL")
@@ -121,7 +135,7 @@ def checkout_is_configured() -> bool:
         parsed = urlsplit(callback)
         callback_ok = (
             parsed.scheme == "https"
-            and bool(parsed.hostname)
+            and _callback_host_is_public(parsed.hostname)
             and parsed.path.rstrip("/") == CALLBACK_PATH
             and not any(term in (parsed.netloc + parsed.path).lower() for term in CALLBACK_FORBIDDEN_TERMS)
             and parsed.username is None
@@ -181,6 +195,7 @@ def checkout_configuration_status() -> dict:
         "passkey_present": bool(_env("MPESA_PASSKEY")),
         "callback_https": bool(parsed and parsed.scheme == "https"),
         "callback_host_present": bool(parsed and parsed.hostname),
+        "callback_host_public_shape": bool(parsed and _callback_host_is_public(parsed.hostname)),
         "callback_path_matches": bool(
             parsed
             and parsed.path.rstrip("/") == CALLBACK_PATH
@@ -207,6 +222,7 @@ def checkout_configuration_status() -> dict:
         "passkey_present": "MPESA_PASSKEY is missing from the backend environment.",
         "callback_https": "MPESA_CALLBACK_URL must use HTTPS.",
         "callback_host_present": "MPESA_CALLBACK_URL must contain a valid public hostname.",
+        "callback_host_public_shape": "MPESA_CALLBACK_URL must not use localhost, a private IP address, or an internal-only hostname.",
         "callback_path_matches": "MPESA_CALLBACK_URL must end with /api/revenue/providers/payment-callback and must not contain restricted provider words.",
         "callback_has_no_credentials": "MPESA_CALLBACK_URL must not embed a username or password.",
         "callback_has_no_query_or_fragment": "MPESA_CALLBACK_URL must not contain a query string or fragment.",
