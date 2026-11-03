@@ -150,7 +150,7 @@ def test_daraja_callback_configuration_uses_public_safe_path(monkeypatch):
     assert mpesa.checkout_is_configured() is True
     assert mpesa.checkout_is_production_configured() is True
 
-    monkeypatch.setenv("MPESA_CALLBACK_URL", "https://revelacode-backend.onrender.com/api/revenue/providers/mpesa/callback")
+    monkeypatch.setenv("MPESA_CALLBACK_URL", "https://revelacode-backend.onrender.com/api/revenue/providers/payment-callback")
     assert mpesa.checkout_is_configured() is False
 
 
