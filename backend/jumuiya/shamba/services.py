@@ -47,6 +47,7 @@ HARVESTS = "jumuiya_harvests"
 INSIGHTS = "jumuiya_farm_insights"
 RECOMMENDATIONS = "jumuiya_farm_recommendations"
 ALERTS = "jumuiya_farm_alerts"
+SOIL_TESTS = "jumuiya_shamba_soil_tests"
 
 
 # ============================================================
@@ -2712,3 +2713,75 @@ def alerts_snapshot(
         ),
         "updated_at": now_utc(),
     })
+
+
+# ============================================================
+# SOIL pH TEST HISTORY
+# ============================================================
+
+def list_soil_tests(user_id: str, farm_id: str) -> list[dict]:
+    """Return pH test records for a farm owned by the authenticated user."""
+    farm = _collection(FARMS).find_one(_farm_filter(user_id, farm_id))
+    if not farm:
+        raise APIError("Farm not found.", 404, "farm_not_found")
+
+    records = list(
+        _collection(SOIL_TESTS)
+        .find({
+            "owner_user_id": str(user_id),
+            "farm_id": str(farm_id),
+        })
+        .sort("created_at", -1)
+        .limit(50)
+    )
+    return serialise_many(records)
+
+
+def create_soil_test(user_id: str, farm_id: str, payload: dict) -> dict:
+    """Persist a soil pH test. Only measured readings update the farm's soil_ph field."""
+    farm = _collection(FARMS).find_one(_farm_filter(user_id, farm_id))
+    if not farm:
+        raise APIError("Farm not found.", 404, "farm_not_found")
+
+    now = now_utc()
+    measured_ph = payload.get("measured_ph")
+    document = {
+        "owner_user_id": str(user_id),
+        "farm_id": str(farm_id),
+        "method": payload.get("method", ""),
+        "measured_ph": measured_ph,
+        "measurement_status": "measured" if measured_ph is not None else "visual_estimate_only",
+        "calibration_status": payload.get("calibration_status", "not_applicable"),
+        "calibration_date": payload.get("calibration_date", ""),
+        "kit_name": payload.get("kit_name", ""),
+        "sample_depth_cm": payload.get("sample_depth_cm"),
+        "sample_location": payload.get("sample_location", ""),
+        "ai_visual_estimate": payload.get("ai_visual_estimate", ""),
+        "ai_assessment": payload.get("ai_assessment", ""),
+        "notes": payload.get("notes", ""),
+        "created_at": now,
+        "updated_at": now,
+    }
+    result = _collection(SOIL_TESTS).insert_one(document)
+    saved = _collection(SOIL_TESTS).find_one({"_id": result.inserted_id})
+
+    # A visually inferred estimate is never allowed to overwrite the farm's measured pH.
+    if measured_ph is not None:
+        _collection(FARMS).update_one(
+            _farm_filter(user_id, farm_id),
+            {"$set": {
+                "soil_ph": measured_ph,
+                "soil_ph_method": document["method"],
+                "soil_ph_calibration_status": document["calibration_status"],
+                "soil_ph_tested_at": now,
+                "updated_at": now,
+            }},
+        )
+
+    log_action(user_id, "shamba_soil_ph_test_recorded", {
+        "farm_id": str(farm_id),
+        "soil_test_id": clean_id(result.inserted_id),
+        "measurement_status": document["measurement_status"],
+        "method": document["method"],
+    })
+    return serialise(saved)
