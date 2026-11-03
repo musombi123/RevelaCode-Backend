@@ -588,7 +588,7 @@ def test_mpesa_password_builder_is_pure_and_uses_configured_credentials(monkeypa
     ).decode("ascii")
 
 
-def test_new_checkout_is_blocked_when_paid_subscription_is_active(monkeypatch, revenue_app):
+def test_active_paid_subscription_can_purchase_an_extension(monkeypatch, revenue_app):
     plan = {
         "code": "ai_plus",
         "hub": "smart_ai",
@@ -599,26 +599,40 @@ def test_new_checkout_is_blocked_when_paid_subscription_is_active(monkeypatch, r
     }
     rows = Mock()
     rows.find_one.return_value = None
+    request_payload = {}
+
+    def accepted_stk(_path, payload):
+        request_payload.update(payload)
+        return {
+            "ResponseCode": "0",
+            "CheckoutRequestID": "ws_CO_renewal",
+            "MerchantRequestID": "merchant-renewal",
+            "CustomerMessage": "STK sent",
+        }
+
     monkeypatch.setattr(mpesa, "checkout_is_production_configured", lambda: True)
     monkeypatch.setattr(mpesa, "get_plan", lambda _code: plan)
     monkeypatch.setattr(mpesa, "_checkout_rows", lambda: rows)
     monkeypatch.setattr(mpesa, "current_user_id", lambda: "user-1")
+    monkeypatch.setattr(mpesa, "_phone", lambda _value: "254712345678")
+    monkeypatch.setattr(mpesa, "_access_token", lambda: "test-access-token")
+    monkeypatch.setattr(mpesa, "_daraja_post", accepted_stk)
     monkeypatch.setattr(subscriptions, "_active_subscription", lambda *args, **kwargs: {"status": "active"})
-    monkeypatch.setattr(mpesa, "_access_token", lambda: (_ for _ in ()).throw(
-        AssertionError("must reject before making a provider request")
-    ))
 
     with revenue_app.test_request_context(
         "/api/revenue/checkout",
         method="POST",
-        headers={"Idempotency-Key": "attempt-001"},
+        headers={"Idempotency-Key": "attempt-renewal-001"},
         json={"plan_code": "ai_plus", "phone": "0712345678"},
     ):
         response, status = mpesa.revenue_start_checkout.__wrapped__()
 
-    assert status == 409
-    assert response.get_json()["code"] == "active_subscription_exists"
-    rows.insert_one.assert_not_called()
+    assert status == 201
+    assert response.get_json()["success"] is True
+    assert response.get_json()["checkout"]["checkout_request_id"] == "ws_CO_renewal"
+    assert request_payload["Amount"] == 199
+    assert request_payload["PhoneNumber"] == "254712345678"
+    rows.insert_one.assert_called_once()
 
 
 def test_unknown_stk_submission_requires_admin_provider_reconciliation_before_release(monkeypatch, revenue_app):
