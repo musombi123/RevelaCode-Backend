@@ -114,12 +114,16 @@ def _daraja_path_for(path: str) -> str:
     raise RuntimeError("Unsupported Daraja endpoint path.")
 
 def _transaction_configuration() -> tuple[str, str, bool]:
-    """Resolve and validate PayBill/Till routing without guessing the merchant target."""
+    """Validate the configured merchant target against the PayBill/Till transaction type."""
     transaction_type = _env("MPESA_TRANSACTION_TYPE", "CustomerPayBillOnline")
     shortcode = _env("MPESA_SHORTCODE")
     party_b = _env("MPESA_PARTY_B") or shortcode
     valid_type = transaction_type in {"CustomerPayBillOnline", "CustomerBuyGoodsOnline"}
     valid_party = bool(party_b) and party_b.isdigit()
+    # PayBill uses the registered BusinessShortCode as PartyB. Buy Goods/Till
+    # uses the numeric Till target, which is allowed to differ from the shortcode.
+    if transaction_type == "CustomerPayBillOnline":
+        valid_party = valid_party and bool(shortcode) and party_b == shortcode
     return transaction_type, party_b, valid_type and valid_party
 
 
@@ -208,6 +212,10 @@ def checkout_configuration_status() -> dict:
         "passkey_present": bool(_env("MPESA_PASSKEY")),
         "transaction_type_supported": transaction_type in {"CustomerPayBillOnline", "CustomerBuyGoodsOnline"},
         "party_b_numeric": bool(party_b) and party_b.isdigit(),
+        "party_b_matches_shortcode_for_paybill": (
+            transaction_type != "CustomerPayBillOnline"
+            or (bool(_env("MPESA_SHORTCODE")) and party_b == _env("MPESA_SHORTCODE"))
+        ),
         "transaction_configuration_valid": transaction_config_ok,
         "callback_https": bool(parsed and parsed.scheme == "https"),
         "callback_host_present": bool(parsed and parsed.hostname),
@@ -238,6 +246,7 @@ def checkout_configuration_status() -> dict:
         "passkey_present": "MPESA_PASSKEY is missing from the backend environment.",
         "transaction_type_supported": "MPESA_TRANSACTION_TYPE must be CustomerPayBillOnline for PayBill or CustomerBuyGoodsOnline for Buy Goods/Till.",
         "party_b_numeric": "MPESA_PARTY_B (or the shortcode default) must be a numeric destination shortcode/Till.",
+        "party_b_matches_shortcode_for_paybill": "For CustomerPayBillOnline, MPESA_PARTY_B must match MPESA_SHORTCODE. For a Till, use CustomerBuyGoodsOnline and set MPESA_PARTY_B to the registered Till number.",
         "transaction_configuration_valid": "Correct the PayBill/Till transaction type and destination shortcode before enabling checkout.",
         "callback_https": "MPESA_CALLBACK_URL must use HTTPS.",
         "callback_host_present": "MPESA_CALLBACK_URL must contain a valid public hostname.",
