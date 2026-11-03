@@ -693,16 +693,10 @@ def revenue_start_checkout():
         if not retry_failed_initiation:
             return jsonify({"success": True, "replayed": True, "checkout": _public_checkout(existing)}), 200
 
-    # Replays of the same idempotency key were returned above. A new key
-    # must not create another charge while a subscription is already active
-    # or the user's previous checkout has not reached a terminal result.
-    from backend.revenue.subscriptions import _active_subscription
-    if _active_subscription(user_id, hub):
-        return _error(
-            "This hub already has an active paid subscription. No new payment was started.",
-            409,
-            "active_subscription_exists",
-        )
+    # Replays of the same idempotency key were returned above. The activation
+    # service stacks a verified renewal after the current end date, so a paid
+    # subscriber may renew or queue a plan change for the same hub. The
+    # unresolved checkout slot below remains the duplicate-charge fence.
     unresolved = rows.find_one(
         {
             "user_id": user_id,
