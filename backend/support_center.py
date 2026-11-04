@@ -601,7 +601,7 @@ def search_verification(actor):
     if not user:
         _audit(actor, "support.verification.search_not_found", "user", "unknown", after={"lookup_type": "email" if "@" in lookup else "phone"})
         return jsonify(success=False, message="No matching account was found."), 404
-    verified = bool(user.get("verified", user.get("is_verified", False)))
+    verified = user.get("verified") is True or user.get("is_verified") is True
     recipient = str(user.get("email") or (user.get("contact") if "@" in str(user.get("contact") or "") else "") or "")
     result = {"user_id": _user_id(user), "verified": verified, "status": user.get("status") or "active", "email": _mask_email(recipient), "phone": _mask_phone(user.get("phone") or (user.get("contact") if "@" not in str(user.get("contact") or "") else "")), "email_available": bool(recipient), "sms_available": False}
     _audit(actor, "support.verification.search", "user", result["user_id"], after={"verified": verified})
@@ -622,7 +622,8 @@ def resend_verification(actor):
         _audit(actor, "support.verification.lookup_not_found", "user", "unknown", after={"lookup_type": "email" if "@" in lookup else "phone"})
         return jsonify(success=False, message="No matching account was found."), 404
     uid = _user_id(user)
-    if bool(user.get("verified", user.get("is_verified", False))):
+    if user.get("verified") is True or user.get("is_verified") is True:
+        _audit(actor, "support.verification.already_verified", "user", uid, after={"verified": True})
         return jsonify(success=True, verified=True, message="This account is already verified.", contact=_mask_email(user.get("email") or user.get("contact"))), 200
     recipient = str(user.get("email") or (user.get("contact") if "@" in str(user.get("contact") or "") else "") or "").strip().lower()
     if not recipient:
