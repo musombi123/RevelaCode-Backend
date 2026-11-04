@@ -1283,6 +1283,11 @@ def inbound_resend():
     except Exception:
         current_app.logger.exception("Unable to retrieve inbound Resend message content.")
         return jsonify(success=False, message="Message content is not yet available; Resend will retry the webhook."), 503
+    body_headers = body.get("headers") if isinstance(body.get("headers"), dict) else {}
+    auto_submitted_body = str(body_headers.get("auto-submitted") or body_headers.get("Auto-Submitted") or "no").lower()
+    precedence_body = str(body_headers.get("precedence") or body_headers.get("Precedence") or "").lower()
+    if auto_submitted_body not in {"", "no"} or precedence_body in {"bulk", "junk", "list"} or body_headers.get("x-auto-response-suppress") or body_headers.get("X-Auto-Response-Suppress"):
+        return jsonify(success=True, ignored=True), 200
     text_body = str(body.get("text") or "")[:50000]
     html_body = str(body.get("html") or "")
     sanitizer = _SafeHTML()
