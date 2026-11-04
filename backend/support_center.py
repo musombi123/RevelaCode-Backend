@@ -716,13 +716,72 @@ def list_tickets(actor):
     limit = max(1, min(100, int(request.args.get("limit", "25"))))
     query = {"status": status} if status else {}
     if "support_agent" in actor["roles"] or "support" in actor["roles"]:
-        query["$or"] = [{"assigned_to_user_id": actor["id"]}, {"assigned_to": actor["id"]}, {"assigned_to": {"$in": [None, "support"]}}]
+        query["$or"] = [{"assigned_to_user_id": actor["id"]}, {"assigned_to": actor["id"]}, {"assigned_to": {"$in": [None, "", "support"]}}]
     rows = get_db()[TICKETS]
     total = rows.count_documents(query)
     items = []
     for row in rows.find(query).sort("updated_at", -1).skip((page - 1) * limit).limit(limit):
-        items.append({"id": str(row["_id"]), "ticket_number": row.get("ticket_number") or str(row["_id"])[-8:].upper(), "subject": row.get("subject") or "", "status": row.get("status") or "open", "priority": row.get("priority") or "normal", "assignee_id": row.get("assigned_to_user_id"), "created_at": row.get("created_at").isoformat() if hasattr(row.get("created_at"), "isoformat") else row.get("created_at"), "updated_at": row.get("updated_at").isoformat() if hasattr(row.get("updated_at"), "isoformat") else row.get("updated_at")})
+        items.append({"id": str(row["_id"]), "ticket_number": row.get("ticket_number") or str(row["_id"])[-8:].upper(), "subject": row.get("subject") or "", "status": "solved" if row.get("status") == "resolved" else (row.get("status") or "open"), "priority": row.get("priority") or "normal", "assignee_id": row.get("assigned_to_user_id"), "created_at": row.get("created_at").isoformat() if hasattr(row.get("created_at"), "isoformat") else row.get("created_at"), "updated_at": row.get("updated_at").isoformat() if hasattr(row.get("updated_at"), "isoformat") else row.get("updated_at")})
     return jsonify(success=True, tickets=items, pagination={"page": page, "limit": limit, "total": total}), 200
+
+
+@support_center_bp.get("/tickets/<ticket_id>")
+@_require("support_agent", "support", "support_admin", "super_admin")
+def ticket_detail(ticket_id, actor):
+    if not ObjectId.is_valid(ticket_id):
+        return jsonify(success=False, message="Invalid ticket ID."), 400
+    db = get_db()
+    ticket = db[TICKETS].find_one({"_id": ObjectId(ticket_id)})
+    if not ticket:
+        return jsonify(success=False, message="Ticket not found."), 404
+    if actor["role"] in SUPPORT_AGENT_ROLES and ticket.get("assigned_to_user_id") not in (None, actor["id"]) and ticket.get("assigned_to") not in (None, "", "support", actor["id"]):
+        return jsonify(success=False, message="This ticket is assigned to another agent."), 403
+    messages = []
+    for row in db["support_ticket_messages"].find({"ticket_id": ticket_id}).sort("created_at", 1).limit(300):
+        messages.append({"id": str(row.get("_id") or ""), "type": row.get("type"), "direction": row.get("direction"), "body_text": row.get("body_text"), "body_html": row.get("body_html"), "sender": _mask_email(row.get("sender")) if row.get("sender") else None, "created_at": row.get("created_at").isoformat() if hasattr(row.get("created_at"), "isoformat") else row.get("created_at")})
+    return jsonify(success=True, ticket={"id": ticket_id, "ticket_number": ticket.get("ticket_number"), "subject": ticket.get("subject"), "status": "solved" if ticket.get("status") == "resolved" else ticket.get("status", "open"), "priority": ticket.get("priority", "normal"), "email": _mask_email(ticket.get("email")), "messages": messages}), 200
+
+
+@support_center_bp.patch("/tickets/<ticket_id>/status")
+@_require("support_agent", "support", "support_admin", "super_admin")
+def update_ticket_status(ticket_id, actor):
+    data = request.get_json(silent=True) or {}
+    status = str(data.get("status") or "").strip().lower()
+    if status not in {"open", "pending", "solved"} or not ObjectId.is_valid(ticket_id):
+        return jsonify(success=False, message="Choose open, pending or solved and provide a valid ticket ID."), 422
+    db = get_db()
+    ticket = db[TICKETS].find_one({"_id": ObjectId(ticket_id)})
+    if not ticket:
+        return jsonify(success=False, message="Ticket not found."), 404
+    if actor["role"] in SUPPORT_AGENT_ROLES and ticket.get("assigned_to_user_id") not in (None, actor["id"]) and ticket.get("assigned_to") not in (None, "", "support", actor["id"]):
+        return jsonify(success=False, message="This ticket is assigned to another agent."), 403
+    stored_status = "resolved" if status == "solved" else status
+    updates = {"status": stored_status, "updated_at": now_utc()}
+    if status == "solved":
+        updates["resolved_at"] = now_utc()
+    db[TICKETS].update_one({"_id": ticket["_id"]}, {"$set": updates})
+    _audit(actor, "support.ticket.status_changed", "ticket", ticket_id, before={"status": ticket.get("status")}, after={"status": status})
+    return jsonify(success=True, status=status), 200
+
+
+@support_center_bp.patch("/tickets/<ticket_id>/assign")
+@_require("support_admin", "super_admin")
+def assign_ticket(ticket_id, actor):
+    data = request.get_json(silent=True) or {}
+    member_id = str(data.get("member_id") or "").strip()
+    if not ObjectId.is_valid(ticket_id):
+        return jsonify(success=False, message="Invalid ticket ID."), 400
+    db = get_db()
+    member = db["users"].find_one(_id_query(member_id) or {})
+    if not member or not (_user_roles(member) & SUPPORT_AGENT_ROLES) or member.get("is_active") is False or str(member.get("status") or "active") != "active":
+        return jsonify(success=False, message="Choose an active Support Agent."), 422
+    ticket = db[TICKETS].find_one({"_id": ObjectId(ticket_id)})
+    if not ticket:
+        return jsonify(success=False, message="Ticket not found."), 404
+    before = {"assigned_to_user_id": ticket.get("assigned_to_user_id") or ticket.get("assigned_to")}
+    db[TICKETS].update_one({"_id": ticket["_id"]}, {"$set": {"assigned_to_user_id": member_id, "assigned_to": member_id, "assigned_to_name": member.get("full_name") or member.get("name") or "", "updated_at": now_utc()}})
+    _audit(actor, "support.ticket.assigned", "ticket", ticket_id, before=before, after={"assigned_to_user_id": member_id})
+    return jsonify(success=True, assigned_to_user_id=member_id), 200
 
 
 @support_center_bp.post("/tickets/<ticket_id>/notes")
@@ -1100,9 +1159,11 @@ def reply_ticket(ticket_id, actor):
         import resend
         resend.api_key = api_key
         headers = {}
-        if ticket.get("message_id"):
-            headers["In-Reply-To"] = ticket["message_id"]
-            headers["References"] = ticket["message_id"]
+        latest_message = db["support_ticket_messages"].find_one({"ticket_id": ticket_id, "message_id": {"$exists": True, "$ne": ""}}, sort=[("created_at", -1)])
+        thread_reference = str((latest_message or {}).get("message_id") or ticket.get("message_id") or "")
+        if thread_reference:
+            headers["In-Reply-To"] = thread_reference
+            headers["References"] = " ".join(filter(None, [str(ticket.get("references") or ""), thread_reference]))
         result = resend.Emails.send({"from": sender, "to": [ticket["email"]], "reply_to": SUPPORT_EMAIL, "subject": "Re: " + str(ticket.get("subject") or "RevelaCode Support"), "text": message, "headers": headers})
     except Exception:
         current_app.logger.exception("Support ticket reply failed.")
