@@ -29,9 +29,9 @@ from backend.db import get_db
 from backend.utils.current_role_auth import resolve_current_actor
 from backend.utils.admin_invitation_email import send_admin_invitation_email
 from backend.email_service import send_verification_email
+from backend.support_config import SUPPORT_EMAIL
 
 support_center_bp = Blueprint("support_center", __name__)
-SUPPORT_EMAIL = (os.getenv("SUPPORT_EMAIL") or "support@revelacode.co.ke").strip().lower()
 ADMIN_ROLES = {"super_admin"}
 SUPPORT_ADMIN_ROLES = {"support_admin"}
 SUPPORT_AGENT_ROLES = {"support_agent", "support"}  # "support" is the legacy agent role.
