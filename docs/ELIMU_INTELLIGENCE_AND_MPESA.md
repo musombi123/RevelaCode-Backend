@@ -41,7 +41,7 @@ Keep the existing Revenue Engine variables set in RevelaCode-Backend. Never plac
 | MPESA_PASSKEY | Live Daraja passkey for the shortcode |
 | MPESA_TRANSACTION_TYPE | CustomerPayBillOnline or CustomerBuyGoodsOnline, matching the shortcode |
 | MPESA_PARTY_B | Destination shortcode when required; otherwise defaults to MPESA_SHORTCODE |
-| MPESA_CALLBACK_URL | Keep the existing Revenue callback URL ending in /api/revenue/providers/mpesa/callback |
+| MPESA_CALLBACK_URL | Public HTTPS URL ending in /api/revenue/providers/payment-callback (the Revenue Engine's production-safe callback path) |
 | REVENUE_PAYMENT_PROVIDERS | Must include mpesa for the shared Daraja adapter's production readiness check |
 | ELIMU_MPESA_CALLBACK_URL | Public HTTPS URL ending in /api/jumuiya/elimu/finance/mpesa/callback |
 | WHATSAPP_WEBHOOK_VERIFY_TOKEN | Random verification token used when Meta subscribes to the webhook |
