@@ -815,7 +815,7 @@ def approvals(actor):
 
 
 @support_center_bp.post("/approvals/<request_id>/decision")
-@_require("support_admin", "super_admin")
+@_require("support_admin")
 def decide_approval(request_id, actor):
     data = request.get_json(silent=True) or {}
     decision = str(data.get("decision") or "").strip().lower()
