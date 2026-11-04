@@ -246,6 +246,12 @@ def install_auth_bridge(app):
             )
             return None
 
+        # A staff ban/removal increments token_version. Existing JWTs then
+        # fail closed across every Jumuiya endpoint, not only support routes.
+        if int(payload.get("token_version") or 0) != int(user.get("token_version") or 0):
+            app.logger.warning("Jumuiya rejected revoked session. user_id=%s", user_id)
+            return None
+
         # -------------------------------------------------
         # NORMALIZE IDENTITY
         # -------------------------------------------------
