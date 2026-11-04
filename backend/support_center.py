@@ -559,26 +559,33 @@ def resend_verification(actor):
     uid = _user_id(user)
     if bool(user.get("verified", user.get("is_verified", False))):
         return jsonify(success=True, verified=True, message="This account is already verified.", contact=_mask_email(user.get("email") or user.get("contact"))), 200
-    if "@" not in lookup:
+    recipient = str(user.get("email") or (user.get("contact") if "@" in str(user.get("contact") or "") else "") or "").strip().lower()
+    if not recipient:
         _audit(actor, "support.verification.sms_unavailable", "user", uid, after={"channel": "sms", "status": "not_configured"})
-        return jsonify(success=False, code="sms_provider_not_configured", message="SMS/OTP delivery is not configured. Email verification can be resent when the account has a verified email address."), 503
+        return jsonify(success=False, code="sms_provider_not_configured", message="This account has no email address available and SMS/OTP delivery is not configured."), 503
     limits = db[RATE_LIMITS]
-    window = now_utc() - timedelta(hours=1)
-    count = limits.count_documents({"user_id": uid, "action": "verification_resend", "created_at": {"$gte": window}})
-    if count >= 3:
-        _audit(actor, "support.verification.rate_limited", "user", uid, after={"attempts": count})
+    bucket = now_utc().strftime("%Y%m%d%H")
+    bucket_id = f"{uid}:verification_resend:{bucket}"
+    try:
+        limits.find_one_and_update(
+            {"_id": bucket_id, "count": {"$lt": 3}},
+            {"$inc": {"count": 1}, "$setOnInsert": {"user_id": uid, "action": "verification_resend", "created_at": now_utc(), "expires_at": now_utc() + timedelta(hours=2)}},
+            upsert=True,
+            return_document=True,
+        )
+    except Exception:
+        _audit(actor, "support.verification.rate_limited", "user", uid, after={"limit": 3, "window": "hour"})
         return jsonify(success=False, code="verification_resend_rate_limited", message="This account has reached the limit of three resend requests in one hour."), 429
     code = f"{secrets.randbelow(1_000_000):06d}"
     expires = now_utc() + timedelta(minutes=10)
     db["users"].update_one({"_id": user["_id"]}, {"$set": {"verification": {"code": code, "expires": expires.isoformat()}}})
     try:
-        send_verification_email(lookup, code, purpose="support_activation")
+        send_verification_email(recipient, code, purpose="support_activation")
     except Exception:
         _audit(actor, "support.verification.delivery_failed", "user", uid, after={"channel": "email"})
         return jsonify(success=False, message="The verification email could not be sent. Check the email provider configuration."), 502
-    limits.insert_one({"user_id": uid, "action": "verification_resend", "created_at": now_utc(), "expires_at": now_utc() + timedelta(hours=2)})
     _audit(actor, "support.verification.resent", "user", uid, after={"channel": "email", "expires_in_seconds": 600})
-    return jsonify(success=True, message="A new verification code was sent. The code is never displayed to support staff.", contact=_mask_email(lookup)), 200
+    return jsonify(success=True, message="A new verification code was sent. The code is never displayed to support staff.", contact=_mask_email(recipient)), 200
 
 
 @support_center_bp.get("/plans/pending")
