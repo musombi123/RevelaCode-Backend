@@ -368,10 +368,12 @@ def get_platform_overview():
     community_groups = collection("jumuiya_community_groups")
     sample_records = collection(SAMPLE_RECORDS_COLLECTION)
 
+    admin_user_id = str(current_user_id() or "").strip()
     sample_counts_by_hub = {
         key: sample_records.count_documents({
             "seed_managed": True,
             "hub": key,
+            "visible_to_admin_user_ids": admin_user_id,
         })
         for key in HUB_LABELS
     }
@@ -783,7 +785,8 @@ def list_sample_records():
         )
 
     samples = collection(SAMPLE_RECORDS_COLLECTION)
-    query = {"seed_managed": True}
+    admin_user_id = str(current_user_id() or "").strip()
+    query = {"seed_managed": True, "visible_to_admin_user_ids": admin_user_id}
     if hub != "all":
         query["hub"] = hub
 
@@ -797,6 +800,7 @@ def list_sample_records():
         key: samples.count_documents({
             "seed_managed": True,
             "hub": key,
+            "visible_to_admin_user_ids": admin_user_id,
         })
         for key in HUB_LABELS
     }
@@ -816,7 +820,7 @@ def list_sample_records():
 @required_roles
 def reseed_sample_records():
     """Allow a platform administrator to safely restore the isolated sample set."""
-    result = seed_sample_records()
+    result = seed_sample_records(current_user_id())
     return ok(
         result,
         "Jumuiya admin sample records are ready. Live tenant data was not changed.",
