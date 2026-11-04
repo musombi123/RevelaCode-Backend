@@ -1110,6 +1110,53 @@ def export_payroll_pdf(actor):
     return response
 
 
+@support_center_bp.post("/privacy/deletion-requests")
+def create_privacy_deletion_request():
+    actor, failure = _actor()
+    if failure:
+        return failure
+    data = request.get_json(silent=True) or {}
+    reason = str(data.get("reason") or "").strip()
+    if len(reason) < 8 or len(reason) > 2000:
+        return jsonify(success=False, message="Explain the data deletion request in 8–2,000 characters."), 422
+    db = get_db()
+    existing = db["support_privacy_deletion_requests"].find_one({"user_id": actor["id"], "status": {"$in": ["pending", "in_review"]}})
+    if existing:
+        return jsonify(success=True, request_id=str(existing["_id"]), status=existing["status"], message="An open privacy request already exists."), 200
+    row = {"user_id": actor["id"], "email": actor.get("email") or actor.get("contact"), "reason": reason, "status": "pending", "created_at": now_utc()}
+    inserted = db["support_privacy_deletion_requests"].insert_one(row)
+    _audit(actor, "privacy.deletion_request.created", "user", actor["id"], after={"request_id": str(inserted.inserted_id), "status": "pending"})
+    return jsonify(success=True, request_id=str(inserted.inserted_id), status="pending", message="Your data deletion request has been recorded for review."), 201
+
+
+@support_center_bp.get("/privacy/deletion-requests")
+@_require("support_admin", "super_admin")
+def list_privacy_deletion_requests(actor):
+    rows = get_db()["support_privacy_deletion_requests"].find({"status": {"$in": ["pending", "in_review"]}}).sort("created_at", -1).limit(100)
+    return jsonify(success=True, requests=[{"id": str(x["_id"]), "user_id": x.get("user_id"), "email": _mask_email(x.get("email")), "reason": x.get("reason"), "status": x.get("status"), "created_at": x.get("created_at").isoformat() if hasattr(x.get("created_at"), "isoformat") else x.get("created_at")} for x in rows]), 200
+
+
+@support_center_bp.patch("/privacy/deletion-requests/<request_id>")
+@_require("super_admin", "support_admin")
+def update_privacy_deletion_request(request_id, actor):
+    if not ObjectId.is_valid(request_id):
+        return jsonify(success=False, message="Invalid privacy request ID."), 400
+    data = request.get_json(silent=True) or {}
+    status = str(data.get("status") or "").strip().lower()
+    reason = str(data.get("decision_reason") or "").strip()
+    if status not in {"in_review", "referred_to_data_controller", "closed"} or len(reason) < 8:
+        return jsonify(success=False, message="Choose a supported review status and provide a decision note."), 422
+    if status == "closed" and "super_admin" not in actor["roles"]:
+        return jsonify(success=False, message="Only the Super Admin can close a privacy request after confirming the data-subject request was actioned."), 403
+    db = get_db()
+    row = db["support_privacy_deletion_requests"].find_one({"_id": ObjectId(request_id), "status": {"$in": ["pending", "in_review"]}})
+    if not row:
+        return jsonify(success=False, message="Privacy request not found or already closed."), 404
+    db["support_privacy_deletion_requests"].update_one({"_id": row["_id"]}, {"$set": {"status": status, "decision_reason": reason, "reviewed_by": actor["id"], "reviewed_at": now_utc()}})
+    _audit(actor, "privacy.deletion_request.updated", "privacy_request", request_id, before={"status": row.get("status")}, after={"status": status}, reason=reason)
+    return jsonify(success=True, status=status), 200
+
+
 @support_center_bp.get("/health")
 @_require("support_agent", "support", "support_admin", "super_admin")
 def system_health(actor):
