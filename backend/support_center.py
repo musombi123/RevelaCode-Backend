@@ -22,6 +22,7 @@ from urllib.parse import urlencode
 
 import requests
 from bson import ObjectId
+from pymongo.errors import DuplicateKeyError
 from flask import Blueprint, current_app, jsonify, request
 from werkzeug.security import generate_password_hash
 
@@ -582,17 +583,24 @@ def resend_verification(actor):
         _audit(actor, "support.verification.sms_unavailable", "user", uid, after={"channel": "sms", "status": "not_configured"})
         return jsonify(success=False, code="sms_provider_not_configured", message="This account has no email address available and SMS/OTP delivery is not configured."), 503
     limits = db[RATE_LIMITS]
-    bucket = now_utc().strftime("%Y%m%d%H")
-    bucket_id = f"{uid}:verification_resend:{bucket}"
-    try:
-        limits.find_one_and_update(
-            {"_id": bucket_id, "count": {"$lt": 3}},
-            {"$inc": {"count": 1}, "$setOnInsert": {"user_id": uid, "action": "verification_resend", "created_at": now_utc(), "expires_at": now_utc() + timedelta(hours=2)}},
-            upsert=True,
-            return_document=True,
-        )
-    except Exception:
-        _audit(actor, "support.verification.rate_limited", "user", uid, after={"limit": 3, "window": "hour"})
+    limit_now = now_utc()
+    allowed = False
+    # Three independent one-hour slots provide a rolling limit across workers.
+    for slot in range(1, 4):
+        slot_id = f"{uid}:verification_resend:{slot}"
+        try:
+            result = limits.update_one(
+                {"_id": slot_id, "$or": [{"expires_at": {"$lte": limit_now}}, {"expires_at": {"$exists": False}}]},
+                {"$set": {"user_id": uid, "action": "verification_resend", "created_at": limit_now, "expires_at": limit_now + timedelta(hours=1)}},
+                upsert=True,
+            )
+            if result.modified_count == 1 or result.upserted_id:
+                allowed = True
+                break
+        except DuplicateKeyError:
+            continue
+    if not allowed:
+        _audit(actor, "support.verification.rate_limited", "user", uid, after={"limit": 3, "window": "rolling_60_minutes"})
         return jsonify(success=False, code="verification_resend_rate_limited", message="This account has reached the limit of three resend requests in one hour."), 429
     code = f"{secrets.randbelow(1_000_000):06d}"
     expires = now_utc() + timedelta(minutes=10)
