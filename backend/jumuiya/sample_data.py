@@ -9,6 +9,8 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
+from pymongo.errors import DuplicateKeyError
+
 from backend.jumuiya.core.database import collection
 
 SAMPLE_DATA_VERSION = 1
@@ -351,17 +353,31 @@ def seed_sample_records() -> dict[str, Any]:
             "seed_managed": True,
             "seed_version": SAMPLE_DATA_VERSION,
             "sample_label": "SAMPLE DATA — NOT A LIVE CUSTOMER RECORD",
-            "created_at": now,
             "updated_at": now,
         }
-        result = target.update_one(
-            {"sample_id": fixture["sample_id"]},
-            {
-                "$set": document,
-                "$setOnInsert": {"first_seeded_at": now},
-            },
-            upsert=True,
-        )
+        try:
+            result = target.update_one(
+                {"sample_id": fixture["sample_id"]},
+                {
+                    "$set": document,
+                    "$setOnInsert": {
+                        "created_at": now,
+                        "first_seeded_at": now,
+                    },
+                },
+                upsert=True,
+            )
+        except DuplicateKeyError:
+            # Two web workers may seed the same stable fixture concurrently.
+            # The unique sample_id index wins; the losing worker updates it.
+            target.update_one(
+                {"sample_id": fixture["sample_id"]},
+                {"$set": document},
+                upsert=False,
+            )
+            updated += 1
+            continue
+
         if result.upserted_id is not None:
             inserted += 1
         elif result.modified_count:
