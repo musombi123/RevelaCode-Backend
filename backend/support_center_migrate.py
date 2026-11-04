@@ -5,15 +5,15 @@ owner account's MongoDB ObjectId or stable user ID. No account is created.
 """
 from __future__ import annotations
 
-import os
 from bson import ObjectId
 
 from backend.db import get_db
 from backend.support_center import ensure_indexes
+from backend.support_config import SUPER_ADMIN_USER_ID
 
 
 def main():
-    owner_id = str(os.getenv("SUPER_ADMIN_USER_ID") or "").strip()
+    owner_id = SUPER_ADMIN_USER_ID
     if not owner_id:
         raise SystemExit("Set SUPER_ADMIN_USER_ID to the existing owner account ID.")
     db = get_db()
