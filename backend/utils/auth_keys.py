@@ -41,6 +41,8 @@ def get_role(req) -> str | None:
                 return "admin"
             if "support_admin" in roles:
                 return "support_admin"
+            if "support_agent" in roles:
+                return "support"
             if "support" in roles:
                 return "support"
         # A supplied browser JWT must not gain access from a role claim alone.
