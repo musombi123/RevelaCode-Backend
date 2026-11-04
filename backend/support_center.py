@@ -1204,7 +1204,10 @@ def inbound_resend():
         return jsonify(success=True, ignored=True), 200
     from_value = str(data.get("from") or "")
     sender_name, sender_email = parseaddr(from_value)
-    if not sender_email or sender_email.lower() == SUPPORT_EMAIL:
+    event_headers = data.get("headers") if isinstance(data.get("headers"), dict) else {}
+    auto_submitted = str(event_headers.get("auto-submitted") or event_headers.get("Auto-Submitted") or "no").lower()
+    precedence = str(event_headers.get("precedence") or event_headers.get("Precedence") or "").lower()
+    if (not sender_email or sender_email.lower() == SUPPORT_EMAIL or auto_submitted not in {"", "no"} or precedence in {"bulk", "junk", "list"} or event_headers.get("x-auto-response-suppress") or event_headers.get("X-Auto-Response-Suppress")):
         return jsonify(success=True, ignored=True), 200
     api_key = str(os.getenv("RESEND_API_KEY") or "").strip()
     try:
@@ -1258,14 +1261,24 @@ def inbound_resend():
             try:
                 import resend
                 resend.api_key = api_key
-                resend.Emails.send({
+                acknowledgement = resend.Emails.send({
                     "from": sender,
                     "to": [sender_email],
                     "reply_to": SUPPORT_EMAIL,
                     "subject": f"We received your RevelaCode request [{ticket_number}]",
-                    "text": f"Thank you for contacting RevelaCode Support. Your ticket number is {ticket_number}. Our team will review your request and reply to this email.\n\nPlease keep the ticket number in the subject when replying.",
+                    "text": f"Thank you for contacting RevelaCode Support. Your ticket number is {ticket_number}. Our team will review your request and reply to this email.\\n\\nPlease keep the ticket number in the subject when replying.",
                     "headers": {"In-Reply-To": message_id, "References": message_id},
                 })
+                provider_id = (acknowledgement.get("id") if isinstance(acknowledgement, dict) else getattr(acknowledgement, "id", None)) or ""
+                acknowledgement_message_id = ""
+                if provider_id:
+                    try:
+                        provider_email = requests.get(f"https://api.resend.com/emails/{provider_id}", headers={"Authorization": f"Bearer {api_key}"}, timeout=8)
+                        if provider_email.ok:
+                            acknowledgement_message_id = str((provider_email.json() or {}).get("message_id") or "")
+                    except requests.RequestException:
+                        current_app.logger.warning("Could not retrieve acknowledgement Message-ID from Resend.")
+                db["support_ticket_messages"].insert_one({"ticket_id": ticket_id, "type": "email", "direction": "outbound", "message_id": acknowledgement_message_id, "body_text": f"Ticket acknowledgement: {ticket_number}", "created_at": now_utc()})
                 db[TICKETS].update_one({"_id": ObjectId(ticket_id)}, {"$set": {"acknowledgement_sent": True, "acknowledgement_sent_at": now_utc()}})
             except Exception:
                 current_app.logger.exception("Support acknowledgement email failed.")
