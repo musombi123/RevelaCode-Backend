@@ -28,4 +28,5 @@ jobs:
             backend/mfa_routes.py \
             backend/routes/admin_routes.py \
             backend/utils/current_role_auth.py \
+            backend/utils/admin_invitation_email.py \
             backend/jumuiya/integration/auth_bridge.py
