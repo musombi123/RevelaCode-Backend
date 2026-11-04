@@ -528,11 +528,11 @@ def member_status(member_id, actor):
     _audit(actor, f"support.member.{action}", "user", uid, before=before, after=after, reason=reason)
     action_label = {"ban": "banned", "suspend": "suspended", "restore": "restored", "remove": "removed"}[action]
     _send_status_notice(target.get("email") or target.get("contact"), "RevelaCode support account update", f"Your support-team account access has been {action_label}. Reason: {reason}")
-    if is_support_admin and action in {"ban", "suspend", "remove"}:
+    if action == "remove" and "support_admin" in actor["roles"] and "super_admin" not in actor["roles"]:
         owner_id = str(os.getenv("SUPER_ADMIN_USER_ID") or "").strip()
         owner = db["users"].find_one(_id_query(owner_id)) if owner_id else None
         if owner:
-            _send_status_notice(owner.get("email") or owner.get("contact"), "Support Admin account update", f"A Support Admin account was {action}d by a Super Admin. This is an informational notice.")
+            _send_status_notice(owner.get("email") or owner.get("contact"), "Support Team member removed", f"A Support Admin removed a Support Agent from the team. Member ID: {uid}. Reason: {reason}. This is an informational notice; no approval is required.")
     if action in {"ban", "suspend", "remove"} and is_support_admin:
         db[SEATS].update_one({"member_id": uid}, {"$set": {"status": "available", "member_id": None, "invitation_id": None}})
     elif action == "restore" and is_support_admin:
