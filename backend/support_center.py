@@ -778,7 +778,7 @@ def create_payroll(actor):
     doc = {
         "member_id": member_id, "member_name": member.get("full_name") or member.get("name") or "",
         "rate": rate, "currency": "KES", "period_start": start, "period_end": end,
-        "tasks_count": max(0, int(data.get("tasks_count") or 0)), "bonus": float(data.get("bonus") or 0),
+        "tasks_count": get_db()[TICKETS].count_documents({"status": "resolved", "resolved_at": {"$gte": start, "$lt": end}, "$or": [{"assigned_to_user_id": member_id}, {"assigned_to": member_id}]}), "bonus": float(data.get("bonus") or 0),
         "bonus_reason": str(data.get("bonus_reason") or "")[:500], "deduction": float(data.get("deduction") or 0),
         "deduction_reason": str(data.get("deduction_reason") or "")[:500], "status": "pending",
         "payment_method": str(data.get("payment_method") or "manual")[:40],
