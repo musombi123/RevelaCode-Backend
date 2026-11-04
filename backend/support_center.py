@@ -313,6 +313,12 @@ def create_invitation(actor):
 
     now = now_utc()
     expiry = now + timedelta(hours=48)
+    previous_invites = list(db[INVITES].find({"contact": email, "role": {"$in": ["support_admin", "support_agent", "support"]}, "status": {"$in": ["pending", "delivery_failed"]}}, {"_id": 1, "role": 1}))
+    for previous in previous_invites:
+        if previous.get("role") == "support_admin":
+            _release_seat(previous["_id"])
+    if previous_invites:
+        db[INVITES].update_many({"_id": {"$in": [x["_id"] for x in previous_invites]}}, {"$set": {"status": "replaced", "updated_at": now}})
     token = secrets.token_urlsafe(40)
     invitation = {
         "full_name": name,
@@ -437,17 +443,21 @@ def resend_invitation(invitation_id, actor):
     if not ObjectId.is_valid(invitation_id):
         return jsonify(success=False, message="Invalid invitation ID."), 400
     db = get_db()
-    row = db[INVITES].find_one({"_id": ObjectId(invitation_id), "status": "pending"})
+    row = db[INVITES].find_one({"_id": ObjectId(invitation_id), "status": {"$in": ["pending", "delivery_failed"]}})
     if not row:
-        return jsonify(success=False, message="Only a pending invitation can be resent."), 404
+        return jsonify(success=False, message="Only an unaccepted invitation can be resent."), 404
     role = row.get("role")
     if role == "support_admin" and "super_admin" not in actor["roles"]:
         return jsonify(success=False, message="Only the Super Admin can resend Support Admin invitations."), 403
     if role in {"support_agent", "support"} and not ({"super_admin", "support_admin"} & set(actor["roles"])):
         return jsonify(success=False, message="Support Admin access is required."), 403
+    if role == "support_admin" and not get_db()[SEATS].find_one({"invitation_id": str(row["_id"]), "status": "reserved"}):
+        ensure_indexes()
+        if not _invite_seat(row["_id"]):
+            return jsonify(success=False, code="support_admin_seat_limit", message="All three Support Admin seats are active or reserved."), 409
     token = secrets.token_urlsafe(40)
     expiry = now_utc() + timedelta(hours=48)
-    db[INVITES].update_one({"_id": row["_id"], "status": "pending"}, {"$set": {"token_hash": hashlib.sha256(token.encode()).hexdigest(), "expires_at": expiry, "updated_at": now_utc(), "delivery_status": "pending"}})
+    db[INVITES].update_one({"_id": row["_id"], "status": {"$in": ["pending", "delivery_failed"]}}, {"$set": {"status": "pending", "token_hash": hashlib.sha256(token.encode()).hexdigest(), "expires_at": expiry, "updated_at": now_utc(), "delivery_status": "pending"}})
     try:
         send_admin_invitation_email(recipient=row["contact"], full_name=row.get("full_name") or "", role=("support" if role in {"support_agent", "support"} else role), token=token, expires_at=expiry)
     except Exception:
