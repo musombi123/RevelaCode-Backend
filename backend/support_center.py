@@ -189,7 +189,7 @@ def _release_seat(invitation_id):
 
 def _send_status_notice(email, subject, message):
     api_key = str(os.getenv("RESEND_API_KEY") or "").strip()
-    sender = str(os.getenv("SUPPORT_EMAIL_FROM") or os.getenv("EMAIL_FROM") or "").strip()
+    sender = f"RevelaCode Support <{SUPPORT_EMAIL}>"
     if not api_key or not sender or not email:
         current_app.logger.warning("Support notification not sent: Resend configuration or recipient missing.")
         return False
@@ -944,7 +944,7 @@ def inbound_resend():
     # Acknowledge once, thread the acknowledgement to the inbound Message-ID,
     # and never answer messages originating from the support mailbox itself.
     if not existing and sender_email.lower() != SUPPORT_EMAIL:
-        sender = str(os.getenv("SUPPORT_EMAIL_FROM") or os.getenv("EMAIL_FROM") or "").strip()
+        sender = f"RevelaCode Support <{SUPPORT_EMAIL}>"
         if api_key and sender:
             try:
                 import resend
