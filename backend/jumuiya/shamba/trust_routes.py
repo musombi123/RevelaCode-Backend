@@ -420,7 +420,7 @@ def submit_farm_verification(farm_id: str):
 
 @shamba_trust_bp.get("/verification-queue")
 @require_authenticated
-@require_roles("admin", "super_admin")
+@require_roles("admin", "platform_admin", "super_admin", "revelacode_admin")
 def verification_queue():
     cases = list(collection(VERIFICATIONS).find({"status": {"$in": ["pending", "more_info"]}}).sort("created_at", 1).limit(200))
     return ok({"items": [_json_safe(item) for item in cases], "count": len(cases)})
@@ -428,7 +428,7 @@ def verification_queue():
 
 @shamba_trust_bp.post("/farms/<farm_id>/verification/review")
 @require_authenticated
-@require_roles("admin", "super_admin")
+@require_roles("admin", "platform_admin", "super_admin", "revelacode_admin")
 def review_farm_verification(farm_id: str):
     data = request.get_json(silent=True) or {}
     decision = _text(data.get("decision"), "decision", 30, True).lower()
