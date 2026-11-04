@@ -338,8 +338,12 @@ def sample_fixtures() -> list[dict[str, Any]]:
     return [dict(item, details=dict(item["details"])) for item in _SAMPLE_FIXTURES]
 
 
-def seed_sample_records() -> dict[str, Any]:
-    """Idempotently upsert sample fixtures into the isolated admin collection."""
+def seed_sample_records(admin_user_id: Any) -> dict[str, Any]:
+    """Idempotently seed fixtures and grant visibility to one platform admin."""
+    admin_id = str(admin_user_id or "").strip()
+    if not admin_id:
+        raise ValueError("An authenticated platform admin user ID is required to seed sample data.")
+
     target = collection(SAMPLE_COLLECTION)
     now = datetime.now(timezone.utc)
     inserted = 0
@@ -360,6 +364,7 @@ def seed_sample_records() -> dict[str, Any]:
                 {"sample_id": fixture["sample_id"]},
                 {
                     "$set": document,
+                    "$addToSet": {"visible_to_admin_user_ids": admin_id},
                     "$setOnInsert": {
                         "created_at": now,
                         "first_seeded_at": now,
@@ -372,7 +377,10 @@ def seed_sample_records() -> dict[str, Any]:
             # The unique sample_id index wins; the losing worker updates it.
             target.update_one(
                 {"sample_id": fixture["sample_id"]},
-                {"$set": document},
+                {
+                    "$set": document,
+                    "$addToSet": {"visible_to_admin_user_ids": admin_id},
+                },
                 upsert=False,
             )
             updated += 1
@@ -387,6 +395,7 @@ def seed_sample_records() -> dict[str, Any]:
         hub: target.count_documents({
             "seed_managed": True,
             "hub": hub,
+            "visible_to_admin_user_ids": admin_id,
         })
         for hub in HUB_LABELS
     }
@@ -398,4 +407,6 @@ def seed_sample_records() -> dict[str, Any]:
         "counts_by_hub": counts,
         "version": SAMPLE_DATA_VERSION,
         "collection": SAMPLE_COLLECTION,
+        "admin_user_id": admin_id,
+        "visibility": "admin-scoped",
     }
