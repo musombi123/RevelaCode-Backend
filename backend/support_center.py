@@ -836,7 +836,7 @@ def export_payroll_csv(actor):
     import csv
     import io
     month = str(request.args.get("month") or now_utc().strftime("%Y-%m"))
-    if not re.fullmatch(r"\\d{4}-\\d{2}", month):
+    if not re.fullmatch(r"\d{4}-\d{2}", month):
         return jsonify(success=False, message="Month must use YYYY-MM format."), 422
     start = datetime.fromisoformat(month + "-01").replace(tzinfo=UTC)
     end = (start.replace(day=28) + timedelta(days=4)).replace(day=1)
@@ -859,7 +859,7 @@ def export_payroll_pdf(actor):
     from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
     from reportlab.lib.styles import getSampleStyleSheet
     month = str(request.args.get("month") or now_utc().strftime("%Y-%m"))
-    if not re.fullmatch(r"\\d{4}-\\d{2}", month):
+    if not re.fullmatch(r"\d{4}-\d{2}", month):
         return jsonify(success=False, message="Month must use YYYY-MM format."), 422
     start = datetime.fromisoformat(month + "-01").replace(tzinfo=UTC)
     end = (start.replace(day=28) + timedelta(days=4)).replace(day=1)
