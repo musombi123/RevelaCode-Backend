@@ -21,6 +21,7 @@ from backend.jumuiya.core.permissions import (
 from backend.jumuiya.core.responses import ok
 from backend.jumuiya.biashara import verification as biashara_verification
 from backend.jumuiya.sample_data import HUB_LABELS, seed_sample_records
+from backend.jumuiya.elimu.staff.services import invite_staff_for_platform_admin
 
 
 # =========================================================
@@ -764,6 +765,29 @@ def list_all_schools():
         resource_name="schools",
     )
 
+
+
+
+# =========================================================
+# PLATFORM ADMIN — SCHOOL STAFF INVITATIONS
+# =========================================================
+
+@platform_admin_bp.post("/schools/<school_id>/staff-invitations")
+@required_roles
+def create_school_staff_invitation(school_id):
+    """Invite ordinary staff into one explicitly selected school."""
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        raise APIError("A JSON request body is required.", 400, "invalid_json")
+    result = invite_staff_for_platform_admin(
+        current_user_id(),
+        school_id,
+        payload,
+    )
+    return ok(
+        result,
+        "School staff invitation processed through the platform-admin workflow.",
+    )
 
 # =========================================================
 # CROSS-HUB ADMIN SAMPLE DATA — ISOLATED FROM LIVE TENANTS
