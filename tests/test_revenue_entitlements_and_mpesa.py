@@ -150,6 +150,9 @@ def test_daraja_callback_configuration_uses_public_safe_path(monkeypatch):
     assert mpesa.checkout_is_configured() is True
     assert mpesa.checkout_is_production_configured() is True
     diagnostics = mpesa.checkout_configuration_status()
+    assert diagnostics["expected_callback_url"] == (
+        "https://revelacode-backend.onrender.com/api/revenue/providers/payment-callback"
+    )
     assert diagnostics["checks"]["transaction_type_supported"] is True
     assert diagnostics["checks"]["party_b_numeric"] is True
     assert diagnostics["checks"]["transaction_configuration_valid"] is True
@@ -221,6 +224,20 @@ def test_daraja_callback_always_returns_standard_http_200_ack(revenue_app):
 
     assert status == 200
     assert response.get_json() == {"ResultCode": 0, "ResultDesc": "Accepted"}
+
+def test_daraja_callback_registers_safe_path_and_legacy_inflight_alias(revenue_app):
+    from backend.revenue import revenue_bp
+
+    revenue_app.register_blueprint(revenue_bp)
+    registered_paths = {
+        rule.rule
+        for rule in revenue_app.url_map.iter_rules()
+    }
+
+    assert "/api/revenue/providers/payment-callback" in registered_paths
+    # Keep the old route mounted only as a compatibility alias for callbacks
+    # already issued before the production callback URL was renamed.
+    assert "/api/revenue/providers/mpesa/callback" in registered_paths
 
 
 def test_daraja_timestamp_is_nairobi_format():
@@ -1339,7 +1356,7 @@ def test_sandbox_stk_diagnostic_uses_only_sandbox_host_and_fixed_one_kes(monkeyp
         "consumer_secret": "sandbox-secret",
         "passkey": "sandbox-passkey",
         "shortcode": "174379",
-        "callback_url": "https://revelacode-backend.onrender.com/api/revenue/providers/mpesa/callback",
+        "callback_url": "https://revelacode-backend.onrender.com/api/revenue/providers/payment-callback",
         "callback_ok": True,
     }
     monkeypatch.setattr(mpesa, "_sandbox_config", lambda: config)
