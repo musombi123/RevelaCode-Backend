@@ -250,13 +250,19 @@ def google_invite_start():
 def google_callback():
     state = str(request.args.get("state") or "").strip()
     code = str(request.args.get("code") or "").strip()
-    if not state or not code:
+    if not state:
         return _redirect_result(_frontend_base() + "/oauth/callback", oauth="error", reason="google_authorization_failed")
     _ensure_indexes()
     db = get_db()
     state_row = db["oauth_states"].find_one_and_delete({"state_hash": _token_hash(state), "expires_at": {"$gt": _now()}})
     if not state_row:
         return _redirect_result(_frontend_base() + "/oauth/callback", oauth="error", reason="invalid_or_expired_state")
+    if not code:
+        # Google redirects here with an error parameter when a user cancels or
+        # denies consent. Preserve the original client's return destination so
+        # Android returns to its callback route instead of being stranded on web.
+        reason = str(request.args.get("error") or "google_authorization_failed")[:120]
+        return _redirect_result(state_row["return_uri"], oauth="error", reason=reason)
     try:
         client_id, client_secret, redirect_uri = _client_config()
         response = requests.post(GOOGLE_TOKEN, data={
