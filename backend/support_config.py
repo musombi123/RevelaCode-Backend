@@ -20,3 +20,23 @@ SUPER_ADMIN_CONTACT_EMAIL = str(
 SUPPORT_EMAIL = str(
     os.getenv("SUPPORT_EMAIL") or "support@revelacode.co.ke"
 ).strip().lower()
+
+
+def is_configured_super_admin(user_id, user):
+    """Match the configured permanent owner to an existing active user record.
+
+    Both the stable account ID and configured contact email must match. This
+    grants the owner role consistently without trusting a browser/JWT role claim.
+    The one-time Mongo migration can still persist the role in the user document.
+    """
+    if str(user_id or "").strip() != SUPER_ADMIN_USER_ID:
+        return False
+    if not isinstance(user, dict):
+        return False
+    configured_email = SUPER_ADMIN_CONTACT_EMAIL.casefold()
+    stored_contacts = {
+        str(user.get("email") or "").strip().casefold(),
+        str(user.get("contact") or "").strip().casefold(),
+    }
+    stored_contacts.discard("")
+    return bool(configured_email and configured_email in stored_contacts)

@@ -19,6 +19,7 @@ from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
 from flask import Blueprint, jsonify, request
 from backend.email_service import send_verification_email
+from backend.support_config import is_configured_super_admin
 from werkzeug.security import (
     check_password_hash,
     generate_password_hash,
@@ -448,7 +449,10 @@ def authenticated_user_me():
         [str(role).strip() for role in raw_roles if str(role).strip()]
         + ([str(user.get("role")).strip()] if user.get("role") else [])
     )) or ["user"]
-    canonical_role = str(user.get("role") or canonical_roles[0]).strip() or "user"
+    configured_owner = is_configured_super_admin(actual_id, user)
+    if configured_owner and "super_admin" not in {value.casefold() for value in canonical_roles}:
+        canonical_roles.append("super_admin")
+    canonical_role = "super_admin" if configured_owner else (str(user.get("role") or canonical_roles[0]).strip() or "user")
     verified_value = user.get("verified")
     if verified_value is None:
         verified_value = user.get("is_verified", False)
@@ -527,6 +531,8 @@ def verify_admin_for_revelaai():
                 "roles": 1,
                 "status": 1,
                 "is_active": 1,
+                "email": 1,
+                "contact": 1,
             }
             if ObjectId.is_valid(user_id):
                 user = users_col.find_one({"_id": ObjectId(user_id)}, projection)
@@ -585,6 +591,10 @@ def verify_admin_for_revelaai():
     singular_role = str(user.get("role") or "").strip().casefold()
     if singular_role:
         current_roles.add(singular_role)
+    configured_owner = is_configured_super_admin(canonical_id, user)
+    if configured_owner:
+        current_roles.add("super_admin")
+        singular_role = "super_admin"
 
     authorized_roles = sorted(current_roles.intersection(PLATFORM_ADMIN_ROLES))
     if not authorized_roles:
