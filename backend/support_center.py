@@ -31,7 +31,7 @@ from backend.db import get_db
 from backend.utils.current_role_auth import resolve_current_actor
 from backend.utils.admin_invitation_email import send_admin_invitation_email
 from backend.email_service import send_verification_email
-from backend.support_config import SUPPORT_EMAIL
+from backend.support_config import SUPPORT_EMAIL, SUPER_ADMIN_USER_ID, SUPER_ADMIN_CONTACT_EMAIL
 
 support_center_bp = Blueprint("support_center", __name__)
 ADMIN_ROLES = {"super_admin"}
@@ -58,7 +58,7 @@ def _actor():
         return None, (jsonify(error), status)
     roles = {str(x).strip().casefold() for x in (actor.get("roles") or [])}
     roles.add(str(actor.get("role") or "").strip().casefold())
-    if str(actor.get("id") or "") == str(os.getenv("SUPER_ADMIN_USER_ID") or "").strip():
+    if str(actor.get("id") or "") == SUPER_ADMIN_USER_ID:
         roles.add("super_admin")
     actor = {**actor, "roles": sorted(roles)}
     return actor, None
@@ -542,10 +542,10 @@ def member_status(member_id, actor):
     action_label = {"ban": "banned", "suspend": "suspended", "restore": "restored", "remove": "removed"}[action]
     _send_status_notice(target.get("email") or target.get("contact"), "RevelaCode support account update", f"Your support-team account access has been {action_label}. Reason: {reason}")
     if action == "remove" and "support_admin" in actor["roles"] and "super_admin" not in actor["roles"]:
-        owner_id = str(os.getenv("SUPER_ADMIN_USER_ID") or "").strip()
-        owner = db["users"].find_one(_id_query(owner_id)) if owner_id else None
-        if owner:
-            _send_status_notice(owner.get("email") or owner.get("contact"), "Support Team member removed", f"A Support Admin removed a Support Agent from the team. Member ID: {uid}. Reason: {reason}. This is an informational notice; no approval is required.")
+        owner = db["users"].find_one(_id_query(SUPER_ADMIN_USER_ID)) if SUPER_ADMIN_USER_ID else None
+        owner_contact = SUPER_ADMIN_CONTACT_EMAIL or (owner.get("email") or owner.get("contact") if owner else "")
+        if owner_contact:
+            _send_status_notice(owner_contact, "Support Team member removed", f"A Support Admin removed a Support Agent from the team. Member ID: {uid}. Reason: {reason}. This is an informational notice; no approval is required.")
     if action in {"ban", "suspend", "remove"} and is_support_admin:
         db[SEATS].update_one({"member_id": uid}, {"$set": {"status": "available", "member_id": None, "invitation_id": None}})
     elif action == "restore" and is_support_admin:
