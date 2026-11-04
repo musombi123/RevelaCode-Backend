@@ -11,6 +11,7 @@ from bson import ObjectId
 
 from backend.jumuiya.core.database import collection
 from backend.jumuiya.core.errors import APIError
+from backend.jumuiya.core.audit import log_action
 from backend.jumuiya.elimu.permissions import (
     ROLE_OWNER,
     ROLE_PRINCIPAL,
@@ -461,6 +462,8 @@ def _deliver_invitation_email(
     school_id: str,
     invitation: dict,
     raw_token: str,
+    *,
+    inviter_name: str | None = None,
 ) -> bool:
     """Deliver the one-time link without returning the raw token to the browser."""
     timestamp = now_utc()
@@ -495,7 +498,7 @@ def _deliver_invitation_email(
             recipient=invitation.get("email", ""),
             invitee_name=identity.get("display_name") or identity.get("preferred_name") or "",
             school_name=school_name,
-            inviter_name=_display_name(inviter) or "the school owner",
+            inviter_name=inviter_name or _display_name(inviter) or "the school owner",
             inviter_email=inviter_email,
             role=invitation.get("role", ""),
             token=raw_token,
@@ -1450,6 +1453,74 @@ def resend_invitation(user_id: Any, invitation_id: Any) -> dict:
     email_sent = _deliver_invitation_email(school_id, document, raw_token)
     return {"invitation": _invitation_snapshot(document), "email_sent": email_sent}
 
+
+def invite_staff_for_platform_admin(admin_user_id: Any, school_id: Any, payload: dict) -> dict:
+    """Create a tenant-scoped Elimu staff invitation from the platform admin console.
+
+    Platform administrators may invite ordinary school staff, but cannot assign
+    School Owner or Principal membership. The raw token remains in the email;
+    MongoDB stores only the invitation hash.
+    """
+    admin_id = _uid(admin_user_id)
+    target_school_id = _uid(school_id)
+    if not admin_id:
+        raise APIError("Authenticated platform administrator identity is required.", 401, "admin_identity_required")
+    if not target_school_id:
+        raise APIError("School ID is required.", 422, "school_required")
+    if not isinstance(payload, dict):
+        raise APIError("A JSON object is required.", 422, "validation_error")
+    _require_school(target_school_id)
+
+    email = normalize_text(payload.get("email")).lower()
+    if not email or "@" not in email or len(email) > 254:
+        raise APIError("Provide a valid staff email address.", 422, "invitation_recipient_required")
+    role = normalize_text(payload.get("role")).lower()
+    if role in {ROLE_OWNER, ROLE_PRINCIPAL}:
+        raise APIError("Platform-admin staff invitations cannot assign School Owner or Principal. The existing school-owner appointment flow must be used for Principal.", 403, "protected_school_role")
+    try:
+        document, raw_token = invitation_doc(
+            school_id=target_school_id,
+            email=email,
+            role=role,
+            invited_by=admin_id,
+            identity={"display_name": normalize_text(payload.get("display_name"))},
+            employment=payload.get("employment") if isinstance(payload.get("employment"), dict) else {},
+            metadata={"issued_by_platform_admin": True},
+            expires_in_days=payload.get("expires_in_days", 7),
+        )
+    except ValueError as exc:
+        raise APIError(str(exc), 422, "invalid_staff_invitation") from exc
+
+    pending = collection(INVITATIONS).find_one({
+        "school_id": target_school_id,
+        "email": email,
+        "status": "invited",
+    })
+    if pending and invitation_is_usable(pending):
+        raise APIError("A valid staff invitation already exists for this email at this school. Resend or revoke it before creating another.", 409, "invitation_exists")
+
+    result = collection(INVITATIONS).insert_one(document)
+    document["_id"] = result.inserted_id
+    email_sent = _deliver_invitation_email(
+        target_school_id,
+        document,
+        raw_token,
+        inviter_name="RevelaCode Platform Administration",
+    )
+    log_action(
+        admin_id,
+        "elimu.staff.invitation_created_by_platform_admin",
+        "elimu_staff_invitation",
+        result.inserted_id,
+        {"school_id": target_school_id, "email": email, "role": role, "email_sent": email_sent},
+    )
+    return {
+        "mode": "platform_admin_invitation",
+        "school_id": target_school_id,
+        "invitation": _invitation_snapshot(document),
+        "email_sent": email_sent,
+        "delivery_message": "Invitation email sent." if email_sent else "Invitation saved, but email delivery failed. Review the email status and backend configuration before retrying.",
+    }
 
 def revoke_invitation(user_id: Any, invitation_id: Any) -> dict:
     member = authorize(user_id, "staff.invite")
