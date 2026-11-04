@@ -543,6 +543,24 @@ def member_role(member_id, actor):
     return jsonify(success=True), 200
 
 
+@support_center_bp.get("/verification/search")
+@_require("support_agent", "support", "support_admin", "super_admin")
+def search_verification(actor):
+    lookup = str(request.args.get("lookup") or "").strip()
+    if len(lookup) < 3 or len(lookup) > 254:
+        return jsonify(success=False, message="Enter an email address or phone number."), 422
+    escaped = re.escape(lookup)
+    user = get_db()["users"].find_one({"$or": [{"email": {"$regex": "^" + escaped + "$", "$options": "i"}}, {"contact": {"$regex": "^" + escaped + "$", "$options": "i"}}, {"phone": lookup}]})
+    if not user:
+        _audit(actor, "support.verification.search_not_found", "user", "unknown", after={"lookup_type": "email" if "@" in lookup else "phone"})
+        return jsonify(success=False, message="No matching account was found."), 404
+    verified = bool(user.get("verified", user.get("is_verified", False)))
+    recipient = str(user.get("email") or (user.get("contact") if "@" in str(user.get("contact") or "") else "") or "")
+    result = {"user_id": _user_id(user), "verified": verified, "status": user.get("status") or "active", "email": _mask_email(recipient), "phone": _mask_phone(user.get("phone") or (user.get("contact") if "@" not in str(user.get("contact") or "") else "")), "email_available": bool(recipient), "sms_available": False}
+    _audit(actor, "support.verification.search", "user", result["user_id"], after={"verified": verified})
+    return jsonify(success=True, account=result), 200
+
+
 @support_center_bp.post("/verification/resend")
 @_require("support_agent", "support", "support_admin", "super_admin")
 def resend_verification(actor):
