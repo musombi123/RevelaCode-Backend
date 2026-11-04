@@ -22,7 +22,7 @@ PLATFORM_ADMIN_ROLES = frozenset({
     "super_admin",
     "revelacode_admin",
 })
-SUPPORT_ROLES = frozenset({"support", "support_admin"})
+SUPPORT_ROLES = frozenset({"support", "support_agent", "support_admin"})
 INACTIVE_STATUSES = frozenset({
     "inactive", "disabled", "suspended", "blocked", "banned", "deleted",
     "revoked", "pending_invitation",
@@ -130,6 +130,15 @@ def resolve_current_actor(req):
             "code": "account_inactive",
             "message": "This account is not active.",
         }, 403
+
+    token_version = int(user.get("token_version") or 0)
+    claim_version = int(claims.get("token_version") or 0)
+    if claim_version != token_version:
+        return None, {
+            "success": False,
+            "code": "session_revoked",
+            "message": "This session has been revoked. Sign in again.",
+        }, 401
 
     roles = _normalized_roles(user)
     role = str(user.get("role") or "user").strip().casefold()

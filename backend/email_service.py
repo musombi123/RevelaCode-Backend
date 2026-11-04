@@ -8,6 +8,7 @@ from html import escape
 import resend
 
 logger = logging.getLogger(__name__)
+from backend.support_config import SUPPORT_EMAIL
 resend.api_key = os.getenv("RESEND_API_KEY")
 
 
@@ -67,10 +68,7 @@ def send_verification_email(recipient, code, purpose="activation"):
             "RevelaCode Support has sent you a fresh code to verify your email "
             "address and activate your account."
         )
-        sender = os.getenv(
-            "SUPPORT_EMAIL_FROM",
-            "RevelaCode Support <support@revelacode.co.ke>",
-        ).strip()
+        sender = f"RevelaCode Support <{SUPPORT_EMAIL}>"
     else:
         subject = "Activate your RevelaCode account"
         heading = "Your RevelaCode activation code"
@@ -89,6 +87,7 @@ def send_verification_email(recipient, code, purpose="activation"):
     payload = {
         "from": sender,
         "to": [recipient],
+        "reply_to": SUPPORT_EMAIL,
         "subject": subject,
         "html": f"""
             <div style="font-family:Arial,sans-serif;max-width:560px;margin:0 auto;padding:28px;color:#0f172a">

@@ -423,6 +423,9 @@ def authenticated_user_me():
     if not user:
         return jsonify(success=False, code="user_not_found"), 404
 
+    if int(claims.get("token_version") or 0) != int(user.get("token_version") or 0):
+        return jsonify(success=False, authenticated=False, code="session_revoked", message="This session has been revoked. Sign in again."), 401
+
     account_ids = {
         str(value).strip()
         for value in (user.get("_id"), user.get("id"), user.get("user_id"))
@@ -799,6 +802,9 @@ def create_access_token(
         ),
 
         "roles": roles,
+
+        # Incremented by support ban/suspend/removal to invalidate all issued JWTs.
+        "token_version": int(user.get("token_version") or 0),
 
         "verified": bool(
             user.get(

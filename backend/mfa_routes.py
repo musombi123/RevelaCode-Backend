@@ -208,6 +208,11 @@ def _current_user() -> tuple[dict, dict]:
     user = _lookup_user(user_id)
     if not user or _user_id(user) != user_id:
         raise MfaFailure("user_not_found", "The account could not be found.", 401)
+    if int(claims.get("token_version") or 0) != int(user.get("token_version") or 0):
+        raise MfaFailure("session_revoked", "This session has been revoked. Sign in again.", 401)
+    status = str(user.get("status") or "active").casefold()
+    if user.get("is_active") is False or status in {"inactive", "disabled", "suspended", "blocked", "banned", "deleted", "revoked"}:
+        raise MfaFailure("account_inactive", "This account is not active.", 403)
     return user, claims
 
 
@@ -352,7 +357,7 @@ def _profile_redirect(user: dict) -> str:
     role = str(user.get("role") or "user").strip().casefold()
     if role in auth.PLATFORM_ADMIN_ROLES:
         return "/admin/dashboard"
-    if role in {"support", "support_admin"}:
+    if role in {"support", "support_agent", "support_admin"}:
         return "/support/dashboard"
     return "/dashboard"
 
@@ -416,6 +421,13 @@ def enforce_mfa_for_authenticated_api_requests():
             code="mfa_state_unavailable",
             message="We could not validate this session's security state. Please retry.",
         ), 503
+
+    if user:
+        account_status = str(user.get("status") or "active").strip().casefold()
+        if user.get("is_active") is False or account_status in {"inactive", "disabled", "suspended", "blocked", "banned", "deleted", "revoked", "pending_invitation"}:
+            return jsonify(success=False, authenticated=False, code="account_inactive", message="This account is not active."), 403
+        if int(claims.get("token_version") or 0) != int(user.get("token_version") or 0):
+            return jsonify(success=False, authenticated=False, code="session_revoked", message="This session has been revoked. Sign in again."), 401
 
     if user and user.get("mfa_enabled") is True:
         if claims.get("mfa_verified") is not True:

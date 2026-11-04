@@ -621,6 +621,30 @@ try:
 except Exception:
     logger.exception("Support blueprint registration failed")
 
+# Secure Support Team control plane (reuses the existing users and support stores).
+try:
+    from backend.support_center import support_center_bp
+
+    app.register_blueprint(
+        support_center_bp,
+        url_prefix="/api/support-center",
+    )
+    logger.info("Support Center blueprint registered")
+
+except Exception:
+    logger.exception("Support Center blueprint registration failed")
+    raise
+
+# Server-verified Google OIDC login and account linking.
+try:
+    from backend.google_oauth import oauth_bp
+    app.register_blueprint(oauth_bp)
+    logger.info("Google OAuth blueprint registered")
+
+except Exception:
+    logger.exception("Google OAuth blueprint registration failed")
+    raise
+
 
 # =========================================================
 # PUBLIC ROUTES
