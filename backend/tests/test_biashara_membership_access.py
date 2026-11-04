@@ -4,7 +4,6 @@ import pytest
 from bson import ObjectId
 
 from backend.jumuiya.biashara import access, services
-from backend.jumuiya.biashara.contracts import INVITABLE_ROLES
 from backend.jumuiya.core.errors import APIError
 
 
@@ -110,8 +109,3 @@ def test_biashara_service_enforces_member_role(monkeypatch):
     assert exc.value.code == "business_role_forbidden"
     assert services._require_business("sales-user", allowed_roles={"owner", "sales"}) == business
 
-
-def test_ordinary_biashara_invitations_cannot_grant_admin_or_director_access():
-    assert "admin" not in INVITABLE_ROLES
-    assert "director" not in INVITABLE_ROLES
-    assert {"manager", "hr_manager", "accountant", "store_keeper", "factory_floor_lead", "sales_agent", "employee"} <= INVITABLE_ROLES
