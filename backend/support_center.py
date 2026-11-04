@@ -151,8 +151,10 @@ def _audit(actor, action, target_type, target_id, before=None, after=None, reaso
         raise RuntimeError("Could not acquire the Support audit append lock.")
 
     try:
-        sequence = int(locked.get("sequence") or 0) + 1
-        previous_hash = str(locked.get("last_hash") or "GENESIS")
+        last_event = events.find_one({}, sort=[("sequence", -1)])
+        last_sequence = int((last_event or {}).get("sequence") or 0)
+        sequence = max(int(locked.get("sequence") or 0), last_sequence) + 1
+        previous_hash = str((last_event or {}).get("event_hash") or locked.get("last_hash") or "GENESIS")
         document = {
             "sequence": sequence,
             "actor_id": actor.get("id"),
