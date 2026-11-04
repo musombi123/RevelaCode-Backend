@@ -1291,10 +1291,21 @@ def inbound_resend():
         matched = db["users"].find_one({"$or": [{"email": sender_email.lower()}, {"contact": sender_email.lower()}]})
         ticket_number = "RC-" + now.strftime("%y%m") + "-" + secrets.token_hex(3).upper()
         attachments = []
+        allowed_attachment_types = {"application/pdf", "image/jpeg", "image/png", "image/webp", "text/plain", "text/csv", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"}
         for attachment in (data.get("attachments") if isinstance(data.get("attachments"), list) else [])[:10]:
             filename = re.sub(r"[^A-Za-z0-9._-]", "_", str(attachment.get("filename") or "attachment"))[:120]
             content_type = str(attachment.get("content_type") or "application/octet-stream").lower()[:120]
-            attachments.append({"filename": filename, "content_type": content_type, "status": "quarantined_pending_scan", "download_enabled": False})
+            try:
+                size_bytes = max(0, int(attachment.get("size") or 0))
+            except (TypeError, ValueError):
+                size_bytes = 0
+            if size_bytes > 10 * 1024 * 1024:
+                attachment_status = "rejected_size"
+            elif content_type not in allowed_attachment_types:
+                attachment_status = "rejected_type"
+            else:
+                attachment_status = "quarantined_pending_scan"
+            attachments.append({"provider_attachment_id": str(attachment.get("id") or ""), "filename": filename, "content_type": content_type, "size_bytes": size_bytes, "status": attachment_status, "download_enabled": False})
         doc = {"ticket_number": ticket_number, "user_id": _user_id(matched) if matched else None, "user": (matched.get("full_name") or matched.get("name")) if matched else sender_name, "email": sender_email.lower(), "subject": str(data.get("subject") or "Support request")[:250], "description": text_body or "Email received. Open the email thread for details.", "body_html": safe_html, "message_id": message_id, "references": str(inbound_headers.get("references") or inbound_headers.get("References") or ""), "attachments": attachments, "status": "open", "priority": "normal", "assigned_to_user_id": None, "created_at": now, "updated_at": now, "source": "email"}
         inserted = db[TICKETS].insert_one(doc)
         ticket_id = str(inserted.inserted_id)
