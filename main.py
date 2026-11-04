@@ -635,6 +635,16 @@ except Exception:
     logger.exception("Support Center blueprint registration failed")
     raise
 
+# Server-verified Google OIDC login and account linking.
+try:
+    from backend.google_oauth import oauth_bp
+    app.register_blueprint(oauth_bp)
+    logger.info("Google OAuth blueprint registered")
+
+except Exception:
+    logger.exception("Google OAuth blueprint registration failed")
+    raise
+
 
 # =========================================================
 # PUBLIC ROUTES
