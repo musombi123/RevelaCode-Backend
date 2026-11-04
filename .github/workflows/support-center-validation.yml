@@ -1,0 +1,31 @@
+name: Support Center backend validation
+
+on:
+  push:
+    branches:
+      - feature/support-team-foundation
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  syntax:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Compile backend modules
+        run: |
+          python -m py_compile \
+            main.py \
+            backend/support_center.py \
+            backend/support_center_migrate.py \
+            backend/support_center_retention.py \
+            backend/google_oauth.py \
+            backend/auth_gate.py \
+            backend/mfa_routes.py \
+            backend/routes/admin_routes.py \
+            backend/utils/current_role_auth.py \
+            backend/jumuiya/integration/auth_bridge.py
