@@ -23,7 +23,7 @@ from backend.jumuiya.core.audit import log_action
 
 contracts_bp = Blueprint("jumuiya_biashara_contracts", __name__)
 ROLES = ASSIGNABLE_ROLES
-INVITABLE_ROLES = ROLES - {"admin"}
+INVITABLE_ROLES = ROLES - {"admin", "director"}
 AUTOMATION_STATUSES = {"enabled", "disabled"}
 SYNC_STATUSES = {"queued", "running", "succeeded", "failed", "cancelled"}
 
@@ -372,7 +372,7 @@ def accept_team_invitation():
         raise APIError("This invitation has already been claimed or expired.", 409, "invitation_claim_conflict")
     invitation_id = str(invitation.get("_id"))
     role = str(invitation.get("role") or "viewer").strip().lower()
-    if role not in ROLES - {"admin"}:
+    if role not in INVITABLE_ROLES:
         invitations.update_one(
             {"_id": invitation["_id"], "status": "accepting", "claimed_by_user_id": uid},
             {"$set": {"status": "pending"}, "$unset": {"claimed_by_user_id": "", "claimed_at": ""}},
