@@ -769,6 +769,13 @@ def create_admin_invitation():
     token_hash = hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
     invitations = db[_ADMIN_INVITATIONS_COLLECTION]
 
+    replaced_rows = list(invitations.find({"contact": contact, "status": "pending"}, {"_id": 1, "role": 1}))
+    for old_invite in replaced_rows:
+        if old_invite.get("role") == "support_admin":
+            db["support_admin_seats"].update_one(
+                {"invitation_id": str(old_invite["_id"]), "status": "reserved"},
+                {"$set": {"status": "available", "member_id": None, "invitation_id": None}},
+            )
     invitations.update_many(
         {"contact": contact, "status": "pending"},
         {"$set": {"status": "replaced", "updated_at": now}},
@@ -811,6 +818,11 @@ def create_admin_invitation():
             {"_id": inserted.inserted_id, "status": "pending"},
             {"$set": {"status": "delivery_failed", "delivery_status": "failed", "updated_at": _utc_now()}},
         )
+        if role == "support_admin":
+            db["support_admin_seats"].update_one(
+                {"invitation_id": str(inserted.inserted_id), "status": "reserved"},
+                {"$set": {"status": "available", "member_id": None, "invitation_id": None}},
+            )
         _log_admin_operation(
             db,
             action="support_invitation_delivery_failed",
@@ -831,7 +843,7 @@ def create_admin_invitation():
     )
     return jsonify(
         success=True,
-        message=f"The email provider accepted the invitation for {contact}. The link expires in 7 days; provider acceptance does not guarantee inbox delivery.",
+        message=f"The email provider accepted the invitation for {contact}. The link expires in 48 hours; provider acceptance does not guarantee inbox delivery.",
         invitation={
             "id": str(inserted.inserted_id),
             "full_name": full_name,
@@ -865,6 +877,8 @@ def preview_admin_invitation():
         return jsonify(success=False, code="invitation_invalid_expiry", message="The invitation expiry could not be verified."), 409
     if (expires_at.replace(tzinfo=timezone.utc) if expires_at.tzinfo is None else expires_at.astimezone(timezone.utc)) <= now:
         db[_ADMIN_INVITATIONS_COLLECTION].update_one({"_id": invitation["_id"], "status": "pending"}, {"$set": {"status": "expired", "updated_at": now}})
+        if invitation.get("role") == "support_admin":
+            db["support_admin_seats"].update_one({"invitation_id": str(invitation["_id"]), "status": "reserved"}, {"$set": {"status": "available", "member_id": None, "invitation_id": None}})
         return jsonify(success=False, code="invitation_expired", message="This invitation has expired. Ask the RevelaCode administrator to issue a new one."), 410
 
     return jsonify(
