@@ -5,6 +5,8 @@ import html
 import os
 from urllib.parse import urlencode
 
+from backend.support_config import SUPPORT_EMAIL
+
 
 ROLE_LABELS = {
     "support": "Support Agent",
@@ -26,7 +28,7 @@ def send_admin_invitation_email(*, recipient: str, full_name: str, role: str, to
         raise ValueError("A valid single-use invitation token is required.")
 
     api_key = str(os.getenv("RESEND_API_KEY") or "").strip()
-    support_email = str(os.getenv("SUPPORT_EMAIL") or "support@revelacode.co.ke").strip().lower()
+    support_email = SUPPORT_EMAIL
     sender = f"RevelaCode Support <{support_email}>"
     frontend_url = str(
         os.getenv("FRONTEND_URL")
