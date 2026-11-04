@@ -14,6 +14,7 @@ from bson import ObjectId
 from flask import g, jsonify, request
 
 from backend.db import get_db
+from backend.support_config import is_configured_super_admin
 
 
 PLATFORM_ADMIN_ROLES = frozenset({
@@ -144,6 +145,10 @@ def resolve_current_actor(req):
     role = str(user.get("role") or "user").strip().casefold()
     if not roles:
         roles = {role}
+    configured_owner = is_configured_super_admin(actual_id, user)
+    if configured_owner:
+        roles.add("super_admin")
+        role = "super_admin"
 
     return {
         "id": actual_id,
