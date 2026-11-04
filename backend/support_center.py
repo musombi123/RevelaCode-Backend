@@ -465,13 +465,19 @@ def member_status(member_id, actor):
         db[TICKETS].update_many({"assigned_to_user_id": uid, "status": {"$in": ["open", "pending"]}}, {"$unset": {"assigned_to_user_id": "", "assigned_to": "", "assigned_to_name": "", "assigned_to_contact": ""}, "$set": {"updated_at": now, "reassignment_reason": "Assignee archived"}})
     after = {"status": updates["status"], "is_active": updates["is_active"], "token_version_incremented": True}
     _audit(actor, f"support.member.{action}", "user", uid, before=before, after=after, reason=reason)
-    _send_status_notice(target.get("email") or target.get("contact"), f"RevelaCode support account update", f"Your support-team account access has been {action}d. Reason: {reason}")
+    action_label = {"ban": "banned", "suspend": "suspended", "restore": "restored", "remove": "removed"}[action]
+    _send_status_notice(target.get("email") or target.get("contact"), "RevelaCode support account update", f"Your support-team account access has been {action_label}. Reason: {reason}")
     if is_support_admin and action in {"ban", "suspend", "remove"}:
         owner = db["users"].find_one(_id_query(os.getenv("SUPER_ADMIN_USER_ID", "")) or {})
         if owner:
             _send_status_notice(owner.get("email") or owner.get("contact"), "Support Admin account update", f"A Support Admin account was {action}d by a Super Admin. This is an informational notice.")
-    if action == "remove" and is_support_admin:
+    if action in {"ban", "suspend", "remove"} and is_support_admin:
         db[SEATS].update_one({"member_id": uid}, {"$set": {"status": "available", "member_id": None, "invitation_id": None}})
+    elif action == "restore" and is_support_admin:
+        slot = db[SEATS].find_one_and_update({"status": "available"}, {"$set": {"status": "active", "member_id": uid, "invitation_id": None, "activated_at": now}}, sort=[("_id", 1)])
+        if not slot:
+            users.update_one(query, {"$set": {"status": "suspended", "is_active": False}})
+            return jsonify(success=False, code="support_admin_seat_limit", message="No Support Admin seat is available. The account remains suspended."), 409
     return jsonify(success=True, message=f"Support member {action} completed.", member=_safe_member(users.find_one(query))), 200
 
 
@@ -496,8 +502,9 @@ def member_role(member_id, actor):
         return jsonify(success=False, message="Only the Super Admin can assign Support Admin."), 403
     if role == "support_admin":
         active = get_db()["users"].count_documents({"role": "support_admin", "status": {"$nin": ["banned", "suspended", "deleted"]}, "is_active": {"$ne": False}})
-        if active >= 3 and "support_admin" not in roles:
-            return jsonify(success=False, code="support_admin_seat_limit", message="All three Support Admin seats are occupied."), 409
+        pending = get_db()[INVITES].count_documents({"role": "support_admin", "status": "pending", "expires_at": {"$gt": now_utc()}})
+        if active + pending >= 3 and "support_admin" not in roles:
+            return jsonify(success=False, code="support_admin_seat_limit", message="All three Support Admin seats are active or reserved."), 409
     before = {"role": target.get("role")}
     get_db()["users"].update_one(query, {"$set": {"role": role, "roles": [role], "updated_at": now_utc()}})
     _audit(actor, "support.member.role_changed", "user", member_id, before=before, after={"role": role}, reason=reason)
@@ -727,7 +734,7 @@ def create_payroll(actor):
     except (TypeError, ValueError):
         return jsonify(success=False, message="A non-negative rate and valid pay period are required."), 422
     member = get_db()["users"].find_one(_id_query(member_id) or {})
-    if not member or not (_user_roles(member) & SUPPORT_AGENT_ROLES | SUPPORT_ADMIN_ROLES):
+    if not member or not (_user_roles(member) & (SUPPORT_AGENT_ROLES | SUPPORT_ADMIN_ROLES)):
         return jsonify(success=False, message="A support-team member is required."), 404
     doc = {
         "member_id": member_id, "member_name": member.get("full_name") or member.get("name") or "",
