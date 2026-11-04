@@ -41,7 +41,6 @@ from backend.jumuiya.biashara.intelligence.routes.economic import (
 from backend.jumuiya.elimu.routes import elimu_bp
 from backend.jumuiya.community.routes import community_bp
 from backend.jumuiya.platform_admin_routes import platform_admin_bp
-from backend.jumuiya.sample_data import seed_sample_records
 from backend.jumuiya.faith.missionpulse.routes import missionpulse_bp
 from backend.jumuiya.core.database import collection
 
@@ -95,18 +94,11 @@ def register_jumuiya(app):
             "✅ Jumuiya database indexes ready."
         )
 
-        # Populate a clearly isolated admin-only training dataset.
-        # This never writes to tenant-facing hub collections.
-        try:
-            sample_result = seed_sample_records()
-            logger.info(
-                "✅ Jumuiya admin sample data ready: %s records.",
-                sample_result.get("total", 0),
-            )
-        except Exception:
-            logger.exception(
-                "⚠️ Jumuiya admin sample data could not be initialized."
-            )
+        # Sample fixtures are seeded only by an authenticated platform-admin
+        # request. Application startup has no user identity to scope visibility to.
+        logger.info(
+            "Jumuiya admin sample data will be seeded when an authorized admin opens the sample-data workspace."
+        )
 
     except Exception:
 
