@@ -39,4 +39,5 @@ jobs:
       - name: Test fixture coverage, idempotency, and admin access
         env:
           PYTHONPATH: .
+          MONGO_URI: mongodb://127.0.0.1:27017/jumuiya_sample_data_test
         run: python -m pytest -q tests/test_jumuiya_sample_data.py
