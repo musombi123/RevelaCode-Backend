@@ -635,6 +635,90 @@ def query_plan(checkout_id, actor):
     return jsonify(success=True, verified=bool(verified), checkout=_public_checkout(fresh)), 200
 
 
+@support_center_bp.post("/plans/<checkout_id>/retry-link")
+@_require("support_agent", "support", "support_admin", "super_admin")
+def send_payment_retry_link(checkout_id, actor):
+    data = request.get_json(silent=True) or {}
+    ticket_id = str(data.get("ticket_id") or "").strip()
+    reason = str(data.get("reason") or "").strip()
+    if data.get("user_requested") is not True or len(reason) < 8 or not ObjectId.is_valid(ticket_id):
+        return jsonify(success=False, message="A valid ticket, explicit user-request confirmation and reason are required."), 422
+    rows = get_db()["jumuiya_revenue_mpesa_checkouts"]
+    checkout = rows.find_one({"$or": [{"checkout_request_id": checkout_id}, {"_id": ObjectId(checkout_id) if ObjectId.is_valid(checkout_id) else None}]})
+    ticket = get_db()[TICKETS].find_one({"_id": ObjectId(ticket_id)})
+    if not checkout or not ticket:
+        return jsonify(success=False, message="Checkout or support ticket not found."), 404
+    if str(ticket.get("user_id") or "") != str(checkout.get("user_id") or ""):
+        return jsonify(success=False, message="The ticket does not belong to the checkout account."), 403
+    email = str(ticket.get("email") or "").strip().lower()
+    if not email:
+        user = get_db()["users"].find_one(_id_query(checkout.get("user_id")) or {})
+        email = str((user or {}).get("email") or "").strip().lower()
+    if "@" not in email:
+        return jsonify(success=False, message="No verified email address is available for the customer."), 409
+    token = secrets.token_urlsafe(40)
+    token_row = {
+        "token_hash": hashlib.sha256(token.encode()).hexdigest(),
+        "user_id": str(checkout.get("user_id") or ""),
+        "checkout_id": str(checkout.get("_id") or ""),
+        "plan_code": checkout.get("plan_code"),
+        "ticket_id": ticket_id,
+        "requested_by": actor["id"],
+        "reason": reason,
+        "status": "pending",
+        "created_at": now_utc(),
+        "expires_at": now_utc() + timedelta(minutes=30),
+    }
+    get_db()["support_checkout_retry_tokens"].insert_one(token_row)
+    frontend = str(os.getenv("FRONTEND_URL") or os.getenv("REVELACODE_FRONTEND_URL") or "https://revelacode.co.ke").rstrip("/")
+    retry_url = frontend + "/support/payment-retry?token=" + token
+    sent = _send_status_notice(email, "Confirm your RevelaCode M-Pesa retry", f"You asked RevelaCode Support to retry your {checkout.get('plan_code')} plan payment. Open this secure, single-use confirmation link within 30 minutes: {retry_url}. You must sign in to your RevelaCode account and confirm the phone number before a new STK prompt is sent.")
+    if not sent:
+        get_db()["support_checkout_retry_tokens"].update_one({"token_hash": token_row["token_hash"]}, {"$set": {"status": "delivery_failed"}})
+        return jsonify(success=False, message="The retry link could not be emailed. No new STK prompt was sent."), 502
+    _audit(actor, "support.plan.retry_link_sent", "checkout", checkout_id, after={"ticket_id": ticket_id, "user_requested": True})
+    return jsonify(success=True, message="A secure retry confirmation link was emailed. The customer must sign in and confirm before a new STK push is started."), 200
+
+
+@support_center_bp.post("/plans/retry/validate")
+def validate_payment_retry():
+    actor, failure = _actor()
+    if failure:
+        return failure
+    token = str((request.get_json(silent=True) or {}).get("token") or "").strip()
+    if len(token) < 32:
+        return jsonify(success=False, message="A valid retry link is required."), 400
+    row = get_db()["support_checkout_retry_tokens"].find_one({"token_hash": hashlib.sha256(token.encode()).hexdigest(), "status": "pending", "expires_at": {"$gt": now_utc()}})
+    if not row or str(row.get("user_id") or "") != str(actor.get("id") or ""):
+        return jsonify(success=False, message="This retry link is invalid, expired or belongs to another account."), 403
+    checkout = get_db()["jumuiya_revenue_mpesa_checkouts"].find_one({"_id": ObjectId(row["checkout_id"])}) if ObjectId.is_valid(str(row.get("checkout_id") or "")) else None
+    if not checkout or checkout.get("status") not in {"initiation_failed", "failed", "cancelled"}:
+        return jsonify(success=False, message="This checkout is not eligible for a fresh retry. Reconcile it with Support first."), 409
+    return jsonify(success=True, plan={"plan_code": row.get("plan_code"), "hub": checkout.get("hub"), "amount": checkout.get("amount"), "currency": checkout.get("currency") or "KES", "ticket_id": row.get("ticket_id")}), 200
+
+
+@support_center_bp.post("/plans/retry/complete")
+def complete_payment_retry():
+    actor, failure = _actor()
+    if failure:
+        return failure
+    data = request.get_json(silent=True) or {}
+    token = str(data.get("token") or "").strip()
+    checkout_request_id = str(data.get("checkout_request_id") or "").strip()
+    if len(token) < 32 or not checkout_request_id:
+        return jsonify(success=False, message="Retry token and new checkout reference are required."), 422
+    db = get_db()
+    token_hash = hashlib.sha256(token.encode()).hexdigest()
+    row = db["support_checkout_retry_tokens"].find_one({"token_hash": token_hash, "status": "pending", "expires_at": {"$gt": now_utc()}})
+    if not row or str(row.get("user_id") or "") != str(actor.get("id") or ""):
+        return jsonify(success=False, message="Retry token is invalid or belongs to another account."), 403
+    checkout = db["jumuiya_revenue_mpesa_checkouts"].find_one({"checkout_request_id": checkout_request_id, "user_id": str(actor.get("id") or ""), "plan_code": row.get("plan_code")})
+    if not checkout:
+        return jsonify(success=False, message="The new checkout does not match this retry request."), 409
+    db["support_checkout_retry_tokens"].update_one({"_id": row["_id"], "status": "pending"}, {"$set": {"status": "used", "used_at": now_utc(), "new_checkout_request_id": checkout_request_id}})
+    return jsonify(success=True), 200
+
+
 @support_center_bp.post("/plans/<checkout_id>/manual-activation-request")
 @_require("support_agent", "support", "support_admin", "super_admin")
 def request_manual_activation(checkout_id, actor):
