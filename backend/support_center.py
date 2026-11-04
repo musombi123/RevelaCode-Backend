@@ -892,8 +892,18 @@ def inbound_resend():
     sanitizer = _SafeHTML()
     sanitizer.feed(html_body[:100000])
     safe_html = sanitizer.value()
-    in_reply_to = str((body.get("headers") or {}).get("in-reply-to") or "")
-    existing = db[TICKETS].find_one({"$or": [{"message_id": in_reply_to}, {"references": in_reply_to}]}) if in_reply_to else None
+    inbound_headers = body.get("headers") if isinstance(body.get("headers"), dict) else {}
+    in_reply_to = str(inbound_headers.get("in-reply-to") or inbound_headers.get("In-Reply-To") or "")
+    reference_ids = re.findall(r"<[^>]+>", str(inbound_headers.get("references") or inbound_headers.get("References") or ""))
+    thread_ids = [in_reply_to, *reference_ids]
+    thread_ids = [value for value in thread_ids if value]
+    existing = None
+    if thread_ids:
+        existing = db[TICKETS].find_one({"message_id": {"$in": thread_ids}})
+        if not existing:
+            prior_message = db["support_ticket_messages"].find_one({"message_id": {"$in": thread_ids}})
+            if prior_message:
+                existing = db[TICKETS].find_one({"_id": ObjectId(prior_message["ticket_id"])}) if ObjectId.is_valid(str(prior_message.get("ticket_id") or "")) else None
     now = now_utc()
     if existing:
         ticket_id = str(existing["_id"])
@@ -903,13 +913,35 @@ def inbound_resend():
     else:
         matched = db["users"].find_one({"$or": [{"email": sender_email.lower()}, {"contact": sender_email.lower()}]})
         ticket_number = "RC-" + now.strftime("%y%m") + "-" + secrets.token_hex(3).upper()
-        doc = {"ticket_number": ticket_number, "user_id": _user_id(matched) if matched else None, "user": (matched.get("full_name") or matched.get("name")) if matched else sender_name, "email": sender_email.lower(), "subject": str(data.get("subject") or "Support request")[:250], "description": text_body or "Email received. Open the email thread for details.", "body_html": safe_html, "message_id": message_id, "references": str((body.get("headers") or {}).get("references") or ""), "status": "open", "priority": "normal", "assigned_to_user_id": None, "created_at": now, "updated_at": now, "source": "email"}
+        attachments = []
+        for attachment in (data.get("attachments") if isinstance(data.get("attachments"), list) else [])[:10]:
+            filename = re.sub(r"[^A-Za-z0-9._-]", "_", str(attachment.get("filename") or "attachment"))[:120]
+            content_type = str(attachment.get("content_type") or "application/octet-stream").lower()[:120]
+            attachments.append({"filename": filename, "content_type": content_type, "status": "quarantined_pending_scan", "download_enabled": False})
+        doc = {"ticket_number": ticket_number, "user_id": _user_id(matched) if matched else None, "user": (matched.get("full_name") or matched.get("name")) if matched else sender_name, "email": sender_email.lower(), "subject": str(data.get("subject") or "Support request")[:250], "description": text_body or "Email received. Open the email thread for details.", "body_html": safe_html, "message_id": message_id, "references": str(inbound_headers.get("references") or inbound_headers.get("References") or ""), "attachments": attachments, "status": "open", "priority": "normal", "assigned_to_user_id": None, "created_at": now, "updated_at": now, "source": "email"}
         inserted = db[TICKETS].insert_one(doc)
         ticket_id = str(inserted.inserted_id)
         db["support_ticket_messages"].insert_one({"ticket_id": ticket_id, "type": "email", "direction": "inbound", "message_id": message_id, "sender": sender_email, "body_text": text_body, "body_html": safe_html, "created_at": now})
     db[INBOUND].insert_one({"message_id": message_id, "email_id": email_id, "ticket_id": ticket_id, "received_at": now})
-    # Auto-acknowledgement is intentionally omitted until outbound reply threading
-    # is configured and the provider's loop headers are fully available.
+    # Acknowledge once, thread the acknowledgement to the inbound Message-ID,
+    # and never answer messages originating from the support mailbox itself.
+    if not existing and sender_email.lower() != SUPPORT_EMAIL:
+        sender = str(os.getenv("SUPPORT_EMAIL_FROM") or os.getenv("EMAIL_FROM") or "").strip()
+        if api_key and sender:
+            try:
+                import resend
+                resend.api_key = api_key
+                resend.Emails.send({
+                    "from": sender,
+                    "to": [sender_email],
+                    "reply_to": SUPPORT_EMAIL,
+                    "subject": f"We received your RevelaCode request [{ticket_number}]",
+                    "text": f"Thank you for contacting RevelaCode Support. Your ticket number is {ticket_number}. Our team will review your request and reply to this email.\n\nPlease keep the ticket number in the subject when replying.",
+                    "headers": {"In-Reply-To": message_id, "References": message_id},
+                })
+                db[TICKETS].update_one({"_id": ObjectId(ticket_id)}, {"$set": {"acknowledgement_sent": True, "acknowledgement_sent_at": now_utc()}})
+            except Exception:
+                current_app.logger.exception("Support acknowledgement email failed.")
     return jsonify(success=True, ticket_number=ticket_number), 201
 
 
