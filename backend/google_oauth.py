@@ -42,12 +42,39 @@ def _ensure_indexes():
 
 
 def _client_config():
-    client_id = str(os.getenv("GOOGLE_WEB_CLIENT_ID") or "").strip()
-    client_secret = str(os.getenv("GOOGLE_WEB_CLIENT_SECRET") or "").strip()
-    redirect_uri = str(os.getenv("GOOGLE_OAUTH_REDIRECT_URI") or "").strip()
+    # Normalize whitespace and accidental wrapping quotes from Render values.
+    client_id = str(os.getenv("GOOGLE_WEB_CLIENT_ID") or "").strip().strip("\"'").strip()
+    client_secret = str(os.getenv("GOOGLE_WEB_CLIENT_SECRET") or "").strip().strip("\"'").strip()
+    redirect_uri = str(os.getenv("GOOGLE_OAUTH_REDIRECT_URI") or "").strip().strip("\"'").strip()
     if not (client_id and client_secret and redirect_uri.startswith("https://")):
-        raise RuntimeError("Google OAuth server configuration is incomplete.")
+        raise RuntimeError("Google OAuth server configuration is incomplete. Set the Web application Client ID, matching Client Secret and HTTPS callback URI in Render.")
+    if not client_id.endswith(".apps.googleusercontent.com"):
+        raise RuntimeError("GOOGLE_WEB_CLIENT_ID must be copied from a Google Cloud OAuth client of type Web application.")
     return client_id, client_secret, redirect_uri
+
+
+@oauth_bp.get("/api/oauth/google/config-status")
+def google_config_status():
+    """Expose safe Google OAuth configuration diagnostics without secrets."""
+    client_id = str(os.getenv("GOOGLE_WEB_CLIENT_ID") or "").strip().strip("\"'").strip()
+    client_secret = str(os.getenv("GOOGLE_WEB_CLIENT_SECRET") or "").strip().strip("\"'").strip()
+    redirect_uri = str(os.getenv("GOOGLE_OAUTH_REDIRECT_URI") or "").strip().strip("\"'").strip()
+    client_id_shape_ok = bool(client_id.endswith(".apps.googleusercontent.com"))
+    ready = bool(client_id and client_id_shape_ok and client_secret and redirect_uri.startswith("https://"))
+    return jsonify(
+        success=True,
+        google={
+            "configured": ready,
+            "client_id_present": bool(client_id),
+            "client_id_format_valid": client_id_shape_ok,
+            "client_id_hint": (client_id[:8] + "…" + client_id[-28:]) if len(client_id) > 40 else None,
+            "client_secret_present": bool(client_secret),
+            "redirect_uri_present": bool(redirect_uri),
+            "redirect_uri": redirect_uri or None,
+            "required_redirect_uri": "https://revelacode-backend.onrender.com/api/oauth/google/callback",
+            "note": "A valid-looking Client ID may still be deleted, disabled or belong to another Google Cloud project. Confirm the client exists in Google Cloud Console.",
+        },
+    ), 200
 
 
 def _frontend_base():
@@ -194,6 +221,8 @@ def google_invite_start():
     invitation = get_db()["admin_invitations"].find_one({"token_hash": invite_hash, "contact": email, "status": "pending", "expires_at": {"$gt": _now()}})
     if not invitation:
         return jsonify(success=False, message="The invitation is invalid, expired or does not match this email."), 404
+    if invitation.get("invitation_type") == "role_change":
+        return jsonify(success=False, code="existing_account_role_change", message="This email belongs to an existing RevelaCode account. Open the request to explicitly accept or decline the role change; no new account or password is required."), 409
     try:
         client_id, _secret, redirect_uri = _client_config()
         return_uri = _return_uri(client)
@@ -221,13 +250,19 @@ def google_invite_start():
 def google_callback():
     state = str(request.args.get("state") or "").strip()
     code = str(request.args.get("code") or "").strip()
-    if not state or not code:
+    if not state:
         return _redirect_result(_frontend_base() + "/oauth/callback", oauth="error", reason="google_authorization_failed")
     _ensure_indexes()
     db = get_db()
     state_row = db["oauth_states"].find_one_and_delete({"state_hash": _token_hash(state), "expires_at": {"$gt": _now()}})
     if not state_row:
         return _redirect_result(_frontend_base() + "/oauth/callback", oauth="error", reason="invalid_or_expired_state")
+    if not code:
+        # Google redirects here with an error parameter when a user cancels or
+        # denies consent. Preserve the original client's return destination so
+        # Android returns to its callback route instead of being stranded on web.
+        reason = str(request.args.get("error") or "google_authorization_failed")[:120]
+        return _redirect_result(state_row["return_uri"], oauth="error", reason=reason)
     try:
         client_id, client_secret, redirect_uri = _client_config()
         response = requests.post(GOOGLE_TOKEN, data={
