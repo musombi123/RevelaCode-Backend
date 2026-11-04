@@ -1,9 +1,19 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import sys
+from types import ModuleType
 
 import pytest
 from flask import Flask, g, request
+
+# The focused admin sample-data tests replace collection access with in-memory
+# fakes. Stub backend.db before importing Jumuiya so test collection does not
+# require a live MongoDB server or production MONGO_URI.
+if "backend.db" not in sys.modules:
+    database_stub = ModuleType("backend.db")
+    database_stub.get_db = lambda: None
+    sys.modules["backend.db"] = database_stub
 
 from backend.jumuiya import platform_admin_routes
 from backend.jumuiya.core.errors import register_error_handlers
