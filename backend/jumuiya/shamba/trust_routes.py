@@ -542,7 +542,7 @@ def request_soil_service(farm_id: str):
 
 @shamba_trust_bp.get("/soil-service-requests")
 @require_authenticated
-@require_roles("admin", "super_admin")
+@require_roles("admin", "platform_admin", "super_admin", "revelacode_admin")
 def list_soil_service_requests():
     items = list(collection(SOIL_SERVICE_LEADS).find({"status": {"$nin": ["closed", "cancelled"]}}).sort("created_at", 1).limit(200))
     return ok({"items": [_json_safe(item) for item in items], "count": len(items)})
@@ -569,7 +569,7 @@ def report_safety_issue():
 
 @shamba_trust_bp.get("/safety-reports")
 @require_authenticated
-@require_roles("admin", "super_admin")
+@require_roles("admin", "platform_admin", "super_admin", "revelacode_admin")
 def list_safety_reports():
     items = list(collection(SAFETY_REPORTS).find({"status": {"$in": ["open", "needs_more_info"]}}).sort("created_at", 1).limit(200))
     return ok({"items": [_json_safe(item) for item in items], "count": len(items)})
@@ -577,7 +577,7 @@ def list_safety_reports():
 
 @shamba_trust_bp.post("/safety-reports/<report_id>/review")
 @require_authenticated
-@require_roles("admin", "super_admin")
+@require_roles("admin", "platform_admin", "super_admin", "revelacode_admin")
 def review_safety_report(report_id: str):
     data = request.get_json(silent=True) or {}
     decision = _text(data.get("decision"), "decision", 30, True).lower()
