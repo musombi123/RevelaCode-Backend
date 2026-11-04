@@ -14,6 +14,7 @@ from flask import Flask
 from werkzeug.security import generate_password_hash, check_password_hash
 
 from backend import auth_gate
+from backend import support_config
 from backend.db import get_db
 from backend.routes import admin_routes, support_routes
 
@@ -116,10 +117,20 @@ def test_support_admin_cannot_ban_or_delete_accounts(admin_client, operations_da
     assert stored["is_active"] is True
 
 
-def test_platform_admin_can_invite_support_admin_and_invitee_sets_own_password(
+def test_configured_super_admin_can_invite_support_admin_and_invitee_sets_own_password(
     admin_client, operations_data, monkeypatch
 ):
-    owner = operations_data["make_user"]("revelacode_admin")
+    owner = operations_data["make_user"]("user")
+    monkeypatch.setattr(support_config, "SUPER_ADMIN_USER_ID", str(owner["_id"]))
+    monkeypatch.setattr(support_config, "SUPER_ADMIN_CONTACT_EMAIL", owner["contact"])
+    verified = admin_client.get(
+        "/api/auth/verify-admin",
+        headers={"Authorization": f"Bearer {_token(str(owner['_id']), role_claim='user')}"},
+    )
+    assert verified.status_code == 200
+    assert verified.get_json()["authorized"] is True
+    assert verified.get_json()["role"] == "super_admin"
+    assert "super_admin" in verified.get_json()["roles"]
     invitee_email = f"invitee-{uuid.uuid4().hex}@example.test"
     operations_data["contacts"].append(invitee_email)
     sent = {}
