@@ -364,6 +364,17 @@ def get_platform_overview():
     farmer_collection = collection(FARMERS)
     business_collection = collection(BUSINESSES)
     school_collection = collection(SCHOOLS)
+    community_posts = collection("jumuiya_community_posts")
+    community_groups = collection("jumuiya_community_groups")
+    sample_records = collection(SAMPLE_RECORDS_COLLECTION)
+
+    sample_counts_by_hub = {
+        key: sample_records.count_documents({
+            "seed_managed": True,
+            "hub": key,
+        })
+        for key in HUB_LABELS
+    }
 
     total_schools = school_collection.count_documents({})
     real_schools = school_collection.count_documents({
@@ -396,6 +407,10 @@ def get_platform_overview():
         "pending_schools": pending_schools,
         "schools_needing_information": needs_information,
         "rejected_schools": rejected_schools,
+        "community_posts": community_posts.count_documents({"status": "published"}),
+        "community_groups": community_groups.count_documents({"status": "active"}),
+        "admin_sample_records": sum(sample_counts_by_hub.values()),
+        "admin_sample_counts_by_hub": sample_counts_by_hub,
     })
 
 
