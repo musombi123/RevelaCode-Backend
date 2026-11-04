@@ -523,7 +523,7 @@ def study_stats():
 # =========================================================
 
 _ADMIN_INVITATIONS_COLLECTION = "admin_invitations"
-_SUPPORT_INVITATION_ROLES = {"support", "support_admin"}
+_SUPPORT_INVITATION_ROLES = {"support", "support_agent", "support_admin"}
 _SUPERVISOR_ROLES = {"revelacode_admin", "super_admin"}
 
 
@@ -735,7 +735,7 @@ def list_admin_invitations():
 
 
 @admin_bp.route("/admin/invitations", methods=["POST"])
-@require_current_roles(*PLATFORM_ADMIN_ROLES)
+@require_current_roles(*PLATFORM_ADMIN_ROLES, "support_admin")
 def create_admin_invitation():
     data = request.get_json(silent=True) or {}
     full_name = str(data.get("full_name") or "").strip()
@@ -749,6 +749,14 @@ def create_admin_invitation():
     if role not in _SUPPORT_INVITATION_ROLES:
         return jsonify(success=False, message="Choose Support Agent or Support Administrator."), 400
 
+    actor = current_platform_actor()
+    actor_roles = {str(value).strip().casefold() for value in (actor.get("roles") or [])}
+    actor_roles.add(str(actor.get("role") or "").strip().casefold())
+    if role == "support_admin" and "super_admin" not in actor_roles:
+        return jsonify(success=False, code="super_admin_required", message="Only the Super Admin can invite Support Admins."), 403
+    if role in {"support", "support_agent"} and not ({"super_admin", "support_admin"} & actor_roles):
+        return jsonify(success=False, code="support_admin_required", message="Only a Support Admin or Super Admin can invite Support Agents."), 403
+
     db = get_db()
     email_match = {"$regex": f"^{re.escape(contact)}$", "$options": "i"}
     existing_user = db["users"].find_one({"$or": [{"contact": email_match}, {"email": email_match}]})
@@ -756,7 +764,7 @@ def create_admin_invitation():
         return jsonify(success=False, code="account_already_exists", message="An account already exists for this email. The invitation flow will not silently change an existing account's role."), 409
 
     now = _utc_now()
-    expires_at = now + timedelta(days=7)
+    expires_at = now + timedelta(hours=48)
     raw_token = secrets.token_urlsafe(40)
     token_hash = hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
     invitations = db[_ADMIN_INVITATIONS_COLLECTION]
@@ -778,11 +786,23 @@ def create_admin_invitation():
         "delivery_status": "pending",
     }
     inserted = invitations.insert_one(invitation)
+    if role == "support_admin":
+        from backend.support_center import ensure_indexes
+        ensure_indexes()
+        reserved = db["support_admin_seats"].find_one_and_update(
+            {"status": "available"},
+            {"$set": {"status": "reserved", "invitation_id": str(inserted.inserted_id), "reserved_at": now}},
+            sort=[("_id", 1)],
+            return_document=True,
+        )
+        if not reserved:
+            invitations.update_one({"_id": inserted.inserted_id}, {"$set": {"status": "seat_limit_reached", "updated_at": now}})
+            return jsonify(success=False, code="support_admin_seat_limit", message="All three Support Admin seats are active or reserved."), 409
     try:
         send_admin_invitation_email(
             recipient=contact,
             full_name=full_name,
-            role=role,
+            role=("support" if role == "support_agent" else role),
             token=raw_token,
             expires_at=expires_at,
         )
@@ -945,6 +965,11 @@ def accept_admin_invitation():
             "updated_at": _utc_now(),
         }},
     )
+    if role == "support_admin":
+        get_db()["support_admin_seats"].update_one(
+            {"invitation_id": str(invitation["_id"]), "status": "reserved"},
+            {"$set": {"status": "active", "member_id": str(inserted_user.inserted_id), "activated_at": _utc_now()}},
+        )
     return jsonify(
         success=True,
         message="Your RevelaCode support account is active. Sign in with your invitation email and the password you just set.",
@@ -970,6 +995,11 @@ def revoke_admin_invitation(invitation_id):
         {"_id": row["_id"], "status": "pending"},
         {"$set": {"status": "revoked", "revoked_at": now, "revoked_by": current_platform_actor().get("id"), "updated_at": now}},
     )
+    if row.get("role") == "support_admin":
+        get_db()["support_admin_seats"].update_one(
+            {"invitation_id": str(row["_id"]), "status": "reserved"},
+            {"$set": {"status": "available", "member_id": None, "invitation_id": None}},
+        )
     _log_admin_operation(db, action="support_invitation_revoked", resource=row.get("contact"), metadata={"role": row.get("role")})
     return jsonify(success=True, message="Invitation revoked."), 200
 
