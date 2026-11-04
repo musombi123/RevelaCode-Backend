@@ -71,7 +71,12 @@ class FakeCollection:
     def find(self, query, _projection=None):
         matched = [
             document for document in self.documents.values()
-            if all(document.get(key) == value for key, value in query.items())
+            if all(
+                value in document.get(key, [])
+                if isinstance(document.get(key), list) and not isinstance(value, dict)
+                else document.get(key) == value
+                for key, value in query.items()
+            )
         ]
         return FakeCursor(matched)
 
@@ -136,6 +141,8 @@ def admin_samples_client(monkeypatch):
             g.jumuiya_user = {"id": "6a3eba8277b5d149effbafc0", "roles": ["revelacode_admin"]}
         elif token == "Bearer test-member":
             g.jumuiya_user = {"id": "member-test", "roles": ["user"]}
+        elif token == "Bearer other-platform-admin":
+            g.jumuiya_user = {"id": "other-admin", "roles": ["platform_admin"]}
 
     fake = FakeCollection()
     for fixture in sample_fixtures():
@@ -177,6 +184,14 @@ def test_admin_can_filter_community_center_sample_records(admin_samples_client):
     assert payload["filtered_count"] >= 5
     assert all(item["hub"] == "community" for item in payload["items"])
     assert payload["hubs"]["community"] == "Community Center"
+
+    other_admin = client.get(
+        "/api/jumuiya/admin/sample-records?hub=community",
+        headers={"Authorization": "Bearer other-platform-admin"},
+    )
+    assert other_admin.status_code == 200
+    assert other_admin.get_json()["data"]["filtered_count"] == 0
+    assert other_admin.get_json()["data"]["total"] == 0
 
 
 def test_admin_can_restore_sample_records_without_touching_live_hub_data(admin_samples_client, monkeypatch):
