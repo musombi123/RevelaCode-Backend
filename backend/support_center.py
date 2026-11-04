@@ -1152,8 +1152,8 @@ def reply_ticket(ticket_id, actor):
     if not ticket.get("email"):
         return jsonify(success=False, message="This ticket does not have a reply email address."), 409
     api_key = str(os.getenv("RESEND_API_KEY") or "").strip()
-    sender = str(os.getenv("SUPPORT_EMAIL_FROM") or os.getenv("EMAIL_FROM") or "").strip()
-    if not api_key or not sender:
+    sender = f"RevelaCode Support <{SUPPORT_EMAIL}>"
+    if not api_key:
         return jsonify(success=False, message="Resend outbound email is not configured."), 503
     try:
         import resend
@@ -1165,10 +1165,19 @@ def reply_ticket(ticket_id, actor):
             headers["In-Reply-To"] = thread_reference
             headers["References"] = " ".join(filter(None, [str(ticket.get("references") or ""), thread_reference]))
         result = resend.Emails.send({"from": sender, "to": [ticket["email"]], "reply_to": SUPPORT_EMAIL, "subject": "Re: " + str(ticket.get("subject") or "RevelaCode Support"), "text": message, "headers": headers})
+        provider_id = (result.get("id") if isinstance(result, dict) else getattr(result, "id", None)) or ""
+        outbound_message_id = ""
+        if provider_id:
+            try:
+                provider_email = requests.get(f"https://api.resend.com/emails/{provider_id}", headers={"Authorization": f"Bearer {api_key}"}, timeout=8)
+                if provider_email.ok:
+                    outbound_message_id = str((provider_email.json() or {}).get("message_id") or "")
+            except requests.RequestException:
+                current_app.logger.warning("Could not retrieve outbound support Message-ID from Resend.")
     except Exception:
         current_app.logger.exception("Support ticket reply failed.")
         return jsonify(success=False, message="The reply could not be accepted by Resend."), 502
-    db["support_ticket_messages"].insert_one({"ticket_id": ticket_id, "type": "email", "direction": "outbound", "body_text": message, "author_id": actor["id"], "provider_response": str(result)[:500], "created_at": now_utc()})
+    db["support_ticket_messages"].insert_one({"ticket_id": ticket_id, "type": "email", "direction": "outbound", "body_text": message, "message_id": outbound_message_id if "outbound_message_id" in locals() else "", "author_id": actor["id"], "provider_response": str(result)[:500], "created_at": now_utc()})
     db[TICKETS].update_one({"_id": ticket["_id"]}, {"$set": {"status": "pending", "updated_at": now_utc()}})
     _audit(actor, "support.ticket.reply_sent", "ticket", ticket_id, after={"message_length": len(message)})
     return jsonify(success=True, message="Reply accepted by the email provider."), 200
