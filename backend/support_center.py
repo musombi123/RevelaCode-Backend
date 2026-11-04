@@ -157,7 +157,7 @@ def ensure_indexes():
     db[INVITES].create_index([("contact", 1), ("status", 1)])
     db[AUDIT].create_index([("sequence", 1)], unique=True)
     db[AUDIT].create_index([("created_at", -1)])
-    db[TICKETS].create_index([("message_id", 1)], unique=True, sparse=True)
+    db[TICKETS].create_index([("message_id", 1)], unique=True, partialFilterExpression={"message_id": {"$type": "string"}}, name="uq_support_ticket_message_id")
     db[TICKETS].create_index([("status", 1), ("updated_at", -1)])
     db[PAYROLL].create_index([("member_id", 1), ("period_start", 1), ("period_end", 1)])
     db[INBOUND].create_index([("message_id", 1)], unique=True, sparse=True)
@@ -168,6 +168,16 @@ def ensure_indexes():
             {"$setOnInsert": {"status": "available", "member_id": None, "invitation_id": None}},
             upsert=True,
         )
+
+
+def _expire_pending_admin_invites():
+    db = get_db()
+    now = now_utc()
+    expired = list(db[INVITES].find({"role": "support_admin", "status": "pending", "expires_at": {"$lte": now}}, {"_id": 1}))
+    if expired:
+        ids = [str(row["_id"]) for row in expired]
+        db[INVITES].update_many({"_id": {"$in": [row["_id"] for row in expired]}, "status": "pending"}, {"$set": {"status": "expired", "updated_at": now}})
+        db[SEATS].update_many({"invitation_id": {"$in": ids}, "status": "reserved"}, {"$set": {"status": "available", "member_id": None, "invitation_id": None}})
 
 
 def _invite_seat(invitation_id):
@@ -227,6 +237,7 @@ def _safe_invite(row):
 @_require("super_admin", "support_admin")
 def overview(actor):
     db = get_db()
+    _expire_pending_admin_invites()
     active = db["users"].count_documents({
         "$or": [{"role": "support_admin"}, {"roles": "support_admin"}],
         "status": {"$nin": ["banned", "suspended", "deleted", "disabled"]},
@@ -486,7 +497,8 @@ def member_status(member_id, actor):
     action_label = {"ban": "banned", "suspend": "suspended", "restore": "restored", "remove": "removed"}[action]
     _send_status_notice(target.get("email") or target.get("contact"), "RevelaCode support account update", f"Your support-team account access has been {action_label}. Reason: {reason}")
     if is_support_admin and action in {"ban", "suspend", "remove"}:
-        owner = db["users"].find_one(_id_query(os.getenv("SUPER_ADMIN_USER_ID", "")) or {})
+        owner_id = str(os.getenv("SUPER_ADMIN_USER_ID") or "").strip()
+        owner = db["users"].find_one(_id_query(owner_id)) if owner_id else None
         if owner:
             _send_status_notice(owner.get("email") or owner.get("contact"), "Support Admin account update", f"A Support Admin account was {action}d by a Super Admin. This is an informational notice.")
     if action in {"ban", "suspend", "remove"} and is_support_admin:
