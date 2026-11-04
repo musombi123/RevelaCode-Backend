@@ -33,6 +33,14 @@ def _now():
     return datetime.now(UTC)
 
 
+def _ensure_indexes():
+    db = get_db()
+    db["oauth_states"].create_index([("state_hash", 1)], unique=True)
+    db["oauth_states"].create_index([("expires_at", 1)], expireAfterSeconds=0)
+    db["oauth_login_tickets"].create_index([("ticket_hash", 1)], unique=True)
+    db["oauth_login_tickets"].create_index([("expires_at", 1)], expireAfterSeconds=0)
+
+
 def _client_config():
     client_id = str(os.getenv("GOOGLE_WEB_CLIENT_ID") or "").strip()
     client_secret = str(os.getenv("GOOGLE_WEB_CLIENT_SECRET") or "").strip()
@@ -118,6 +126,7 @@ def oauth_providers():
 @oauth_bp.get("/api/oauth/google/start")
 def google_start():
     try:
+        _ensure_indexes()
         client_id, _secret, redirect_uri = _client_config()
         mode = str(request.args.get("mode") or "login").strip().lower()
         client = str(request.args.get("client") or "web").strip().lower()
@@ -135,11 +144,7 @@ def google_start():
             if not actor_id:
                 return jsonify(success=False, message="Sign in before connecting Google."), 401
         elif mode == "invite":
-            raw_invite = str(request.args.get("invite_token") or "").strip()
-            invite_email = str(request.args.get("email") or "").strip().lower()
-            if len(raw_invite) < 32 or "@" not in invite_email:
-                return jsonify(success=False, message="The support invitation is incomplete."), 400
-            invite_hash = _token_hash(raw_invite)
+            return jsonify(success=False, message="Use the secure invitation POST flow for Google acceptance."), 400
 
         state = secrets.token_urlsafe(32)
         nonce = secrets.token_urlsafe(32)
@@ -176,12 +181,49 @@ def google_start():
         return jsonify(success=False, message="Google sign-in could not be started."), 503
 
 
+@oauth_bp.post("/api/oauth/google/invite/start")
+def google_invite_start():
+    data = request.get_json(silent=True) or {}
+    raw_invite = str(data.get("invite_token") or "").strip()
+    email = str(data.get("email") or "").strip().lower()
+    client = str(data.get("client") or "web").strip().lower()
+    if len(raw_invite) < 32 or "@" not in email or client not in {"web", "android"}:
+        return jsonify(success=False, message="The support invitation is incomplete."), 400
+    _ensure_indexes()
+    invite_hash = _token_hash(raw_invite)
+    invitation = get_db()["admin_invitations"].find_one({"token_hash": invite_hash, "contact": email, "status": "pending", "expires_at": {"$gt": _now()}})
+    if not invitation:
+        return jsonify(success=False, message="The invitation is invalid, expired or does not match this email."), 404
+    try:
+        client_id, _secret, redirect_uri = _client_config()
+        return_uri = _return_uri(client)
+        state = secrets.token_urlsafe(32)
+        nonce = secrets.token_urlsafe(32)
+        verifier = _b64url(secrets.token_bytes(48))
+        challenge = _b64url(hashlib.sha256(verifier.encode("ascii")).digest())
+        get_db()["oauth_states"].insert_one({
+            "state_hash": _token_hash(state), "nonce": nonce, "code_verifier": verifier,
+            "mode": "invite", "client": client, "return_uri": return_uri,
+            "invite_token_hash": invite_hash, "invite_email": email,
+            "created_at": _now(), "expires_at": _now() + timedelta(minutes=10),
+        })
+        params = {
+            "client_id": client_id, "redirect_uri": redirect_uri, "response_type": "code",
+            "scope": "openid email profile", "state": state, "nonce": nonce,
+            "code_challenge": challenge, "code_challenge_method": "S256", "prompt": "select_account",
+        }
+        return jsonify(success=True, authorization_url=GOOGLE_AUTH + "?" + urlencode(params)), 200
+    except RuntimeError as exc:
+        return jsonify(success=False, code="google_oauth_not_configured", message=str(exc)), 503
+
+
 @oauth_bp.get("/api/oauth/google/callback")
 def google_callback():
     state = str(request.args.get("state") or "").strip()
     code = str(request.args.get("code") or "").strip()
     if not state or not code:
         return _redirect_result(_frontend_base() + "/oauth/callback", oauth="error", reason="google_authorization_failed")
+    _ensure_indexes()
     db = get_db()
     state_row = db["oauth_states"].find_one_and_delete({"state_hash": _token_hash(state), "expires_at": {"$gt": _now()}})
     if not state_row:
