@@ -8,6 +8,7 @@ from urllib.parse import urlencode
 
 ROLE_LABELS = {
     "support": "Support Agent",
+    "support_agent": "Support Agent",
     "support_admin": "Support Administrator",
 }
 
