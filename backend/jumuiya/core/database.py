@@ -83,6 +83,17 @@ INDEX_DEFINITIONS = {
         ),
     ],
 
+    "jumuiya_admin_sample_records": [
+        (
+            [("sample_id", ASCENDING)],
+            {"unique": True, "name": "uq_jumuiya_admin_sample_record_id"},
+        ),
+        (
+            [("hub", ASCENDING), ("module", ASCENDING), ("title", ASCENDING)],
+            {"name": "ix_jumuiya_admin_samples_hub_module_title"},
+        ),
+    ],
+
     "jumuiya_transactions": [
         (
             [
