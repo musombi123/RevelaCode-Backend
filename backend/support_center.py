@@ -527,13 +527,16 @@ def member_status(member_id, actor):
         updates = {"status": "banned" if action == "ban" else "suspended", "is_active": False, f"{action}_at": now, f"{action}_by": actor["id"], f"{action}_reason": reason}
     users.update_one(query, {"$set": {**updates, "updated_at": now}, "$inc": {"token_version": 1}})
     uid = _user_id(target)
-    for collection_name in ("jumuiya_user_sessions", "jumuiya_auth_sessions", "jumuiya_refresh_tokens", "user_sessions", "refresh_tokens"):
+    session_identifiers = [{"user_id": uid}, {"userId": uid}, {"account_id": uid}]
+    if ObjectId.is_valid(uid):
+        session_identifiers.extend([{"user_id": ObjectId(uid)}, {"userId": ObjectId(uid)}, {"account_id": ObjectId(uid)}])
+    for collection_name in ("jumuiya_user_sessions", "jumuiya_auth_sessions", "jumuiya_refresh_tokens", "user_sessions", "refresh_tokens", "auth_refresh_tokens"):
         try:
-            db[collection_name].delete_many({"$or": [{"user_id": uid}, {"userId": uid}, {"account_id": uid}]})
+            db[collection_name].delete_many({"$or": session_identifiers})
         except Exception:
             current_app.logger.exception("Could not clear one session collection: %s", collection_name)
     if action == "remove":
-        db[TICKETS].update_many({"assigned_to_user_id": uid, "status": {"$in": ["open", "pending"]}}, {"$unset": {"assigned_to_user_id": "", "assigned_to": "", "assigned_to_name": "", "assigned_to_contact": ""}, "$set": {"updated_at": now, "reassignment_reason": "Assignee archived"}})
+        db[TICKETS].update_many({"$or": [{"assigned_to_user_id": uid}, {"assigned_to": uid}], "status": {"$in": ["open", "pending"]}}, {"$unset": {"assigned_to_user_id": "", "assigned_to": "", "assigned_to_name": "", "assigned_to_contact": ""}, "$set": {"updated_at": now, "reassignment_reason": "Assignee archived"}})
     after = {"status": updates["status"], "is_active": updates["is_active"], "token_version_incremented": True}
     _audit(actor, f"support.member.{action}", "user", uid, before=before, after=after, reason=reason)
     action_label = {"ban": "banned", "suspend": "suspended", "restore": "restored", "remove": "removed"}[action]
@@ -568,6 +571,8 @@ def member_role(member_id, actor):
     roles = _user_roles(target)
     if "super_admin" in roles:
         return jsonify(success=False, message="A support role cannot be assigned to the Super Admin."), 403
+    if target.get("verified") is not True and target.get("is_verified") is not True:
+        return jsonify(success=False, message="Staff roles require a verified email address."), 409
     if "support_admin" in roles and "super_admin" not in actor["roles"]:
         return jsonify(success=False, message="Only the Super Admin can change a Support Admin's role."), 403
     if role == "support_admin" and "super_admin" not in actor["roles"]:
