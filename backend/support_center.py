@@ -14,6 +14,7 @@ import json
 import os
 import re
 import secrets
+import time
 from datetime import datetime, timedelta, timezone
 from email.utils import parseaddr
 from functools import wraps
@@ -125,31 +126,59 @@ def _safe_member(user):
 
 
 def _audit(actor, action, target_type, target_id, before=None, after=None, reason=None):
-    """Append-only, hash-linked audit event. No update/delete API is exposed."""
+    """Append-only, serialized and hash-linked audit event."""
     db = get_db()
     events = db[AUDIT]
-    previous = events.find_one({}, sort=[("sequence", -1)])
-    sequence = int((previous or {}).get("sequence", 0)) + 1
-    previous_hash = str((previous or {}).get("event_hash") or "GENESIS")
-    document = {
-        "sequence": sequence,
-        "actor_id": actor.get("id"),
-        "actor_role": actor.get("role"),
-        "action": action,
-        "target_type": target_type,
-        "target_id": str(target_id or ""),
-        "reason": str(reason or "")[:1000],
-        "before": before or {},
-        "after": after or {},
-        "ip": request.headers.get("CF-Connecting-IP") or request.remote_addr,
-        "user_agent": request.headers.get("User-Agent", "")[:300],
-        "created_at": now_utc(),
-        "previous_hash": previous_hash,
-    }
-    canonical = json.dumps(document, sort_keys=True, default=str, separators=(",", ":"))
-    document["event_hash"] = hashlib.sha256((previous_hash + canonical).encode("utf-8")).hexdigest()
-    events.insert_one(document)
-    return document
+    state = db["support_audit_state"]
+    lock_token = secrets.token_hex(16)
+    now = now_utc()
+    locked = None
+    for _attempt in range(8):
+        try:
+            locked = state.find_one_and_update(
+                {"_id": "global", "$or": [{"locked_until": {"$lte": now_utc()}}, {"locked_until": {"$exists": False}}]},
+                {"$set": {"lock_token": lock_token, "locked_until": now_utc() + timedelta(seconds=10)}, "$setOnInsert": {"sequence": 0, "last_hash": "GENESIS"}},
+                upsert=True,
+                return_document=True,
+            )
+            if locked and locked.get("lock_token") == lock_token:
+                break
+            locked = None
+        except DuplicateKeyError:
+            locked = None
+        time.sleep(0.025)
+    if not locked:
+        raise RuntimeError("Could not acquire the Support audit append lock.")
+
+    try:
+        sequence = int(locked.get("sequence") or 0) + 1
+        previous_hash = str(locked.get("last_hash") or "GENESIS")
+        document = {
+            "sequence": sequence,
+            "actor_id": actor.get("id"),
+            "actor_role": actor.get("role"),
+            "action": action,
+            "target_type": target_type,
+            "target_id": str(target_id or ""),
+            "reason": str(reason or "")[:1000],
+            "before": before or {},
+            "after": after or {},
+            "ip": request.headers.get("CF-Connecting-IP") or request.remote_addr,
+            "user_agent": request.headers.get("User-Agent", "")[:300],
+            "created_at": now_utc(),
+            "previous_hash": previous_hash,
+        }
+        canonical = json.dumps(document, sort_keys=True, default=str, separators=(",", ":"))
+        document["event_hash"] = hashlib.sha256((previous_hash + canonical).encode("utf-8")).hexdigest()
+        events.insert_one(document)
+        state.update_one(
+            {"_id": "global", "lock_token": lock_token},
+            {"$set": {"sequence": sequence, "last_hash": document["event_hash"], "updated_at": now_utc()}, "$unset": {"lock_token": "", "locked_until": ""}},
+        )
+        return document
+    except Exception:
+        state.update_one({"_id": "global", "lock_token": lock_token}, {"$unset": {"lock_token": "", "locked_until": ""}})
+        raise
 
 
 def ensure_indexes():
