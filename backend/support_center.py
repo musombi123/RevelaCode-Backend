@@ -518,13 +518,15 @@ def member_role(member_id, actor):
         return jsonify(success=False, message="Only the Super Admin can change a Support Admin's role."), 403
     if role == "support_admin" and "super_admin" not in actor["roles"]:
         return jsonify(success=False, message="Only the Super Admin can assign Support Admin."), 403
-    if role == "support_admin":
-        active = get_db()["users"].count_documents({"role": "support_admin", "status": {"$nin": ["banned", "suspended", "deleted"]}, "is_active": {"$ne": False}})
-        pending = get_db()[INVITES].count_documents({"role": "support_admin", "status": "pending", "expires_at": {"$gt": now_utc()}})
-        if active + pending >= 3 and "support_admin" not in roles:
+    if role == "support_admin" and "support_admin" not in roles:
+        ensure_indexes()
+        seat = get_db()[SEATS].find_one_and_update({"status": "available"}, {"$set": {"status": "active", "member_id": _user_id(target), "invitation_id": None, "activated_at": now_utc()}}, sort=[("_id", 1)], return_document=True)
+        if not seat:
             return jsonify(success=False, code="support_admin_seat_limit", message="All three Support Admin seats are active or reserved."), 409
     before = {"role": target.get("role")}
     get_db()["users"].update_one(query, {"$set": {"role": role, "roles": [role], "updated_at": now_utc()}})
+    if role == "support_agent" and "support_admin" in roles:
+        get_db()[SEATS].update_one({"member_id": _user_id(target)}, {"$set": {"status": "available", "member_id": None, "invitation_id": None}})
     _audit(actor, "support.member.role_changed", "user", member_id, before=before, after={"role": role}, reason=reason)
     return jsonify(success=True), 200
 
@@ -739,7 +741,7 @@ def list_audit(actor):
 
 
 @support_center_bp.post("/payroll")
-@_require("support_admin", "super_admin")
+@_require("support_admin")
 def create_payroll(actor):
     data = request.get_json(silent=True) or {}
     member_id = str(data.get("member_id") or "").strip()
@@ -771,7 +773,7 @@ def create_payroll(actor):
 
 
 @support_center_bp.patch("/payroll/<record_id>")
-@_require("support_admin", "super_admin")
+@_require("support_admin")
 def update_payroll(record_id, actor):
     data = request.get_json(silent=True) or {}
     if not ObjectId.is_valid(record_id):
