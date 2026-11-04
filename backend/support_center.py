@@ -742,6 +742,36 @@ def add_ticket_note(ticket_id, actor):
     return jsonify(success=True), 201
 
 
+@support_center_bp.post("/accessibility/issues")
+@_require("support_agent", "support", "support_admin", "super_admin")
+def link_accessibility_issue(actor):
+    data = request.get_json(silent=True) or {}
+    issue_type = str(data.get("issue_type") or "").strip().lower()
+    ticket_id = str(data.get("ticket_id") or "").strip()
+    details = str(data.get("details") or "").strip()
+    allowed = {"cannot_login", "cannot_pay", "cannot_open_hub"}
+    if issue_type not in allowed or not ObjectId.is_valid(ticket_id):
+        return jsonify(success=False, message="Choose a supported accessibility issue and provide a valid ticket ID."), 422
+    if len(details) > 2000:
+        return jsonify(success=False, message="Issue details must be no longer than 2,000 characters."), 422
+    db = get_db()
+    ticket = db[TICKETS].find_one({"_id": ObjectId(ticket_id)})
+    if not ticket:
+        return jsonify(success=False, message="The ticket does not exist."), 404
+    row = {"issue_type": issue_type, "ticket_id": ticket_id, "ticket_number": ticket.get("ticket_number"), "details": details, "reported_by": actor["id"], "created_at": now_utc()}
+    inserted = db["support_accessibility_issues"].insert_one(row)
+    db[TICKETS].update_one({"_id": ticket["_id"]}, {"$set": {"accessibility_issue": issue_type, "updated_at": now_utc()}})
+    _audit(actor, "support.accessibility_issue.linked", "ticket", ticket_id, after={"issue_type": issue_type, "issue_id": str(inserted.inserted_id)})
+    return jsonify(success=True, issue_id=str(inserted.inserted_id), ticket_id=ticket_id), 201
+
+
+@support_center_bp.get("/accessibility/issues")
+@_require("support_agent", "support", "support_admin", "super_admin")
+def list_accessibility_issues(actor):
+    rows = get_db()["support_accessibility_issues"].find({}).sort("created_at", -1).limit(100)
+    return jsonify(success=True, issues=[{"id": str(x["_id"]), "issue_type": x.get("issue_type"), "ticket_id": x.get("ticket_id"), "ticket_number": x.get("ticket_number"), "details": x.get("details"), "created_at": x.get("created_at").isoformat() if hasattr(x.get("created_at"), "isoformat") else x.get("created_at")} for x in rows]), 200
+
+
 @support_center_bp.get("/audit")
 @_require("support_admin", "super_admin")
 def list_audit(actor):
@@ -899,7 +929,7 @@ def system_health(actor):
             checks["email"] = {"status": "unreachable"}
     else:
         checks["email"] = {"status": "not_configured"}
-    checks["sms_otp"] = {"status": "configured" if (os.getenv("AFRICASTALKING_API_KEY") or os.getenv("TWILIO_AUTH_TOKEN")) else "not_configured", "provider": "Africa's Talking" if os.getenv("AFRICASTALKING_API_KEY") else ("Twilio" if os.getenv("TWILIO_AUTH_TOKEN") else None)}
+    checks["sms_otp"] = {"status": "not_configured", "provider": None}
     try:
         from backend.revenue.mpesa import _access_token
         _access_token()
