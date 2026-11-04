@@ -424,7 +424,7 @@ def respond_to_role_change_invitation():
     token = str(data.get("token") or "").strip()
     email = str(data.get("email") or "").strip().lower()
     decision = str(data.get("decision") or "").strip().lower()
-    if len(token) < 32 or not re.fullmatch(r"[^@\\s]+@[^@\\s]+\\.[^@\\s]+", email):
+    if len(token) < 32 or not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email):
         return jsonify(success=False, code="invalid_invitation", message="The role-change invitation link is invalid."), 400
     if decision not in {"accept", "decline"}:
         return jsonify(success=False, code="invalid_decision", message="Choose accept or decline."), 422
