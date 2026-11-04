@@ -302,6 +302,24 @@ def create_invitation(actor):
     return jsonify(success=True, invitation={"id": str(inserted.inserted_id), "role": role, "status": "pending", "expires_at": expiry.isoformat()}), 201
 
 
+@support_center_bp.get("/invitations/preview")
+def preview_invitation():
+    token = str(request.args.get("token") or "").strip()
+    email = str(request.args.get("email") or "").strip().lower()
+    if len(token) < 32 or not re.fullmatch(r"[^@\\s]+@[^@\\s]+\\.[^@\\s]+", email):
+        return jsonify(success=False, code="invalid_invitation", message="The invitation link is incomplete."), 400
+    token_hash = hashlib.sha256(token.encode()).hexdigest()
+    invite = get_db()[INVITES].find_one({"token_hash": token_hash, "contact": email, "status": "pending"})
+    if not invite:
+        return jsonify(success=False, code="invitation_not_found", message="This invitation is invalid, expired, revoked or already used."), 404
+    expiry = invite.get("expires_at")
+    if not isinstance(expiry, datetime) or (expiry.replace(tzinfo=UTC) if expiry.tzinfo is None else expiry.astimezone(UTC)) <= now_utc():
+        get_db()[INVITES].update_one({"_id": invite["_id"], "status": "pending"}, {"$set": {"status": "expired"}})
+        _release_seat(invite["_id"])
+        return jsonify(success=False, code="invitation_expired", message="This invitation has expired. Ask the inviter to issue a new one."), 410
+    return jsonify(success=True, invitation={"full_name": invite.get("full_name") or "", "contact": email, "role": invite.get("role") or "", "expires_at": expiry.isoformat()}), 200
+
+
 @support_center_bp.post("/invitations/accept")
 def accept_invitation():
     data = request.get_json(silent=True) or {}
