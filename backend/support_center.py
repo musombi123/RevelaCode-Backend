@@ -890,14 +890,22 @@ def system_health(actor):
     except Exception:
         checks["database"] = {"status": "down"}
     checks["api"] = {"status": "up"}
-    checks["email"] = {"status": "configured" if os.getenv("RESEND_API_KEY") and (os.getenv("SUPPORT_EMAIL_FROM") or os.getenv("EMAIL_FROM")) else "not_configured"}
-    checks["sms_otp"] = {"status": "not_configured", "provider": None}
+    resend_key = str(os.getenv("RESEND_API_KEY") or "").strip()
+    if resend_key:
+        try:
+            email_response = requests.get("https://api.resend.com/domains", headers={"Authorization": f"Bearer {resend_key}"}, timeout=8)
+            checks["email"] = {"status": "connected" if email_response.status_code == 200 else "provider_error"}
+        except requests.RequestException:
+            checks["email"] = {"status": "unreachable"}
+    else:
+        checks["email"] = {"status": "not_configured"}
+    checks["sms_otp"] = {"status": "configured" if (os.getenv("AFRICASTALKING_API_KEY") or os.getenv("TWILIO_AUTH_TOKEN")) else "not_configured", "provider": "Africa's Talking" if os.getenv("AFRICASTALKING_API_KEY") else ("Twilio" if os.getenv("TWILIO_AUTH_TOKEN") else None)}
     try:
-        from backend.revenue.mpesa import checkout_configuration_status
-        readiness = checkout_configuration_status()
-        checks["daraja"] = {"status": "configured" if readiness.get("configured") or readiness.get("ready") else "not_ready"}
+        from backend.revenue.mpesa import _access_token
+        _access_token()
+        checks["daraja"] = {"status": "authenticated"}
     except Exception:
-        checks["daraja"] = {"status": "unavailable"}
+        checks["daraja"] = {"status": "authentication_failed"}
     checks["versions"] = {"web": os.getenv("WEB_APP_VERSION", "not_reported"), "android": os.getenv("ANDROID_APP_VERSION", "not_reported")}
     return jsonify(success=True, checks=checks), 200
 
