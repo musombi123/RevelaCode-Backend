@@ -72,7 +72,9 @@ def google_config_status():
             "redirect_uri_present": bool(redirect_uri),
             "redirect_uri": redirect_uri or None,
             "required_redirect_uri": "https://revelacode-backend.onrender.com/api/oauth/google/callback",
-            "note": "A valid-looking Client ID may still be deleted, disabled or belong to another Google Cloud project. Confirm the client exists in Google Cloud Console.",
+            "android_return_uri": str(os.getenv("GOOGLE_ANDROID_RETURN_URI") or "").strip().strip("\"'") or None,
+            "android_return_uri_valid": str(os.getenv("GOOGLE_ANDROID_RETURN_URI") or "").strip().strip("\"'") == "https://revelacode.co.ke/oauth/android-callback",
+            "note": "A valid-looking Client ID may still be deleted, disabled or belong to another Google Cloud project. Confirm the client exists in Google Cloud Console. Android uses the same backend Web OAuth client and a verified HTTPS App Link return.",
         },
     ), 200
 
@@ -83,9 +85,18 @@ def _frontend_base():
 
 def _return_uri(client):
     if client == "android":
-        value = str(os.getenv("GOOGLE_ANDROID_RETURN_URI") or "").strip()
-        if not value.startswith("com.revelacode.app://"):
-            raise RuntimeError("GOOGLE_ANDROID_RETURN_URI must be the registered RevelaCode Android deep link.")
+        value = str(os.getenv("GOOGLE_ANDROID_RETURN_URI") or "").strip().strip("\"'").strip()
+        allowed_return_uris = {
+            "https://revelacode.co.ke/oauth/android-callback",
+            # Legacy fallback for already-configured test builds. Production
+            # should use the verified HTTPS Android App Link above.
+            "com.revelacode.app://oauth/callback",
+        }
+        if value not in allowed_return_uris:
+            raise RuntimeError(
+                "GOOGLE_ANDROID_RETURN_URI must be https://revelacode.co.ke/oauth/android-callback "
+                "for the verified RevelaCode Android App Link."
+            )
         return value
     return _frontend_base() + "/oauth/callback"
 
