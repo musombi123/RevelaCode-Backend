@@ -26,7 +26,8 @@ def send_admin_invitation_email(*, recipient: str, full_name: str, role: str, to
         raise ValueError("A valid single-use invitation token is required.")
 
     api_key = str(os.getenv("RESEND_API_KEY") or "").strip()
-    sender = str(os.getenv("SUPPORT_EMAIL_FROM") or os.getenv("EMAIL_FROM") or "").strip()
+    support_email = str(os.getenv("SUPPORT_EMAIL") or "support@revelacode.co.ke").strip().lower()
+    sender = f"RevelaCode Support <{support_email}>"
     frontend_url = str(
         os.getenv("FRONTEND_URL")
         or os.getenv("REVELACODE_FRONTEND_URL")
@@ -57,6 +58,7 @@ def send_admin_invitation_email(*, recipient: str, full_name: str, role: str, to
     response = resend.Emails.send({
         "from": sender,
         "to": [recipient],
+        "reply_to": support_email,
         "subject": f"Invitation to join the RevelaCode {label} team",
         "html": f"""<!doctype html>
 <html lang="en"><body style="margin:0;padding:24px;background:#f1f5f9;font-family:Arial,Helvetica,sans-serif;color:#0f172a">
