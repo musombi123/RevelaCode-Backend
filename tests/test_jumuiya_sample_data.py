@@ -217,3 +217,32 @@ def test_admin_can_restore_sample_records_without_touching_live_hub_data(admin_s
     assert called["seeded"] is True
     assert called["admin_id"] == "6a3eba8277b5d149effbafc0"
     assert response.get_json()["data"]["total"] == len(sample_fixtures())
+
+
+def test_platform_admin_can_invite_ordinary_staff_to_an_explicit_school(admin_samples_client, monkeypatch):
+    client, _fake = admin_samples_client
+    called = {}
+    monkeypatch.setattr(
+        platform_admin_routes,
+        "invite_staff_for_platform_admin",
+        lambda admin_id, school_id, payload: called.update({
+            "admin_id": admin_id, "school_id": school_id, "payload": payload,
+        }) or {"email_sent": True, "school_id": school_id},
+    )
+    response = client.post(
+        "/api/jumuiya/admin/schools/school-123/staff-invitations",
+        headers={"Authorization": "Bearer test-platform-admin"},
+        json={"email": "teacher@example.com", "role": "teacher"},
+    )
+    assert response.status_code == 200
+    assert called["admin_id"] == "6a3eba8277b5d149effbafc0"
+    assert called["school_id"] == "school-123"
+    assert called["payload"]["email"] == "teacher@example.com"
+    assert response.get_json()["data"]["email_sent"] is True
+
+    member = client.post(
+        "/api/jumuiya/admin/schools/school-123/staff-invitations",
+        headers={"Authorization": "Bearer test-member"},
+        json={"email": "teacher@example.com", "role": "teacher"},
+    )
+    assert member.status_code == 403
