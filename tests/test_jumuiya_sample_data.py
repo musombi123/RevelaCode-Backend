@@ -50,13 +50,22 @@ class FakeCollection:
         is_new = sample_id not in self.documents
         document = dict(update.get("$setOnInsert", {}))
         document.update(deepcopy(update.get("$set", {})))
+        for key, value in update.get("$addToSet", {}).items():
+            document.setdefault(key, [])
+            if value not in document[key]:
+                document[key].append(value)
         self.documents[sample_id] = document
         return FakeUpdateResult(inserted=is_new, modified=not is_new)
 
     def count_documents(self, query):
         return sum(
             1 for document in self.documents.values()
-            if all(document.get(key) == value for key, value in query.items())
+            if all(
+                value in document.get(key, [])
+                if isinstance(document.get(key), list) and not isinstance(value, dict)
+                else document.get(key) == value
+                for key, value in query.items()
+            )
         )
 
     def find(self, query, _projection=None):
@@ -91,8 +100,9 @@ def test_seed_is_idempotent_and_writes_only_the_admin_sample_collection(monkeypa
         lambda name: requested_collections.append(name) or fake,
     )
 
-    first = seed_sample_records()
-    second = seed_sample_records()
+    admin_id = "6a3eba8277b5d149effbafc0"
+    first = seed_sample_records(admin_id)
+    second = seed_sample_records(admin_id)
 
     assert requested_collections == [SAMPLE_COLLECTION, SAMPLE_COLLECTION]
     assert first["inserted"] == len(sample_fixtures())
@@ -103,6 +113,9 @@ def test_seed_is_idempotent_and_writes_only_the_admin_sample_collection(monkeypa
     assert all(document["is_sample"] is True for document in fake.documents.values())
     assert all(document["seed_managed"] is True for document in fake.documents.values())
     assert all("owner_user_id" not in document for document in fake.documents.values())
+    assert all(admin_id in document["visible_to_admin_user_ids"] for document in fake.documents.values())
+    assert second["admin_user_id"] == admin_id
+    assert second["visibility"] == "admin-scoped"
     assert second["counts_by_hub"]["community"] >= 5
 
 
@@ -120,7 +133,7 @@ def admin_samples_client(monkeypatch):
     def set_test_identity():
         token = request.headers.get("Authorization", "")
         if token == "Bearer test-platform-admin":
-            g.jumuiya_user = {"id": "admin-test", "roles": ["revelacode_admin"]}
+            g.jumuiya_user = {"id": "6a3eba8277b5d149effbafc0", "roles": ["revelacode_admin"]}
         elif token == "Bearer test-member":
             g.jumuiya_user = {"id": "member-test", "roles": ["user"]}
 
@@ -131,6 +144,7 @@ def admin_samples_client(monkeypatch):
             "is_sample": True,
             "seed_managed": True,
             "sample_label": "SAMPLE DATA — NOT A LIVE CUSTOMER RECORD",
+            "visible_to_admin_user_ids": ["6a3eba8277b5d149effbafc0"],
         }
     monkeypatch.setattr(platform_admin_routes, "collection", lambda _name: fake)
     return app.test_client(), fake
@@ -158,6 +172,7 @@ def test_admin_can_filter_community_center_sample_records(admin_samples_client):
     assert response.status_code == 200
     payload = response.get_json()["data"]
     assert payload["sample_only"] is True
+    assert all("6a3eba8277b5d149effbafc0" in item["visible_to_admin_user_ids"] for item in payload["items"])
     assert payload["live_tenant_collections_modified"] is False
     assert payload["filtered_count"] >= 5
     assert all(item["hub"] == "community" for item in payload["items"])
@@ -170,10 +185,11 @@ def test_admin_can_restore_sample_records_without_touching_live_hub_data(admin_s
     monkeypatch.setattr(
         platform_admin_routes,
         "seed_sample_records",
-        lambda: called.update({"seeded": True}) or {
+        lambda admin_id: called.update({"seeded": True, "admin_id": admin_id}) or {
             "inserted": 0,
             "updated": len(sample_fixtures()),
             "total": len(sample_fixtures()),
+            "admin_user_id": admin_id,
         },
     )
 
@@ -184,4 +200,5 @@ def test_admin_can_restore_sample_records_without_touching_live_hub_data(admin_s
 
     assert response.status_code == 200
     assert called["seeded"] is True
+    assert called["admin_id"] == "6a3eba8277b5d149effbafc0"
     assert response.get_json()["data"]["total"] == len(sample_fixtures())
