@@ -257,6 +257,8 @@ def _safe_invite(row):
         "name": row.get("full_name") or "",
         "email": _mask_email(row.get("contact")),
         "role": row.get("role") or "",
+        "invitation_type": row.get("invitation_type") or "new_account",
+        "current_role": row.get("current_role") or "",
         "status": row.get("status") or "unknown",
         "created_at": row.get("created_at").isoformat() if hasattr(row.get("created_at"), "isoformat") else row.get("created_at"),
         "expires_at": row.get("expires_at").isoformat() if hasattr(row.get("expires_at"), "isoformat") else row.get("expires_at"),
@@ -308,8 +310,26 @@ def create_invitation(actor):
 
     db = get_db()
     existing = db["users"].find_one({"$or": [{"email": {"$regex": "^" + re.escape(email) + "$", "$options": "i"}}, {"contact": {"$regex": "^" + re.escape(email) + "$", "$options": "i"}}]})
+    invitation_type = "new_account"
+    target_user_id = None
+    current_role = None
     if existing:
-        return jsonify(success=False, code="account_already_exists", message="This email already belongs to an account. Sign in to that account or use the account-linking flow; do not create a duplicate."), 409
+        existing_roles = _user_roles(existing)
+        if "super_admin" in existing_roles:
+            return jsonify(success=False, code="protected_owner_account", message="The platform owner account cannot be converted through a staff invitation."), 403
+        if existing.get("verified") is not True and existing.get("is_verified") is not True:
+            return jsonify(success=False, code="existing_account_unverified", message="This account must verify its email before a support-role request can be sent."), 409
+        if existing.get("is_active") is False or str(existing.get("status") or "active").casefold() != "active":
+            return jsonify(success=False, code="existing_account_inactive", message="This account is not active. Restore it before requesting a support-role change."), 409
+        if role == "support_agent" and ({"support_agent", "support"} & existing_roles):
+            return jsonify(success=False, code="role_already_assigned", message="This account already has Support Agent access."), 409
+        if role == "support_admin" and "support_admin" in existing_roles:
+            return jsonify(success=False, code="role_already_assigned", message="This account already has Support Administrator access."), 409
+        if "support_admin" in existing_roles and "super_admin" not in actor["roles"]:
+            return jsonify(success=False, code="super_admin_required", message="Only the Super Admin can request a role change for an existing Support Administrator."), 403
+        invitation_type = "role_change"
+        target_user_id = _user_id(existing)
+        current_role = str(existing.get("role") or "user").strip().lower()
 
     now = now_utc()
     expiry = now + timedelta(hours=48)
@@ -324,6 +344,9 @@ def create_invitation(actor):
         "full_name": name,
         "contact": email,
         "role": role,
+        "invitation_type": invitation_type,
+        "target_user_id": target_user_id,
+        "current_role": current_role,
         "token_hash": hashlib.sha256(token.encode()).hexdigest(),
         "status": "pending",
         "invited_by": actor["id"],
@@ -339,7 +362,15 @@ def create_invitation(actor):
             db[INVITES].update_one({"_id": inserted.inserted_id}, {"$set": {"status": "seat_limit_reached"}})
             return jsonify(success=False, code="support_admin_seat_limit", message="All three Support Admin seats are active or reserved."), 409
     try:
-        send_admin_invitation_email(recipient=email, full_name=name, role=("support" if role == "support_agent" else role), token=token, expires_at=expiry)
+        send_admin_invitation_email(
+            recipient=email,
+            full_name=name,
+            role=("support" if role == "support_agent" else role),
+            token=token,
+            expires_at=expiry,
+            existing_account=(invitation_type == "role_change"),
+            current_role=current_role,
+        )
     except Exception:
         db[INVITES].update_one({"_id": inserted.inserted_id}, {"$set": {"status": "delivery_failed", "delivery_status": "failed", "updated_at": now_utc()}})
         if role == "support_admin":
@@ -348,7 +379,12 @@ def create_invitation(actor):
         return jsonify(success=False, code="invitation_email_failed", message="The invitation was saved but Resend did not accept the email. Check the backend sender configuration."), 502
     db[INVITES].update_one({"_id": inserted.inserted_id}, {"$set": {"delivery_status": "accepted_by_provider", "updated_at": now_utc()}})
     _audit(actor, "support.invitation.created", "invitation", inserted.inserted_id, after={"role": role, "expires_at": expiry.isoformat()})
-    return jsonify(success=True, invitation={"id": str(inserted.inserted_id), "role": role, "status": "pending", "expires_at": expiry.isoformat()}), 201
+    message = (
+        "A role-change request was emailed to the existing account. Its current access will remain unchanged unless the account holder accepts."
+        if invitation_type == "role_change"
+        else "Invitation created. The recipient can create an account and choose their password."
+    )
+    return jsonify(success=True, message=message, invitation={"id": str(inserted.inserted_id), "role": role, "invitation_type": invitation_type, "status": "pending", "expires_at": expiry.isoformat()}), 201
 
 
 @support_center_bp.get("/invitations/preview")
@@ -366,7 +402,150 @@ def preview_invitation():
         get_db()[INVITES].update_one({"_id": invite["_id"], "status": "pending"}, {"$set": {"status": "expired"}})
         _release_seat(invite["_id"])
         return jsonify(success=False, code="invitation_expired", message="This invitation has expired. Ask the inviter to issue a new one."), 410
-    return jsonify(success=True, invitation={"full_name": invite.get("full_name") or "", "contact": email, "role": invite.get("role") or "", "expires_at": expiry.isoformat()}), 200
+    return jsonify(success=True, invitation={
+        "full_name": invite.get("full_name") or "",
+        "contact": email,
+        "role": invite.get("role") or "",
+        "invitation_type": invite.get("invitation_type") or "new_account",
+        "current_role": invite.get("current_role") or "",
+        "expires_at": expiry.isoformat(),
+    }), 200
+
+
+@support_center_bp.post("/invitations/respond")
+def respond_to_role_change_invitation():
+    """Accept or decline a role-change request sent to an existing verified account.
+
+    Possession of the single-use, short-lived email token is the confirmation
+    step. The stored account ID and verified email are rechecked before any
+    role update; no duplicate account is created and a GET never changes roles.
+    """
+    data = request.get_json(silent=True) or {}
+    token = str(data.get("token") or "").strip()
+    email = str(data.get("email") or "").strip().lower()
+    decision = str(data.get("decision") or "").strip().lower()
+    if len(token) < 32 or not re.fullmatch(r"[^@\\s]+@[^@\\s]+\\.[^@\\s]+", email):
+        return jsonify(success=False, code="invalid_invitation", message="The role-change invitation link is invalid."), 400
+    if decision not in {"accept", "decline"}:
+        return jsonify(success=False, code="invalid_decision", message="Choose accept or decline."), 422
+
+    db = get_db()
+    token_hash = hashlib.sha256(token.encode()).hexdigest()
+    invite = db[INVITES].find_one({
+        "token_hash": token_hash,
+        "contact": email,
+        "status": "pending",
+        "invitation_type": "role_change",
+    })
+    if not invite:
+        return jsonify(success=False, code="invitation_invalid_or_used", message="This role-change request is invalid, expired, revoked or already answered."), 404
+
+    expiry = invite.get("expires_at")
+    if not isinstance(expiry, datetime) or (expiry.replace(tzinfo=UTC) if expiry.tzinfo is None else expiry.astimezone(UTC)) <= now_utc():
+        db[INVITES].update_one({"_id": invite["_id"], "status": "pending"}, {"$set": {"status": "expired", "updated_at": now_utc()}})
+        _release_seat(invite["_id"])
+        return jsonify(success=False, code="invitation_expired", message="This role-change request has expired. Ask the administrator to send a new request."), 410
+
+    target_id = str(invite.get("target_user_id") or "").strip()
+    target_query = _id_query(target_id)
+    target = db["users"].find_one(target_query or {})
+    if not target or _user_id(target) != target_id:
+        return jsonify(success=False, code="target_account_missing", message="The original account no longer exists. The administrator must issue a new invitation."), 409
+
+    stored_email = str(target.get("email") or target.get("contact") or "").strip().lower()
+    if stored_email != email or (target.get("verified") is not True and target.get("is_verified") is not True):
+        return jsonify(success=False, code="account_identity_mismatch", message="The invitation does not match this account's verified email address."), 403
+    if target.get("is_active") is False or str(target.get("status") or "active").casefold() != "active":
+        return jsonify(success=False, code="existing_account_inactive", message="This account is not active. Contact RevelaCode Support."), 409
+
+    desired_role = str(invite.get("role") or "").strip().lower()
+    if desired_role not in {"support_agent", "support_admin"}:
+        return jsonify(success=False, code="invalid_invitation_role", message="This invitation does not contain a valid support role."), 409
+    current_roles = _user_roles(target)
+    if "super_admin" in current_roles:
+        return jsonify(success=False, code="protected_owner_account", message="The platform owner role cannot be changed through a staff invitation."), 403
+
+    if decision == "decline":
+        result = db[INVITES].update_one(
+            {"_id": invite["_id"], "status": "pending", "expires_at": {"$gt": now_utc()}},
+            {"$set": {"status": "declined", "declined_at": now_utc(), "decision": "declined", "updated_at": now_utc()}},
+        )
+        if result.modified_count != 1:
+            return jsonify(success=False, code="invitation_already_answered", message="This role-change request has already been answered."), 409
+        _release_seat(invite["_id"])
+        _audit({"id": target_id, "role": target.get("role") or "user"}, "support.invitation.role_change.declined", "user", target_id, before={"role": target.get("role") or "user"}, after={"role_unchanged": True}, reason="Invitee declined the role-change request.")
+        _send_status_notice(email, "RevelaCode role-change request declined", "You declined the request to change your RevelaCode role. Your existing account and permissions remain unchanged.")
+        return jsonify(success=True, decision="declined", message="You declined the role change. Your existing account and permissions have not changed."), 200
+
+    if desired_role == "support_agent" and ({"support_agent", "support"} & current_roles):
+        return jsonify(success=False, code="role_already_assigned", message="This account already has Support Agent access."), 409
+    if desired_role == "support_admin" and "support_admin" in current_roles:
+        return jsonify(success=False, code="role_already_assigned", message="This account already has Support Administrator access."), 409
+
+    if desired_role == "support_admin":
+        reserved_seat = db[SEATS].find_one({"invitation_id": str(invite["_id"]), "status": "reserved"})
+        if not reserved_seat:
+            return jsonify(success=False, code="support_admin_seat_reservation_missing", message="The Support Administrator seat reservation has expired. Ask the administrator to resend the request."), 409
+
+    claim = db[INVITES].update_one(
+        {"_id": invite["_id"], "status": "pending", "expires_at": {"$gt": now_utc()}},
+        {"$set": {"status": "accepting_role_change", "accepted_attempt_at": now_utc()}},
+    )
+    if claim.modified_count != 1:
+        return jsonify(success=False, code="invitation_already_answered", message="This role-change request has already been answered."), 409
+
+    # Re-read after claiming the invitation to avoid overwriting a concurrent
+    # account status or role update.
+    target = db["users"].find_one({"_id": target["_id"]})
+    latest_roles = _user_roles(target or {})
+    latest_email = str((target or {}).get("email") or (target or {}).get("contact") or "").strip().lower()
+    if (
+        not target
+        or latest_email != email
+        or (target.get("verified") is not True and target.get("is_verified") is not True)
+        or target.get("is_active") is False
+        or str(target.get("status") or "active").casefold() != "active"
+        or "super_admin" in latest_roles
+    ):
+        db[INVITES].update_one({"_id": invite["_id"], "status": "accepting_role_change"}, {"$set": {"status": "pending"}, "$unset": {"accepted_attempt_at": ""}})
+        return jsonify(success=False, code="account_changed", message="The account changed while this request was being processed. No role change was made."), 409
+
+    raw_roles = target.get("roles") if isinstance(target.get("roles"), list) else []
+    preserved_roles = []
+    for item in [*raw_roles, target.get("role")]:
+        label = str(item or "").strip().lower()
+        if label and label not in {"support_admin", "support_agent", "support"} and label not in preserved_roles:
+            preserved_roles.append(label)
+    new_roles = list(dict.fromkeys([*preserved_roles, desired_role]))
+    previous_role = str(target.get("role") or "user")
+    now = now_utc()
+    update = db["users"].update_one(
+        {"_id": target["_id"], "status": {"$nin": ["banned", "suspended", "deleted", "disabled"]}},
+        {"$set": {"role": desired_role, "roles": new_roles, "updated_at": now, "support_role_accepted_at": now}, "$inc": {"token_version": 1}},
+    )
+    if update.modified_count != 1:
+        db[INVITES].update_one({"_id": invite["_id"], "status": "accepting_role_change"}, {"$set": {"status": "pending"}, "$unset": {"accepted_attempt_at": ""}})
+        return jsonify(success=False, code="account_changed", message="The account could not be safely updated. No invitation was consumed."), 409
+
+    uid = _user_id(target)
+    if desired_role == "support_admin":
+        db[SEATS].update_one(
+            {"invitation_id": str(invite["_id"]), "status": "reserved"},
+            {"$set": {"status": "active", "member_id": uid, "activated_at": now, "invitation_id": None}},
+        )
+    elif "support_admin" in latest_roles:
+        db[SEATS].update_one(
+            {"member_id": uid, "status": "active"},
+            {"$set": {"status": "available", "member_id": None, "invitation_id": None}},
+        )
+
+    db[INVITES].update_one(
+        {"_id": invite["_id"], "status": "accepting_role_change"},
+        {"$set": {"status": "accepted", "decision": "accepted", "accepted_at": now, "accepted_user_id": uid, "updated_at": now}},
+    )
+    _audit({"id": uid, "role": desired_role}, "support.invitation.role_change.accepted", "user", uid, before={"role": previous_role}, after={"role": desired_role, "token_version_incremented": True}, reason="Invitee accepted the emailed role-change request.")
+    _send_status_notice(email, "Your RevelaCode role has been updated", f"You accepted the request. Your account role is now {desired_role.replace('_', ' ')}. Sign in again to refresh your account permissions.")
+    return jsonify(success=True, decision="accepted", role=desired_role, message=f"You accepted the role change. Your account is now assigned {desired_role.replace('_', ' ')}. Sign in again to refresh your permissions."), 200
 
 
 @support_center_bp.post("/invitations/accept")
@@ -385,6 +564,8 @@ def accept_invitation():
     invite = db[INVITES].find_one({"token_hash": token_hash, "contact": email, "status": "pending"})
     if not invite:
         return jsonify(success=False, code="invitation_invalid_or_used", message="The invitation is invalid, expired, revoked or already used."), 404
+    if invite.get("invitation_type") == "role_change":
+        return jsonify(success=False, code="role_change_response_required", message="This invitation belongs to an existing account. Use Accept role change or Decline; a new password is not required."), 409
     expires = invite.get("expires_at")
     if not isinstance(expires, datetime) or (expires.replace(tzinfo=UTC) if expires.tzinfo is None else expires.astimezone(UTC)) <= now_utc():
         db[INVITES].update_one({"_id": invite["_id"], "status": "pending"}, {"$set": {"status": "expired"}})
@@ -459,7 +640,15 @@ def resend_invitation(invitation_id, actor):
     expiry = now_utc() + timedelta(hours=48)
     db[INVITES].update_one({"_id": row["_id"], "status": {"$in": ["pending", "delivery_failed"]}}, {"$set": {"status": "pending", "token_hash": hashlib.sha256(token.encode()).hexdigest(), "expires_at": expiry, "updated_at": now_utc(), "delivery_status": "pending"}})
     try:
-        send_admin_invitation_email(recipient=row["contact"], full_name=row.get("full_name") or "", role=("support" if role in {"support_agent", "support"} else role), token=token, expires_at=expiry)
+        send_admin_invitation_email(
+            recipient=row["contact"],
+            full_name=row.get("full_name") or "",
+            role=("support" if role in {"support_agent", "support"} else role),
+            token=token,
+            expires_at=expiry,
+            existing_account=(row.get("invitation_type") == "role_change"),
+            current_role=row.get("current_role") or "",
+        )
     except Exception:
         db[INVITES].update_one({"_id": row["_id"]}, {"$set": {"delivery_status": "failed"}})
         _audit(actor, "support.invitation.resend_failed", "invitation", invitation_id, after={"role": role})
