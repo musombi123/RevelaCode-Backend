@@ -868,10 +868,13 @@ def decide_approval(request_id, actor):
 @support_center_bp.get("/tickets")
 @_require("support_agent", "support", "support_admin", "super_admin")
 def list_tickets(actor):
-    status = str(request.args.get("status") or "").strip()
-    page = max(1, min(10000, int(request.args.get("page", "1"))))
-    limit = max(1, min(100, int(request.args.get("limit", "25"))))
-    query = {"status": status} if status else {}
+    status = str(request.args.get("status") or "").strip().lower()
+    try:
+        page = max(1, min(10000, int(request.args.get("page", "1"))))
+        limit = max(1, min(100, int(request.args.get("limit", "25"))))
+    except (TypeError, ValueError):
+        return jsonify(success=False, message="Page and limit must be numeric."), 400
+    query = {"status": "resolved" if status == "solved" else status} if status else {}
     if "support_agent" in actor["roles"] or "support" in actor["roles"]:
         query["$or"] = [{"assigned_to_user_id": actor["id"]}, {"assigned_to": actor["id"]}, {"assigned_to": {"$in": [None, "", "support"]}}]
     rows = get_db()[TICKETS]
