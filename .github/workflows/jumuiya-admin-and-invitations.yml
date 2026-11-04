@@ -6,6 +6,7 @@ on:
     paths:
       - "backend/jumuiya/sample_data.py"
       - "backend/jumuiya/platform_admin_routes.py"
+      - "backend/jumuiya/integration/register.py"
       - "backend/jumuiya/biashara/contracts.py"
       - "backend/jumuiya/elimu/staff/services.py"
       - "backend/tests/test_staff_invitation_delivery.py"
@@ -17,6 +18,7 @@ on:
     paths:
       - "backend/jumuiya/sample_data.py"
       - "backend/jumuiya/platform_admin_routes.py"
+      - "backend/jumuiya/integration/register.py"
       - "backend/jumuiya/biashara/contracts.py"
       - "backend/jumuiya/elimu/staff/services.py"
       - "backend/tests/test_staff_invitation_delivery.py"
@@ -39,7 +41,7 @@ jobs:
       - name: Install focused backend test dependencies
         run: python -m pip install Flask pymongo pytest python-dotenv
       - name: Compile modified Jumuiya modules
-        run: python -m py_compile backend/jumuiya/sample_data.py backend/jumuiya/platform_admin_routes.py backend/jumuiya/biashara/contracts.py backend/jumuiya/elimu/staff/services.py
+        run: python -m py_compile backend/jumuiya/sample_data.py backend/jumuiya/platform_admin_routes.py backend/jumuiya/integration/register.py backend/jumuiya/biashara/contracts.py backend/jumuiya/elimu/staff/services.py
       - name: Test scoped samples and staff invitation safeguards
         env:
           PYTHONPATH: .
