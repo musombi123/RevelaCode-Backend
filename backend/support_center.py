@@ -306,7 +306,7 @@ def create_invitation(actor):
 def preview_invitation():
     token = str(request.args.get("token") or "").strip()
     email = str(request.args.get("email") or "").strip().lower()
-    if len(token) < 32 or not re.fullmatch(r"[^@\\s]+@[^@\\s]+\\.[^@\\s]+", email):
+    if len(token) < 32 or not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email):
         return jsonify(success=False, code="invalid_invitation", message="The invitation link is incomplete."), 400
     token_hash = hashlib.sha256(token.encode()).hexdigest()
     invite = get_db()[INVITES].find_one({"token_hash": token_hash, "contact": email, "status": "pending"})
