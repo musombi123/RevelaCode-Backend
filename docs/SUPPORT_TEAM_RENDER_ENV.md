@@ -25,7 +25,7 @@ the backend `users` collection. The migration does not create an account.
 | `GOOGLE_WEB_CLIENT_ID` | Create a Google OAuth **Web application** client and paste its Client ID | Web OAuth client |
 | `GOOGLE_WEB_CLIENT_SECRET` | Paste the matching Google OAuth Client Secret | Server-side code exchange; secret |
 | `GOOGLE_OAUTH_REDIRECT_URI` | `https://revelacode-backend.onrender.com/api/oauth/google/callback` | Must exactly match the redirect URI registered in Google Cloud |
-| `GOOGLE_ANDROID_RETURN_URI` | `com.revelacode.app://oauth/callback` | Reserved for the future native Android OAuth return flow; native sign-in still needs Android browser/intent integration |
+| `GOOGLE_ANDROID_RETURN_URI` | `https://revelacode.co.ke/oauth/android-callback` | Verified HTTPS Android App Link return URI; domain association requires `/.well-known/assetlinks.json` and the APK signing certificate SHA-256 |
 | `FRONTEND_URL` | `https://revelacode.co.ke` | Canonical frontend origin |
 | `WEB_APP_VERSION` | Set to the deployed web release label | Shown in Support Center System Health |
 | `ANDROID_APP_VERSION` | Set to the published APK version label | Shown in Support Center System Health |
