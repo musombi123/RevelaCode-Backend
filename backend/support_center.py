@@ -830,6 +830,56 @@ def list_payroll(actor):
     } for x in rows]), 200
 
 
+@support_center_bp.get("/payroll/export.csv")
+@_require("support_admin", "super_admin")
+def export_payroll_csv(actor):
+    import csv
+    import io
+    month = str(request.args.get("month") or now_utc().strftime("%Y-%m"))
+    if not re.fullmatch(r"\\d{4}-\\d{2}", month):
+        return jsonify(success=False, message="Month must use YYYY-MM format."), 422
+    start = datetime.fromisoformat(month + "-01").replace(tzinfo=UTC)
+    end = (start.replace(day=28) + timedelta(days=4)).replace(day=1)
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["Member", "Period start", "Period end", "Rate KES", "Tasks", "Bonus KES", "Bonus reason", "Deduction KES", "Deduction reason", "Status", "Payment method", "Payment reference"])
+    for row in get_db()[PAYROLL].find({"period_start": {"$gte": start, "$lt": end}}).sort("period_start", 1):
+        writer.writerow([row.get("member_name"), row.get("period_start"), row.get("period_end"), row.get("rate"), row.get("tasks_count"), row.get("bonus"), row.get("bonus_reason"), row.get("deduction"), row.get("deduction_reason"), row.get("status"), row.get("payment_method"), row.get("payment_reference")])
+    response = current_app.response_class(output.getvalue(), mimetype="text/csv")
+    response.headers["Content-Disposition"] = f'attachment; filename="revelacode-support-payroll-{month}.csv"'
+    return response
+
+
+@support_center_bp.get("/payroll/export.pdf")
+@_require("support_admin", "super_admin")
+def export_payroll_pdf(actor):
+    from io import BytesIO
+    from reportlab.lib import colors
+    from reportlab.lib.pagesizes import A4, landscape
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+    from reportlab.lib.styles import getSampleStyleSheet
+    month = str(request.args.get("month") or now_utc().strftime("%Y-%m"))
+    if not re.fullmatch(r"\\d{4}-\\d{2}", month):
+        return jsonify(success=False, message="Month must use YYYY-MM format."), 422
+    start = datetime.fromisoformat(month + "-01").replace(tzinfo=UTC)
+    end = (start.replace(day=28) + timedelta(days=4)).replace(day=1)
+    buffer = BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=landscape(A4), title=f"Support payroll {month}")
+    styles = getSampleStyleSheet()
+    story = [Paragraph(f"RevelaCode Support Payroll — {month}", styles["Title"]), Spacer(1, 12)]
+    rows = [["Member", "Period", "Rate", "Tasks", "Bonus", "Deduction", "Status", "Reference"]]
+    for row in get_db()[PAYROLL].find({"period_start": {"$gte": start, "$lt": end}}).sort("period_start", 1):
+        period = f"{row.get('period_start', '')} to {row.get('period_end', '')}"
+        rows.append([str(row.get("member_name") or "")[:32], period[:35], str(row.get("rate", "")), str(row.get("tasks_count", "")), str(row.get("bonus", 0)), str(row.get("deduction", 0)), str(row.get("status", "")), str(row.get("payment_reference") or "")[:24]])
+    table = Table(rows, repeatRows=1)
+    table.setStyle(TableStyle([("BACKGROUND", (0,0), (-1,0), colors.HexColor("#0f172a")), ("TEXTCOLOR", (0,0), (-1,0), colors.white), ("GRID", (0,0), (-1,-1), 0.35, colors.HexColor("#cbd5e1")), ("FONTSIZE", (0,0), (-1,-1), 8), ("VALIGN", (0,0), (-1,-1), "MIDDLE"), ("ROWBACKGROUNDS", (0,1), (-1,-1), [colors.white, colors.HexColor("#f8fafc")])]))
+    story.append(table)
+    doc.build(story)
+    response = current_app.response_class(buffer.getvalue(), mimetype="application/pdf")
+    response.headers["Content-Disposition"] = f'attachment; filename="revelacode-support-payroll-{month}.pdf"'
+    return response
+
+
 @support_center_bp.get("/health")
 @_require("support_agent", "support", "support_admin", "super_admin")
 def system_health(actor):
