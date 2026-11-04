@@ -20,6 +20,7 @@ from backend.jumuiya.core.permissions import (
 )
 from backend.jumuiya.core.responses import ok
 from backend.jumuiya.biashara import verification as biashara_verification
+from backend.jumuiya.sample_data import HUB_LABELS, seed_sample_records
 
 
 # =========================================================
@@ -744,4 +745,64 @@ def list_all_schools():
         page=page,
         limit=limit,
         resource_name="schools",
+    )
+
+
+# =========================================================
+# CROSS-HUB ADMIN SAMPLE DATA — ISOLATED FROM LIVE TENANTS
+# =========================================================
+
+SAMPLE_RECORDS_COLLECTION = "jumuiya_admin_sample_records"
+
+
+@platform_admin_bp.get("/sample-records")
+@required_roles
+def list_sample_records():
+    """Return fictional, admin-only sample fixtures across every Jumuiya area."""
+    hub = (request.args.get("hub", "all") or "all").strip().lower()
+    if hub not in {"all", *HUB_LABELS.keys()}:
+        raise APIError(
+            "Unsupported Jumuiya sample-data hub.",
+            422,
+            "invalid_sample_hub",
+        )
+
+    samples = collection(SAMPLE_RECORDS_COLLECTION)
+    query = {"seed_managed": True}
+    if hub != "all":
+        query["hub"] = hub
+
+    items = list(
+        samples.find(query, {"_id": 0})
+        .sort([("hub", 1), ("module", 1), ("title", 1)])
+        .limit(250)
+    )
+
+    counts_by_hub = {
+        key: samples.count_documents({
+            "seed_managed": True,
+            "hub": key,
+        })
+        for key in HUB_LABELS
+    }
+
+    return ok({
+        "items": json_safe(items),
+        "total": sum(counts_by_hub.values()),
+        "filtered_count": len(items),
+        "counts_by_hub": counts_by_hub,
+        "hubs": HUB_LABELS,
+        "sample_only": True,
+        "live_tenant_collections_modified": False,
+    })
+
+
+@platform_admin_bp.post("/sample-records/seed")
+@required_roles
+def reseed_sample_records():
+    """Allow a platform administrator to safely restore the isolated sample set."""
+    result = seed_sample_records()
+    return ok(
+        result,
+        "Jumuiya admin sample records are ready. Live tenant data was not changed.",
     )
