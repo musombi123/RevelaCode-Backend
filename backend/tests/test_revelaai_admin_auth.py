@@ -18,6 +18,13 @@ def client(monkeypatch):
     monkeypatch.setattr(auth_gate, "MONGO_AVAILABLE", False)
     users = {
         "admin": {"_id": "admin-user-id", "role": "admin"},
+        "configured_owner": {
+            "_id": "6a3eba8277b5d149effbafc0",
+            "role": "user",
+            "roles": ["user"],
+            "email": "musombiwilliam769@gmail.com",
+            "status": "active",
+        },
         "platform_admin": {"_id": "platform-admin-user-id", "role": "platform_admin"},
         "super_admin": {"_id": "super-admin-user-id", "role": "super_admin"},
         "revelacode_admin": {"_id": "revelacode-admin-user-id", "role": "revelacode_admin"},
@@ -79,6 +86,23 @@ def test_platform_admin_role_aliases_are_authorized_from_current_record(client, 
     assert response.status_code == 200
     assert response.get_json()["authorized"] is True
     assert response.get_json()["role"] == role
+
+
+def test_configured_permanent_owner_is_resolved_as_super_admin(client):
+    response = client.get(
+        "/api/auth/verify-admin",
+        headers={
+            "Authorization": (
+                f"Bearer {token_for('6a3eba8277b5d149effbafc0', claimed_role='user')}"
+            )
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["authorized"] is True
+    assert payload["role"] == "super_admin"
+    assert "super_admin" in payload["roles"]
 
 
 def test_non_admin_is_denied_even_with_admin_jwt_claim(client):
