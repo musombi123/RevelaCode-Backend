@@ -58,8 +58,9 @@ def _actor():
         return None, (jsonify(error), status)
     roles = {str(x).strip().casefold() for x in (actor.get("roles") or [])}
     roles.add(str(actor.get("role") or "").strip().casefold())
-    if str(actor.get("id") or "") == SUPER_ADMIN_USER_ID:
-        roles.add("super_admin")
+    # resolve_current_actor already grants the configured owner role only
+    # when both the stable account ID and configured contact match. Do not
+    # re-elevate by ID alone here.
     actor = {**actor, "roles": sorted(roles)}
     return actor, None
 
