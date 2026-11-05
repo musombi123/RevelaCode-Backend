@@ -55,6 +55,10 @@ PREMIUM_FEATURES = {
 # intentionally full-featured for that hub; paid subscriptions receive only
 # the capabilities included in their exact plan.
 HUB_PLAN_FEATURES = {
+    "smart_ai": {
+        "ai_plus": {"advanced_ai", "document_analysis", "advanced_reports"},
+        "ai_pro": {"advanced_ai", "document_analysis", "advanced_reports", "advanced_analytics", "automation", "expanded_history", "image_generation", "voice_generation", "vision_analysis"},
+    },
     "biashara": {
         "biashara_starter": {"premium", "advanced_reports", "seller_tools"},
         "biashara_pro": {"premium", "advanced_reports", "advanced_analytics", "automation", "expanded_history", "seller_tools"},
