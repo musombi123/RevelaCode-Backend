@@ -255,3 +255,94 @@ def test_support_admin_can_publish_revisioned_legal_document_and_oversee_support
     assert assignment.status_code == 200
     stored_ticket = db["support_tickets"].find_one({"_id": ticket_result.inserted_id})
     assert stored_ticket["assigned_to_user_id"] == str(agent["_id"])
+
+def test_ip_block_api_requires_a_current_platform_admin(admin_client, operations_data):
+    actor = operations_data["make_user"]("user")
+    response = admin_client.get(
+        "/api/admin/security/ip-blocks",
+        headers={"Authorization": f"Bearer {_token(str(actor['_id']))}"},
+    )
+    assert response.status_code == 403
+    assert response.get_json()["code"] == "forbidden"
+
+
+def test_platform_admin_can_block_and_release_an_exact_public_ip(
+    admin_client, operations_data, monkeypatch
+):
+    from backend import security_ip_guard
+
+    db = operations_data["db"]
+    actor = operations_data["make_user"]("revelacode_admin")
+    headers = {
+        "Authorization": f"Bearer {_token(str(actor['_id']))}",
+        "CF-Connecting-IP": "8.8.8.8",
+    }
+    monkeypatch.setenv("SCI_CORE_IP_ALLOWLIST", "")
+
+    created = admin_client.post(
+        "/api/admin/security/ip-blocks",
+        headers=headers,
+        json={
+            "ip": "1.1.1.1",
+            "reason": "Repeated suspicious application requests",
+            "duration_minutes": 30,
+            "confirm": True,
+        },
+    )
+    assert created.status_code == 201, created.get_json()
+    assert created.get_json()["enforcement"] == "platform_request_boundary"
+    assert security_ip_guard.ip_is_blocked("1.1.1.1") is not None
+
+    snapshot = admin_client.get(
+        "/api/admin/security/ip-blocks",
+        headers=headers,
+    )
+    assert snapshot.status_code == 200, snapshot.get_json()
+    assert snapshot.get_json()["protection"]["active_blocks"] >= 1
+    assert any(item["ip"] == "1.1.1.1" for item in snapshot.get_json()["blocks"])
+
+    released = admin_client.post(
+        "/api/admin/security/ip-blocks/unblock",
+        headers=headers,
+        json={
+            "ip": "1.1.1.1",
+            "reason": "Administrator verified and released this source.",
+        },
+    )
+    assert released.status_code == 200, released.get_json()
+    assert security_ip_guard.ip_is_blocked("1.1.1.1") is None
+    assert db["security_ip_events"].count_documents({"ip": "1.1.1.1"}) >= 2
+    db["security_ip_blocks"].delete_many({"ip": "1.1.1.1"})
+    db["security_ip_events"].delete_many({"ip": "1.1.1.1"})
+
+
+def test_manual_ip_block_requires_confirm_and_verified_current_ip(
+    admin_client, operations_data
+):
+    actor = operations_data["make_user"]("revelacode_admin")
+    headers = {"Authorization": f"Bearer {_token(str(actor['_id']))}"}
+    missing_confirmation = admin_client.post(
+        "/api/admin/security/ip-blocks",
+        headers={**headers, "CF-Connecting-IP": "8.8.8.8"},
+        json={
+            "ip": "1.1.1.1",
+            "reason": "Repeated suspicious application requests",
+            "duration_minutes": 30,
+        },
+    )
+    assert missing_confirmation.status_code == 400
+    assert missing_confirmation.get_json()["code"] == "confirmation_required"
+
+    unresolved_client = admin_client.post(
+        "/api/admin/security/ip-blocks",
+        headers=headers,
+        json={
+            "ip": "1.1.1.1",
+            "reason": "Repeated suspicious application requests",
+            "duration_minutes": 30,
+            "confirm": True,
+        },
+    )
+    assert unresolved_client.status_code == 503
+    assert unresolved_client.get_json()["code"] == "client_ip_unverified"
+
