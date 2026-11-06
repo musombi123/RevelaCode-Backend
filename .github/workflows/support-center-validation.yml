@@ -16,6 +16,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - name: Install migration test dependencies
+        run: python -m pip install pymongo==4.14.1 pytest
       - name: Compile backend modules
         run: |
           python -m py_compile \
@@ -30,3 +32,5 @@ jobs:
             backend/utils/current_role_auth.py \
             backend/utils/admin_invitation_email.py \
             backend/jumuiya/integration/auth_bridge.py
+      - name: Test Super Admin migration idempotency
+        run: python -m pytest -q tests/test_support_center_migrate.py
