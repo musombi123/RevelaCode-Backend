@@ -120,6 +120,8 @@ def find_active_block(ip: str | None) -> dict | None:
         return None
     try:
         normalized = ipaddress.ip_address(ip).compressed
+        if _allowlisted(normalized):
+            return None
     except ValueError:
         return None
     try:
