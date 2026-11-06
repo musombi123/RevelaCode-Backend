@@ -31,6 +31,8 @@ def client_ip_from_request(req) -> str | None:
         return None
     try:
         address = ipaddress.ip_address(raw)
+        if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped:
+            address = address.ipv4_mapped
         return address.compressed if address.is_global else None
     except ValueError:
         return None
@@ -42,6 +44,8 @@ def parse_public_ip(value: Any) -> str:
         raise ValueError("Provide one exact public IPv4 or IPv6 address.")
     try:
         address = ipaddress.ip_address(raw)
+        if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped:
+            address = address.ipv4_mapped
     except ValueError as exc:
         raise ValueError("The IP address is not valid.") from exc
     if not address.is_global:
@@ -180,6 +184,8 @@ def block_ip(
     if current_ip:
         try:
             current = ipaddress.ip_address(current_ip)
+            if isinstance(current, ipaddress.IPv6Address) and current.ipv4_mapped:
+                current = current.ipv4_mapped
         except ValueError as exc:
             raise RuntimeError("The administrator public IP could not be verified.") from exc
         if current == ipaddress.ip_address(normalized):
