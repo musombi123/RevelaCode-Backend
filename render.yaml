@@ -10,6 +10,14 @@ services:
         value: production
       - key: PORT
         value: 5000
+      # Trust one Render edge proxy hop when resolving the visitor IP.
+      - key: REVELACODE_TRUST_PROXY_HEADERS
+        value: "true"
+      - key: REVELACODE_TRUSTED_PROXY_HOPS
+        value: "1"
+      # Optional comma-separated public IPs/CIDRs that operators never want blocked.
+      - key: REVELACODE_IP_ALLOWLIST
+        sync: false
       # Explicit allow-list for production web, Tauri Windows and Capacitor Android clients.
       - key: FRONTEND_ORIGINS
         value: "https://revelacode.co.ke,https://www.revelacode.co.ke,https://revelacode-frontend.onrender.com,http://tauri.localhost,https://localhost,http://localhost,http://localhost:5173,http://127.0.0.1:5173"
