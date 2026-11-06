@@ -346,3 +346,66 @@ def test_manual_ip_block_requires_confirm_and_verified_current_ip(
     assert unresolved_client.status_code == 503
     assert unresolved_client.get_json()["code"] == "client_ip_unverified"
 
+
+
+def test_platform_ip_guard_admin_block_list_and_unblock(admin_client, operations_data):
+    actor = operations_data["make_user"]("revelacode_admin")
+    headers = {
+        "Authorization": f"Bearer {_token(str(actor['_id']), role_claim='user')}",
+        "CF-Connecting-IP": "8.8.8.8",
+    }
+    ip = "1.1.1.1"
+
+    try:
+        status = admin_client.get("/api/admin/security/ip-blocks", headers=headers)
+        assert status.status_code == 200, status.get_json()
+        assert status.get_json()["protection"]["persistent"] is True
+        assert status.get_json()["current_ip"] == "8.8.8.8"
+
+        blocked = admin_client.post(
+            "/api/admin/security/ip-blocks",
+            headers=headers,
+            json={
+                "ip": ip,
+                "reason": "Repeated suspicious application requests",
+                "duration_minutes": 15,
+                "confirm": True,
+            },
+        )
+        assert blocked.status_code == 201, blocked.get_json()
+        assert blocked.get_json()["block"]["ip"] == ip
+        assert blocked.get_json()["enforcement"] == "platform_request_boundary"
+
+        denied = admin_client.post(
+            "/api/admin/security/ip-blocks",
+            headers=headers,
+            json={
+                "ip": "8.8.8.8",
+                "reason": "Attempt to block administrator session address",
+                "duration_minutes": 15,
+                "confirm": True,
+            },
+        )
+        assert denied.status_code == 400, denied.get_json()
+
+        released = admin_client.post(
+            "/api/admin/security/ip-blocks/unblock",
+            headers=headers,
+            json={
+                "ip": ip,
+                "reason": "Administrator reviewed and released this source.",
+            },
+        )
+        assert released.status_code == 200, released.get_json()
+        assert released.get_json()["records_released"] == 1
+    finally:
+        db = operations_data["db"]
+        db["security_ip_blocks"].delete_many({"ip": ip})
+        db["security_ip_events"].delete_many({"ip": ip})
+
+
+def test_platform_ip_guard_admin_api_rejects_non_admin(admin_client, operations_data):
+    actor = operations_data["make_user"]("user")
+    headers = {"Authorization": f"Bearer {_token(str(actor['_id']), role_claim='revelacode_admin')}"}
+    response = admin_client.get("/api/admin/security/ip-blocks", headers=headers)
+    assert response.status_code == 403
