@@ -1108,3 +1108,132 @@ def update_legal_document(doc_type):
         version=requested_version,
     ), 201
 
+
+
+# =========================================================
+# SCI-CORE — PLATFORM-WIDE IP PROTECTION
+# =========================================================
+
+@admin_bp.route("/admin/security/ip-blocks", methods=["GET"])
+@require_current_roles(*PLATFORM_ADMIN_ROLES)
+def list_security_ip_blocks():
+    from backend.security_ip_guard import (
+        client_ip_from_request,
+        protection_snapshot,
+    )
+
+    try:
+        snapshot = protection_snapshot(client_ip_from_request(request))
+        protection = {
+            key: value
+            for key, value in snapshot.items()
+            if key not in {"blocks", "recent_events", "recent_auth_failures", "current_ip"}
+        }
+        return jsonify({
+            "success": True,
+            "protection": protection,
+            "blocks": snapshot["blocks"],
+            "current_ip": snapshot["current_ip"],
+            "recent_events": snapshot["recent_events"],
+            "recent_auth_failures": snapshot["recent_auth_failures"],
+        }), 200
+    except Exception:
+        return jsonify({
+            "success": False,
+            "code": "ip_protection_unavailable",
+            "message": "Persistent platform IP protection could not be verified. No block state is assumed.",
+        }), 503
+
+
+@admin_bp.route("/admin/security/ip-blocks", methods=["POST"])
+@require_current_roles(*PLATFORM_ADMIN_ROLES)
+def create_security_ip_block():
+    from backend.security_ip_guard import block_ip, client_ip_from_request
+
+    data = request.get_json(silent=True) or {}
+    if data.get("confirm") is not True:
+        return jsonify({
+            "success": False,
+            "code": "confirmation_required",
+            "message": "Explicit confirmation is required before blocking an IP.",
+        }), 400
+
+    actor = current_platform_actor()
+    current_ip = client_ip_from_request(request)
+    try:
+        block = block_ip(
+            data.get("ip"),
+            actor=str(actor.get("id") or "unknown"),
+            reason=data.get("reason", ""),
+            duration_minutes=data.get("duration_minutes", 60),
+            current_ip=current_ip,
+            source="manual",
+        )
+        log_admin_action(
+            get_db(),
+            action="block_public_ip",
+            resource=block["ip"],
+            actor=str(actor.get("id") or "unknown"),
+            metadata={
+                "reason": block["reason"],
+                "duration_minutes": block["duration_minutes"],
+                "expires_at": block["expires_at"],
+                "enforcement": "platform_request_boundary",
+            },
+        )
+        return jsonify({
+            "success": True,
+            "block": block,
+            "enforcement": "platform_request_boundary",
+            "message": "The IP is blocked at the RevelaCode Backend request boundary.",
+            "host_firewall_changed": False,
+        }), 201
+    except ValueError as exc:
+        return jsonify({"success": False, "code": "invalid_ip_block", "message": str(exc)}), 400
+    except RuntimeError as exc:
+        return jsonify({"success": False, "code": "client_ip_unverified", "message": str(exc)}), 503
+    except Exception:
+        return jsonify({
+            "success": False,
+            "code": "ip_block_storage_unavailable",
+            "message": "The persistent block could not be confirmed. No block was reported as created.",
+        }), 503
+
+
+@admin_bp.route("/admin/security/ip-blocks/unblock", methods=["POST"])
+@require_current_roles(*PLATFORM_ADMIN_ROLES)
+def release_security_ip_block():
+    from backend.security_ip_guard import unblock_ip
+
+    data = request.get_json(silent=True) or {}
+    actor = current_platform_actor()
+    try:
+        result = unblock_ip(
+            data.get("ip"),
+            actor=str(actor.get("id") or "unknown"),
+            reason=data.get("reason", ""),
+        )
+        log_admin_action(
+            get_db(),
+            action="unblock_public_ip",
+            resource=result["ip"],
+            actor=str(actor.get("id") or "unknown"),
+            metadata={
+                "records_released": result["records_released"],
+                "enforcement": "platform_request_boundary",
+            },
+        )
+        return jsonify({
+            "success": True,
+            **result,
+            "enforcement": "platform_request_boundary",
+            "host_firewall_changed": False,
+        }), 200
+    except ValueError as exc:
+        return jsonify({"success": False, "code": "invalid_ip_unblock", "message": str(exc)}), 400
+    except Exception:
+        return jsonify({
+            "success": False,
+            "code": "ip_unblock_storage_unavailable",
+            "message": "The persistent block release could not be verified.",
+        }), 503
