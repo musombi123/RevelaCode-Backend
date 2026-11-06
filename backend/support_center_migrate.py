@@ -23,18 +23,27 @@ def main():
         raise SystemExit("The configured SUPER_ADMIN_USER_ID does not match an existing users record.")
     roles = owner.get("roles") if isinstance(owner.get("roles"), list) else []
     roles = list(dict.fromkeys([str(role).strip() for role in roles if role] + ["super_admin"]))
-    db["users"].update_one(query, {"$set": {
+    # The first successful bootstrap intentionally invalidates pre-migration
+    # access tokens. Persist the marker in the same atomic update so rerunning
+    # this one-time migration cannot revoke sessions issued after the bootstrap.
+    seeded_before = bool(owner.get("super_admin_seeded_at"))
+    updates = {
         "role": "super_admin",
         "roles": roles,
         "status": "active",
         "is_active": True,
         "verified": True,
-        "token_version": int(owner.get("token_version") or 0) + 1,
-        "super_admin_seeded_at": __import__("datetime").datetime.now(__import__("datetime").timezone.utc),
-    }})
+    }
+    if not seeded_before:
+        updates["token_version"] = int(owner.get("token_version") or 0) + 1
+        updates["super_admin_seeded_at"] = __import__("datetime").datetime.now(__import__("datetime").timezone.utc)
+    db["users"].update_one(query, {"$set": updates})
     ensure_indexes()
     print("Support Team collections and indexes are ready.")
-    print("The existing owner account is assigned SUPER_ADMIN; existing sessions were invalidated.")
+    if seeded_before:
+        print("The existing owner is already bootstrapped; current sessions were preserved.")
+    else:
+        print("The existing owner is assigned SUPER_ADMIN; pre-migration sessions were invalidated once.")
 
 
 if __name__ == "__main__":
