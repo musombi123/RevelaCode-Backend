@@ -173,16 +173,19 @@ def block_ip(
     normalized = parse_public_ip(ip)
     if is_allowlisted(normalized):
         raise ValueError("This address is protected by the administrator IP allowlist.")
-    if not current_ip:
+    if source == "manual" and not current_ip:
         raise RuntimeError(
             "The administrator public IP could not be verified. Confirm the trusted Cloudflare ingress header."
         )
-    try:
-        current = ipaddress.ip_address(current_ip)
-    except ValueError as exc:
-        raise RuntimeError("The administrator public IP could not be verified.") from exc
-    if current == ipaddress.ip_address(normalized):
-        raise ValueError("You cannot block the IP address used by this administrator session.")
+    if current_ip:
+        try:
+            current = ipaddress.ip_address(current_ip)
+        except ValueError as exc:
+            raise RuntimeError("The administrator public IP could not be verified.") from exc
+        if current == ipaddress.ip_address(normalized):
+            raise ValueError("You cannot block the IP address used by this administrator session.")
+    elif source == "auto_bruteforce" and not admin_allowlist():
+        raise RuntimeError("Automatic blocking requires an administrator IP allowlist.")
 
     try:
         duration = int(duration_minutes)
@@ -287,7 +290,6 @@ def recent_auth_failures(limit: int = 50) -> list[dict]:
 
 
 def protection_snapshot(current_ip: str | None) -> dict:
-    db = get_db()
     ensure_indexes()
     blocks = active_blocks(100)
     return {
@@ -335,7 +337,7 @@ def record_failed_login(ip: str | None, path: str) -> None:
                 actor="revelacode-auto-defence",
                 reason=f"{attempts} invalid login responses within {AUTO_BLOCK_WINDOW_MINUTES} minutes.",
                 duration_minutes=AUTO_BLOCK_DURATION_MINUTES,
-                current_ip="8.8.8.8",
+                current_ip=None,
                 source="auto_bruteforce",
             )
     except Exception as exc:
