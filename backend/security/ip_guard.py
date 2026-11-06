@@ -18,6 +18,7 @@ from flask import Blueprint, jsonify, request
 security_bp = Blueprint("security_bp", __name__)
 _INDEX_LOCK = threading.Lock()
 _INDEX_READY = False
+_DB_READY = False
 
 AUTH_FAILURE_PATHS = {
     "/api/auth/login",
@@ -45,7 +46,12 @@ def _collections():
         database.command("ping")
     except Exception as exc:
         raise RuntimeError("The authoritative user database is unavailable.") from exc
-    global _INDEX_READY
+    global _INDEX_READY, _DB_READY
+    if not _DB_READY:
+        with _INDEX_LOCK:
+            if not _DB_READY:
+                database.command("ping")
+                _DB_READY = True
     if not _INDEX_READY:
         with _INDEX_LOCK:
             if not _INDEX_READY:
@@ -394,8 +400,11 @@ def _require_current_platform_admin():
         return None, (jsonify(success=False, code="user_identity_mismatch"), 403)
     if int(claims.get("token_version") or 0) != int(user.get("token_version") or 0):
         return None, (jsonify(success=False, code="session_revoked"), 401)
-    status = str(user.get("status") or "active").casefold()
-    if user.get("is_active") is False or status not in {"active", "verified", "approved"}:
+    status = str(user.get("status") or "active").strip().casefold()
+    if user.get("is_active") is False or status in {
+        "inactive", "disabled", "suspended", "blocked", "banned",
+        "deleted", "revoked", "pending_invitation", "locked",
+    }:
         return None, (jsonify(success=False, code="account_inactive"), 403)
     raw_roles = user.get("roles") if isinstance(user.get("roles"), (list, tuple, set)) else []
     roles = {str(role).strip().casefold() for role in raw_roles if str(role).strip()}
