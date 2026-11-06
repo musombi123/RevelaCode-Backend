@@ -227,10 +227,13 @@ def test_admin_api_does_not_authorize_from_client_supplied_role(fake_store, monk
     assert response.status_code == 403
 
 
-def test_forwarded_ip_is_used_only_when_explicitly_trusted(monkeypatch):
-    headers = {"x-forwarded-for": "198.51.100.3, 8.8.8.8"}
-    monkeypatch.setenv("REVELAAI_TRUST_PROXY_HEADERS", "false")
-    assert ip_guard.current_client_ip is not None
-    # Backend request boundary uses ProxyFix; a raw XFF value is not read here.
-    # This is a contract assertion for the absence of a custom, untrusted XFF parser.
-    assert "x-forwarded-for" not in ip_guard.current_client_ip.__code__.co_names
+def test_raw_forwarded_for_header_is_not_trusted_by_the_ip_guard():
+    app = Flask(__name__)
+    with app.test_request_context(
+        "/",
+        environ_base={"REMOTE_ADDR": "8.8.8.8"},
+        headers={"X-Forwarded-For": "1.1.1.1"},
+    ):
+        # Only a trusted ProxyFix deployment may rewrite REMOTE_ADDR before
+        # this helper runs; the guard never parses arbitrary XFF itself.
+        assert ip_guard.current_client_ip() == "8.8.8.8"
