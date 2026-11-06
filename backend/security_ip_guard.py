@@ -291,13 +291,15 @@ def recent_auth_failures(limit: int = 50) -> list[dict]:
 
 def protection_snapshot(current_ip: str | None) -> dict:
     ensure_indexes()
+    db = get_db()
     blocks = active_blocks(100)
+    active_count = int(db["security_ip_blocks"].count_documents({"active": True}))
     return {
         "persistent": True,
         "status": "active",
         "enforcement": "platform_request_boundary",
         "storage": "mongodb",
-        "active_blocks": len(blocks),
+        "active_blocks": active_count,
         "automatic_blocking": bool(admin_allowlist()),
         "auto_block_requires_allowlist": True,
         "auto_block_threshold": AUTO_BLOCK_THRESHOLD,
