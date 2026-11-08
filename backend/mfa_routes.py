@@ -720,7 +720,7 @@ def mfa_login_verify():
         access_token = auth.create_access_token(user, mfa_verified=True)
         trusted_device_token, trusted_device = issue_trusted_device(user)
         _notify_new_trusted_device(user, trusted_device)
-        return jsonify(
+        response = jsonify(
             success=True,
             userId=_user_id(user),
             id=_user_id(user),
@@ -732,10 +732,19 @@ def mfa_login_verify():
             token_type="Bearer",
             expires_in=auth.JWT_EXPIRES_HOURS * 60 * 60,
             mfa_verified=True,
-            trusted_device_token=trusted_device_token,
             trusted_device_expires_at=trusted_device.get("expires_at"),
             trusted_device_days=TRUSTED_DEVICE_DAYS,
-        ), 200
+        )
+        response.set_cookie(
+            "revela_trusted_device",
+            trusted_device_token,
+            max_age=TRUSTED_DEVICE_DAYS * 24 * 60 * 60,
+            httponly=True,
+            secure=True,
+            samesite="None",
+            path="/api/",
+        )
+        return response, 200
     except MfaFailure as exc:
         return _error_response(exc)
 
