@@ -738,7 +738,17 @@ def support_admin_team():
     team = []
     for user in users.find(query).sort("created_at", -1).limit(300):
         user_id = str(user.get("_id") or user.get("id") or user.get("user_id") or "")
-        role = str(user.get("role") or "support")
+        stored_roles = {
+            str(value).strip().casefold()
+            for value in (user.get("roles") if isinstance(user.get("roles"), list) else [])
+            if value
+        }
+        primary_role = str(user.get("role") or "").strip().casefold()
+        role = (
+            primary_role
+            if primary_role in {"support", "support_agent", "support_admin"}
+            else next((value for value in ("support_admin", "support_agent", "support") if value in stored_roles), "support")
+        )
         assigned = db[COLLECTIONS["support_tickets"]].count_documents({
             "$or": [
                 {"assigned_to_user_id": user_id},
