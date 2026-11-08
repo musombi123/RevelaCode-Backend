@@ -194,6 +194,7 @@ class TotpMfaIntegrationTests(unittest.TestCase):
 
         trusted_login = self.client.post(
             "/api/login",
+            base_url="https://localhost",
             json={
                 "contact": self.user["contact"],
                 "password": "correct horse battery staple",
@@ -204,18 +205,20 @@ class TotpMfaIntegrationTests(unittest.TestCase):
         self.assertNotIn("challenge_token", trusted_login.get_json())
 
         trusted_headers = {"Authorization": "Bearer " + trusted_login.get_json()["access_token"]}
-        devices = self.client.get("/api/auth/mfa/devices", headers=trusted_headers)
+        devices = self.client.get("/api/auth/mfa/devices", headers=trusted_headers, base_url="https://localhost")
         self.assertEqual(devices.status_code, 200, devices.get_json())
         device_id = devices.get_json()["devices"][0]["id"]
 
         revoked = self.client.delete(
             f"/api/auth/mfa/devices/{device_id}",
             headers=trusted_headers,
+            base_url="https://localhost",
         )
         self.assertEqual(revoked.status_code, 200, revoked.get_json())
 
         after_revoke = self.client.post(
             "/api/login",
+            base_url="https://localhost",
             json={
                 "contact": self.user["contact"],
                 "password": "correct horse battery staple",
