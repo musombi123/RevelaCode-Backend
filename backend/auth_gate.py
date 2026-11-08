@@ -1472,6 +1472,38 @@ def login():
     mfa_enabled = user.get("mfa_enabled") is True and bool(user.get("mfa_secret_enc"))
 
     if mfa_enabled:
+        # The device credential is an opaque secret issued after a successful
+        # MFA challenge. The server stores only its hash; device labels and
+        # User-Agent strings are informational and never establish trust.
+        from backend.mfa_routes import trusted_device_matches
+        presented_device_token = str(
+            data.get("trusted_device_token")
+            or request.headers.get("X-Revela-Trusted-Device")
+            or request.cookies.get("revela_trusted_device")
+            or ""
+        ).strip()
+        if trusted_device_matches(user, presented_device_token):
+            trusted_token = create_access_token(user, mfa_verified=True)
+            trusted_redirect = "/dashboard"
+            if str(role or "").strip().casefold() in PLATFORM_ADMIN_ROLES:
+                trusted_redirect = "/admin/dashboard"
+            elif str(role or "").strip().casefold() in {"support", "support_admin"}:
+                trusted_redirect = "/support/dashboard"
+            return jsonify(
+                success=True,
+                userId=actual_user_id,
+                id=actual_user_id,
+                contact=user.get("contact", ""),
+                full_name=user.get("full_name", ""),
+                role=role,
+                redirect=trusted_redirect,
+                access_token=trusted_token,
+                token_type="Bearer",
+                expires_in=JWT_EXPIRES_HOURS * 60 * 60,
+                mfa_verified=True,
+                trusted_device=True,
+            ), 200
+
         challenge_id = secrets.token_urlsafe(32)
         issued_at = int(now().timestamp())
         challenge_payload = {
@@ -1509,7 +1541,9 @@ def login():
             mfa_setup_required=False,
             challenge_token=challenge_token,
             expires_in=300,
-            message="Enter your authenticator code to finish signing in.",
+            trusted_device_required=True,
+            trusted_device_days=30,
+            message="This device is not trusted. Verify with your authenticator to sign in and trust this device for a limited period.",
         ), 200
 
     # -----------------------------------------------------

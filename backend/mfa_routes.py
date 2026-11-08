@@ -21,6 +21,7 @@ from flask import Blueprint, jsonify, request
 from werkzeug.security import check_password_hash
 
 from backend import auth_gate as auth
+from backend.email_service import send_security_notice
 
 try:
     import qrcode
@@ -264,6 +265,147 @@ def _record_failed_attempt(user: dict) -> None:
     if attempts >= MAX_CHALLENGE_ATTEMPTS:
         unset = ["mfa_challenge_id", "mfa_challenge_purpose", "mfa_challenge_attempts"]
     _save_user(user, fields if not unset else {}, unset=unset)
+
+
+
+try:
+    TRUSTED_DEVICE_DAYS = max(1, min(90, int(os.getenv("MFA_TRUSTED_DEVICE_DAYS", "30"))))
+except (TypeError, ValueError):
+    TRUSTED_DEVICE_DAYS = 30
+MAX_TRUSTED_DEVICES = 10
+
+
+def _trusted_device_hash(token: str) -> str:
+    return hashlib.sha256(("revelacode-trusted-device:" + str(token)).encode("utf-8")).hexdigest()
+
+
+def trusted_device_matches(user: dict, token: str | None) -> bool:
+    """Validate an opaque backend-issued trusted-device secret."""
+    if not token or user.get("mfa_enabled") is not True:
+        return False
+    token_hash = _trusted_device_hash(token)
+    now_dt = datetime.now(timezone.utc)
+    devices = user.get("mfa_trusted_devices")
+    if not isinstance(devices, list):
+        return False
+    for device in devices:
+        if not isinstance(device, dict):
+            continue
+        if not hmac.compare_digest(str(device.get("token_hash") or ""), token_hash):
+            continue
+        try:
+            expiry = datetime.fromisoformat(str(device.get("expires_at") or ""))
+            if expiry.tzinfo is None:
+                expiry = expiry.replace(tzinfo=timezone.utc)
+        except ValueError:
+            return False
+        if expiry <= now_dt or device.get("revoked_at"):
+            return False
+        device["last_used_at"] = now_dt.isoformat()
+        _save_user(user, {"mfa_trusted_devices": devices})
+        return True
+    return False
+
+
+def issue_trusted_device(user: dict) -> tuple[str, dict]:
+    """Create a new opaque device credential; only its hash is persisted."""
+    raw_token = secrets.token_urlsafe(40)
+    now_dt = datetime.now(timezone.utc)
+    user_agent = str(request.headers.get("User-Agent") or "Unknown device")[:240]
+    device_id = secrets.token_urlsafe(12)
+    device = {
+        "id": device_id,
+        "token_hash": _trusted_device_hash(raw_token),
+        "label": user_agent[:100],
+        "user_agent": user_agent,
+        "created_at": now_dt.isoformat(),
+        "last_used_at": now_dt.isoformat(),
+        "expires_at": (now_dt + timedelta(days=TRUSTED_DEVICE_DAYS)).isoformat(),
+        "ip_address": str(request.remote_addr or "")[:64],
+    }
+    existing = user.get("mfa_trusted_devices")
+    devices = [item for item in existing if isinstance(item, dict)] if isinstance(existing, list) else []
+    devices = [item for item in devices if not item.get("revoked_at") and str(item.get("expires_at") or "") > now_dt.isoformat()]
+    devices.append(device)
+    devices = devices[-MAX_TRUSTED_DEVICES:]
+    _save_user(user, {"mfa_trusted_devices": devices})
+    return raw_token, device
+
+
+def _notify_new_trusted_device(user: dict, device: dict) -> None:
+    recipient = str(user.get("email") or user.get("contact") or "").strip()
+    if "@" not in recipient:
+        return
+    message = (
+        f"A new device completed two-step verification on your RevelaCode account. "
+        f"Device: {device.get('label') or 'Unknown device'}. "
+        f"Time (UTC): {device.get('created_at')}. "
+        f"IP address: {device.get('ip_address') or 'Unavailable'}. "
+        f"This device is trusted for {TRUSTED_DEVICE_DAYS} days unless you revoke it."
+    )
+    try:
+        send_security_notice(
+            recipient,
+            "New trusted device added to your RevelaCode account",
+            "New trusted device",
+            message,
+        )
+    except Exception:
+        # Do not undo a verified login because a notification provider is down.
+        import logging
+        logging.getLogger(__name__).exception("Could not deliver new-device security notice")
+
+
+@mfa_bp.get("/api/auth/mfa/devices")
+def mfa_trusted_devices():
+    try:
+        user, _ = _current_user()
+        now_dt = datetime.now(timezone.utc)
+        devices = []
+        for item in user.get("mfa_trusted_devices") or []:
+            if not isinstance(item, dict) or item.get("revoked_at"):
+                continue
+            try:
+                expiry = datetime.fromisoformat(str(item.get("expires_at") or ""))
+                if expiry.tzinfo is None:
+                    expiry = expiry.replace(tzinfo=timezone.utc)
+            except ValueError:
+                continue
+            if expiry <= now_dt:
+                continue
+            devices.append({
+                "id": str(item.get("id") or ""),
+                "label": str(item.get("label") or "Trusted device"),
+                "created_at": item.get("created_at"),
+                "last_used_at": item.get("last_used_at"),
+                "expires_at": item.get("expires_at"),
+            })
+        return jsonify(success=True, devices=devices, trust_days=TRUSTED_DEVICE_DAYS), 200
+    except MfaFailure as exc:
+        return _error_response(exc)
+
+
+@mfa_bp.delete("/api/auth/mfa/devices/<device_id>")
+def revoke_trusted_device(device_id: str):
+    try:
+        user, _ = _current_user()
+        devices = user.get("mfa_trusted_devices")
+        if not isinstance(devices, list):
+            raise MfaFailure("device_not_found", "Trusted device not found.", 404)
+        updated = []
+        found = False
+        now_iso = datetime.now(timezone.utc).isoformat()
+        for item in devices:
+            if isinstance(item, dict) and hmac.compare_digest(str(item.get("id") or ""), str(device_id)):
+                item = {**item, "revoked_at": now_iso, "token_hash": ""}
+                found = True
+            updated.append(item)
+        if not found:
+            raise MfaFailure("device_not_found", "Trusted device not found.", 404)
+        _save_user(user, {"mfa_trusted_devices": updated})
+        return jsonify(success=True, message="Trusted device revoked."), 200
+    except MfaFailure as exc:
+        return _error_response(exc)
 
 
 def _consume_challenge(user: dict) -> dict:
@@ -579,7 +721,9 @@ def mfa_login_verify():
         _consume_challenge(user)
 
         access_token = auth.create_access_token(user, mfa_verified=True)
-        return jsonify(
+        trusted_device_token, trusted_device = issue_trusted_device(user)
+        _notify_new_trusted_device(user, trusted_device)
+        response = jsonify(
             success=True,
             userId=_user_id(user),
             id=_user_id(user),
@@ -591,7 +735,19 @@ def mfa_login_verify():
             token_type="Bearer",
             expires_in=auth.JWT_EXPIRES_HOURS * 60 * 60,
             mfa_verified=True,
-        ), 200
+            trusted_device_expires_at=trusted_device.get("expires_at"),
+            trusted_device_days=TRUSTED_DEVICE_DAYS,
+        )
+        response.set_cookie(
+            "revela_trusted_device",
+            trusted_device_token,
+            max_age=TRUSTED_DEVICE_DAYS * 24 * 60 * 60,
+            httponly=True,
+            secure=True,
+            samesite="None",
+            path="/api/",
+        )
+        return response, 200
     except MfaFailure as exc:
         return _error_response(exc)
 
