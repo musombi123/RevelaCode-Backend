@@ -1479,6 +1479,7 @@ def login():
         presented_device_token = str(
             data.get("trusted_device_token")
             or request.headers.get("X-Revela-Trusted-Device")
+            or request.cookies.get("revela_trusted_device")
             or ""
         ).strip()
         if trusted_device_matches(user, presented_device_token):
