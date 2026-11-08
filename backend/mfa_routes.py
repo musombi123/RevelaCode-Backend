@@ -268,7 +268,10 @@ def _record_failed_attempt(user: dict) -> None:
 
 
 
-TRUSTED_DEVICE_DAYS = max(1, min(90, int(os.getenv("MFA_TRUSTED_DEVICE_DAYS", "30"))))
+try:
+    TRUSTED_DEVICE_DAYS = max(1, min(90, int(os.getenv("MFA_TRUSTED_DEVICE_DAYS", "30"))))
+except (TypeError, ValueError):
+    TRUSTED_DEVICE_DAYS = 30
 MAX_TRUSTED_DEVICES = 10
 
 
