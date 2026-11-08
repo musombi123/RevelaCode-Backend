@@ -118,3 +118,35 @@ def send_verification_email(recipient, code, purpose="activation"):
             recipient.rsplit("@", 1)[-1],
         )
         raise
+
+
+def send_security_notice(recipient, subject, heading, message):
+    """Send a non-secret account security notification through the configured sender."""
+    recipient = str(recipient or "").strip()
+    if not re.fullmatch(r"[^@\\s]+@[^@\\s]+\\.[^@\\s]+", recipient):
+        raise ValueError("A valid email address is required.")
+    api_key = os.getenv("RESEND_API_KEY", "").strip()
+    sender = os.getenv("EMAIL_FROM", "RevelaCode <noreply@revelacode.co.ke>").strip()
+    if not api_key or not sender:
+        raise RuntimeError("Security email delivery is not configured.")
+    resend.api_key = api_key
+    safe_heading = escape(str(heading or "Account security notice"))
+    safe_message = escape(str(message or "A new sign-in was verified for your account."))
+    payload = {
+        "from": sender,
+        "to": [recipient],
+        "reply_to": SUPPORT_EMAIL,
+        "subject": str(subject or "RevelaCode account security notice")[:180],
+        "html": (
+            '<div style="font-family:Arial,sans-serif;max-width:560px;margin:0 auto;padding:28px;color:#0f172a">'
+            '<div style="font-size:13px;font-weight:700;letter-spacing:.08em;color:#059669">REVELACODE</div>'
+            f'<h1 style="font-size:22px;margin:20px 0 10px">{safe_heading}</h1>'
+            f'<p style="font-size:15px;line-height:1.6;color:#475569">{safe_message}</p>'
+            '<p style="font-size:13px;line-height:1.6;color:#64748b">If this was not you, revoke unfamiliar devices and change your password immediately.</p>'
+            '<p style="font-size:13px;color:#64748b;margin-top:28px">RevelaCode · Code. Innovate. Transform.</p></div>'
+        ),
+        "text": f"{heading}\\n\\n{message}\\n\\nIf this was not you, revoke unfamiliar devices and change your password.",
+    }
+    response = resend.Emails.send(payload)
+    logger.info("Security notice accepted; recipient_domain=%s", recipient.rsplit("@", 1)[-1])
+    return response
