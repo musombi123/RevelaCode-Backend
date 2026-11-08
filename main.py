@@ -12,6 +12,7 @@ from urllib.parse import urlsplit
 from dotenv import load_dotenv
 from flask import Flask, jsonify, make_response, request
 from flask_cors import CORS
+from werkzeug.middleware.proxy_fix import ProxyFix
 
 
 # =========================================================
@@ -57,6 +58,22 @@ else:
 # =========================================================
 
 app = Flask(__name__)
+
+# Render terminates public TLS at one trusted edge proxy. Trust exactly one
+# forwarding hop in production; outside Render, forwarding headers remain
+# untrusted unless explicitly enabled by the operator.
+_TRUST_PROXY = (
+    os.getenv("RENDER", "").strip().casefold() == "true"
+    or os.getenv("REVELACODE_TRUST_PROXY_HEADERS", "").strip().casefold() in {"1", "true", "yes", "on"}
+)
+try:
+    _PROXY_HOPS = int(os.getenv("REVELACODE_TRUSTED_PROXY_HOPS", "1")) if _TRUST_PROXY else 0
+except ValueError:
+    _PROXY_HOPS = 1 if _TRUST_PROXY else 0
+_PROXY_HOPS = max(0, min(_PROXY_HOPS, 3))
+if _PROXY_HOPS:
+    app.wsgi_app = ProxyFix(app.wsgi_app, x_for=_PROXY_HOPS, x_proto=1, x_host=0)
+
 
 
 # =========================================================
@@ -339,6 +356,40 @@ def handle_cors_preflight():
 
 
 # =========================================================
+# PLATFORM IP ENFORCEMENT
+# =========================================================
+
+@app.before_request
+def enforce_platform_ip_blocks():
+    """Reject requests from IPs actively blocked in the platform security store."""
+    if request.method == "OPTIONS":
+        return None
+    try:
+        from backend.security.ip_guard import enforce_ip_block
+        return enforce_ip_block()
+    except Exception as exc:
+        # Protection must report degraded state through its admin endpoint,
+        # but a block-store outage must not take down every public route.
+        logger.warning("IP enforcement check unavailable | error_type=%s", type(exc).__name__)
+        return None
+
+
+@app.after_request
+def record_platform_auth_failures(response):
+    """Count only failed credential submissions, not generic expired sessions."""
+    try:
+        from backend.security.ip_guard import record_failed_authentication, current_client_ip
+        record_failed_authentication(
+            current_client_ip(),
+            request.path,
+            response.status_code,
+        )
+    except Exception as exc:
+        logger.warning("Authentication failure telemetry unavailable | error_type=%s", type(exc).__name__)
+    return response
+
+
+# =========================================================
 # ENSURE CORS RESPONSE HEADERS
 # =========================================================
 
@@ -495,6 +546,7 @@ def register_bp(import_path: str, bp_name: str):
 # =========================================================
 
 register_bp("backend.auth_gate", "auth_bp")
+register_bp("backend.security.ip_guard", "security_bp")
 register_bp("backend.mfa_routes", "mfa_bp")
 register_bp("backend.user_data", "user_bp")
 register_bp("backend.account_management", "accounts_bp")
