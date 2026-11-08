@@ -123,7 +123,7 @@ def send_verification_email(recipient, code, purpose="activation"):
 def send_security_notice(recipient, subject, heading, message):
     """Send a non-secret account security notification through the configured sender."""
     recipient = str(recipient or "").strip()
-    if not re.fullmatch(r"[^@\\s]+@[^@\\s]+\\.[^@\\s]+", recipient):
+    if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", recipient):
         raise ValueError("A valid email address is required.")
     api_key = os.getenv("RESEND_API_KEY", "").strip()
     sender = os.getenv("EMAIL_FROM", "RevelaCode <noreply@revelacode.co.ke>").strip()
