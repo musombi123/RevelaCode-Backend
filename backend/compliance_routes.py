@@ -15,7 +15,6 @@ from bson.errors import InvalidId
 from flask import Blueprint, jsonify, request
 
 from backend import auth_gate as auth
-from backend.jumuiya.core.database import collection
 
 compliance_bp = Blueprint("compliance_bp", __name__)
 
@@ -67,6 +66,13 @@ FEATURE_ALIASES = {
     "elimu": "elimu_assistant",
     "faith": "faith_content",
 }
+
+
+def _collection(name: str):
+    # Resolve the existing Mongo collection lazily so local/unit-test imports
+    # do not require a live database connection at module import time.
+    from backend.jumuiya.core.database import collection
+    return collection(name)
 
 
 def _now():
@@ -131,7 +137,7 @@ def _tenant(tenant_type: str, tenant_id: str):
         oid = ObjectId(str(tenant_id))
     except (InvalidId, TypeError, ValueError):
         return None
-    return collection(name).find_one({"_id": oid, **query})
+    return _collection(name).find_one({"_id": oid, **query})
 
 
 def _policy_defaults(tenant_type: str, tenant: dict):
@@ -222,7 +228,7 @@ def get_website_policies(tenant_type: str, tenant_id: str):
     if not tenant:
         return jsonify(success=False, code="public_website_not_found"), 404
     defaults = _policy_defaults(tenant_type, tenant)
-    saved = collection("jumuiya_website_policies").find_one({
+    saved = _collection("jumuiya_website_policies").find_one({
         "tenant_type": tenant_type,
         "tenant_id": str(tenant["_id"]),
     })
@@ -265,7 +271,7 @@ def update_website_policies(tenant_type: str, tenant_id: str):
         "updated_at": _now(),
         "updated_by": str(user.get("_id") or user.get("id") or user.get("user_id") or ""),
     }
-    collection("jumuiya_website_policies").update_one(
+    _collection("jumuiya_website_policies").update_one(
         {"tenant_type": tenant_type, "tenant_id": str(tenant["_id"])},
         {"$set": record},
         upsert=True,
@@ -289,7 +295,7 @@ def record_website_cookie_consent(tenant_type: str, tenant_id: str):
     if not re.fullmatch(r"[A-Za-z0-9_-]{16,100}", consent_id):
         return jsonify(success=False, code="valid_consent_id_required"), 422
     version = str(payload.get("policy_version") or "1.0").strip()[:40]
-    collection("jumuiya_website_cookie_consents").update_one(
+    _collection("jumuiya_website_cookie_consents").update_one(
         {"tenant_type": tenant_type, "tenant_id": str(tenant["_id"]), "consent_id": consent_id},
         {"$set": {
             "tenant_type": tenant_type,
