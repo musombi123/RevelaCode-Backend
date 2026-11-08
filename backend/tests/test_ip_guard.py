@@ -1,239 +1,215 @@
-"""Regression tests for persistent IP blocking and safe administrator controls."""
+"""Regression tests for platform-wide IP blocking and defensive auto-response."""
 from __future__ import annotations
 
+import os
 from datetime import datetime, timedelta, timezone
-from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
-from flask import Flask
 
-from backend.security import ip_guard
+from backend import security_ip_guard as guard
 
 
-class FakeCursor(list):
+class FakeCursor:
+    def __init__(self, rows):
+        self.rows = list(rows)
+
     def sort(self, key, direction=-1):
-        self.sort_key = key
-        self.reverse = direction < 0
-        super().sort(key=lambda row: row.get(key), reverse=self.reverse)
+        self.rows.sort(
+            key=lambda row: row.get(key) or datetime.min.replace(tzinfo=timezone.utc),
+            reverse=direction < 0,
+        )
         return self
 
     def limit(self, count):
-        del self[max(0, int(count)) :]
+        self.rows = self.rows[:count]
         return self
+
+    def __iter__(self):
+        return iter(self.rows)
 
 
 class FakeCollection:
     def __init__(self):
         self.rows = []
+        self.next_id = 1
 
-    def create_index(self, *_args, **_kwargs):
-        return "fake-index"
+    def create_index(self, *args, **kwargs):
+        return "index"
 
-    def insert_one(self, document):
-        row = dict(document)
-        row.setdefault("_id", str(len(self.rows) + 1))
-        self.rows.append(row)
-        return SimpleNamespace(inserted_id=row["_id"])
-
-    @staticmethod
-    def _match(row, query):
+    def _matches(self, row, query):
         for key, expected in (query or {}).items():
-            actual = row.get(key)
-            if isinstance(expected, dict):
-                if "$gte" in expected and not (actual is not None and actual >= expected["$gte"]):
+            value = row.get(key)
+            if isinstance(expected, dict) and "$gte" in expected:
+                if value is None or value < expected["$gte"]:
                     return False
-                if "$gt" in expected and not (actual is not None and actual > expected["$gt"]):
-                    return False
-            elif actual != expected:
+            elif value != expected:
                 return False
         return True
 
-    def find_one(self, query=None, sort=None):
-        matches = [row for row in self.rows if self._match(row, query)]
-        if sort and matches:
-            key, direction = sort[0]
-            matches.sort(key=lambda row: row.get(key), reverse=direction < 0)
-        return matches[0] if matches else None
+    def insert_one(self, document):
+        row = {"_id": str(self.next_id), **dict(document)}
+        self.next_id += 1
+        self.rows.append(row)
+        return type("InsertResult", (), {"inserted_id": row["_id"]})()
+
+    def find_one(self, query=None):
+        return next((row.copy() for row in self.rows if self._matches(row, query or {})), None)
 
     def find(self, query=None):
-        return FakeCursor([row for row in self.rows if self._match(row, query)])
+        return FakeCursor([row.copy() for row in self.rows if self._matches(row, query or {})])
 
     def count_documents(self, query=None):
-        return sum(1 for row in self.rows if self._match(row, query))
+        return sum(1 for row in self.rows if self._matches(row, query or {}))
 
     def update_one(self, query, update, upsert=False):
-        row = self.find_one(query)
-        if row:
-            row.update(update.get("$set", {}))
-            return SimpleNamespace(matched_count=1, modified_count=1)
+        for row in self.rows:
+            if self._matches(row, query):
+                row.update(update.get("$set", {}))
+                return type("UpdateResult", (), {"modified_count": 1, "upserted_id": None})()
         if upsert:
-            row = dict(query)
-            row.update(update.get("$set", {}))
-            self.insert_one(row)
-            return SimpleNamespace(matched_count=0, modified_count=1)
-        return SimpleNamespace(matched_count=0, modified_count=0)
+            row = {"_id": str(self.next_id), **dict(query), **update.get("$set", {})}
+            self.next_id += 1
+            self.rows.append(row)
+            return type("UpdateResult", (), {"modified_count": 0, "upserted_id": row["_id"]})()
+        return type("UpdateResult", (), {"modified_count": 0, "upserted_id": None})()
 
     def update_many(self, query, update):
         count = 0
         for row in self.rows:
-            if self._match(row, query):
+            if self._matches(row, query):
                 row.update(update.get("$set", {}))
                 count += 1
-        return SimpleNamespace(matched_count=count, modified_count=count)
+        return type("UpdateResult", (), {"modified_count": count})()
 
 
-class FakeDatabase(dict):
-    def __missing__(self, name):
-        value = FakeCollection()
-        self[name] = value
-        return value
+class FakeDatabase:
+    def __init__(self):
+        self.collections = {}
 
-    def command(self, *_args, **_kwargs):
-        return {"ok": 1}
+    def __getitem__(self, name):
+        return self.collections.setdefault(name, FakeCollection())
 
 
 @pytest.fixture
-def fake_store(monkeypatch):
-    database = FakeDatabase()
-    monkeypatch.setattr(ip_guard, "_collections", lambda: (database, object()))
-    monkeypatch.setattr(ip_guard, "_INDEX_READY", True)
-    return database
+def database(monkeypatch):
+    db = FakeDatabase()
+    monkeypatch.setattr(guard, "get_db", lambda: db)
+    monkeypatch.setenv("SCI_CORE_IP_ALLOWLIST", "")
+    return db
 
 
-def test_manual_block_is_persisted_and_enforced(fake_store):
-    record = ip_guard.block_ip(
-        "8.8.8.8",
+def test_client_ip_uses_cloudflare_header_not_spoofable_forwarding_headers():
+    class Request:
+        headers = {
+            "CF-Connecting-IP": "1.1.1.1",
+            "X-Forwarded-For": "8.8.8.8",
+        }
+
+    assert guard.client_ip_from_request(Request()) == "1.1.1.1"
+
+    class NoCloudflareHeader:
+        headers = {"X-Forwarded-For": "1.1.1.1"}
+
+    assert guard.client_ip_from_request(NoCloudflareHeader()) is None
+
+
+def test_manual_block_is_persistent_and_audited(database):
+    result = guard.block_ip(
+        "1.1.1.1",
         actor="admin-1",
-        reason="Repeated credential abuse from this source",
-        duration_minutes=60,
+        reason="Repeated suspicious application requests",
+        duration_minutes=30,
+        current_ip="8.8.8.8",
     )
-    assert record["status"] == "blocked"
-    assert ip_guard.find_active_block("8.8.8.8")["active"] is True
-
-    app = Flask(__name__)
-    app.add_url_rule("/api/example", view_func=lambda: "not reached")
-
-    with app.test_request_context(
-        "/api/example",
-        environ_base={"REMOTE_ADDR": "8.8.8.8"},
-    ):
-        response = ip_guard.enforce_ip_block()
-
-    assert response.status_code == 403
-    assert response.get_json()["code"] == "ip_blocked"
+    assert result["status"] == "active"
+    assert guard.ip_is_blocked("1.1.1.1")["ip"] == "1.1.1.1"
+    assert database["security_ip_events"].count_documents({"action": "blocked"}) == 1
 
 
-def test_manual_block_cannot_block_current_admin_or_non_public_ip(fake_store):
-    with pytest.raises(ValueError, match="cannot block"):
-        ip_guard.block_ip(
+def test_manual_block_rejects_private_ranges_and_admin_self_block(database):
+    for ip in ("10.0.0.1", "127.0.0.1", "192.0.2.1", "1.1.1.0/24", "invalid"):
+        with pytest.raises(ValueError):
+            guard.block_ip(
+                ip,
+                actor="admin-1",
+                reason="Repeated suspicious application requests",
+                duration_minutes=30,
+                current_ip="8.8.8.8",
+            )
+
+    with pytest.raises(ValueError, match="cannot block the IP address"):
+        guard.block_ip(
+            "1.1.1.1",
+            actor="admin-1",
+            reason="Repeated suspicious application requests",
+            duration_minutes=30,
+            current_ip="1.1.1.1",
+        )
+
+
+def test_allowlist_protects_administrator_addresses(database, monkeypatch):
+    monkeypatch.setenv("SCI_CORE_IP_ALLOWLIST", "8.8.8.0/24")
+    with pytest.raises(ValueError, match="administrator IP allowlist"):
+        guard.block_ip(
             "8.8.8.8",
             actor="admin-1",
-            reason="Repeated credential abuse from source",
-            duration_minutes=60,
-            protect_current_ip="8.8.8.8",
-        )
-    with pytest.raises(ValueError, match="public"):
-        ip_guard.block_ip(
-            "127.0.0.1",
-            actor="admin-1",
-            reason="Test local address",
-            duration_minutes=60,
+            reason="Repeated suspicious application requests",
+            duration_minutes=30,
+            current_ip="9.9.9.9",
         )
 
 
-def test_allowlisted_ip_is_never_blocked(fake_store, monkeypatch):
-    monkeypatch.setattr(ip_guard, "_allowlisted", lambda ip: ip == "8.8.8.8")
-    with pytest.raises(ValueError, match="allowlist"):
-        ip_guard.block_ip(
-            "8.8.8.8",
-            actor="admin-1",
-            reason="Repeated credential abuse from source",
-            duration_minutes=60,
-        )
-    assert ip_guard.find_active_block("8.8.8.8") is None
-
-
-def test_repeated_failed_logins_trigger_temporary_block(fake_store, monkeypatch):
-    monkeypatch.setattr(ip_guard, "_allowlisted", lambda _ip: False)
-    result = None
-    for _ in range(ip_guard.AUTH_FAILURE_THRESHOLD):
-        result = ip_guard.record_failed_authentication("8.8.4.4", "/api/auth/login", 401)
-    assert result is not None
-    assert result["source"] == "auto_bruteforce"
-    assert result["duration_minutes"] == ip_guard.AUTO_BLOCK_MINUTES
-    assert ip_guard.find_active_block("8.8.4.4") is not None
-
-
-def test_non_login_failures_do_not_trigger_automatic_block(fake_store):
-    for _ in range(ip_guard.AUTH_FAILURE_THRESHOLD + 2):
-        result = ip_guard.record_failed_authentication("1.1.1.1", "/api/auth/me", 401)
-    assert result is None
-    assert ip_guard.find_active_block("1.1.1.1") is None
-
-
-def test_unblock_releases_only_the_selected_ip(fake_store):
-    for ip in ("8.8.8.8", "8.8.4.4"):
-        ip_guard.block_ip(
-            ip,
-            actor="admin-1",
-            reason="Repeated credential abuse from source",
-            duration_minutes=60,
-        )
-    result = ip_guard.unblock_ip("8.8.8.8", actor="admin-1")
+def test_unblock_releases_enforcement_and_audits_event(database):
+    guard.block_ip(
+        "1.1.1.1",
+        actor="admin-1",
+        reason="Repeated suspicious application requests",
+        duration_minutes=30,
+        current_ip="8.8.8.8",
+    )
+    result = guard.unblock_ip(
+        "1.1.1.1",
+        actor="admin-1",
+        reason="Administrator verified and released this source.",
+    )
     assert result["records_released"] == 1
-    assert ip_guard.find_active_block("8.8.8.8") is None
-    assert ip_guard.find_active_block("8.8.4.4") is not None
+    assert guard.ip_is_blocked("1.1.1.1") is None
+    assert database["security_ip_events"].count_documents({}) == 2
 
 
-def test_admin_api_requires_current_admin_and_exposes_persistent_blocks(fake_store, monkeypatch):
-    app = Flask(__name__)
-    app.register_blueprint(ip_guard.security_bp)
-    monkeypatch.setattr(ip_guard, "_require_current_platform_admin", lambda: ("admin-1", None))
-    client = app.test_client()
-
-    response = client.post(
-        "/api/admin/security/ip-blocks",
-        json={
-            "ip": "8.8.8.8",
-            "reason": "Repeated credential abuse from source",
-            "duration_minutes": 120,
-        },
+def test_expired_block_is_deactivated_before_enforcement(database):
+    guard.block_ip(
+        "1.1.1.1",
+        actor="admin-1",
+        reason="Repeated suspicious application requests",
+        duration_minutes=30,
+        current_ip="8.8.8.8",
     )
-    assert response.status_code == 201
-    assert response.get_json()["block"]["ip"] == "8.8.8.8"
-
-    listed = client.get("/api/admin/security/ip-blocks")
-    assert listed.status_code == 200
-    assert listed.get_json()["protection"]["persistent"] is True
-    assert listed.get_json()["blocks"][0]["ip"] == "8.8.8.8"
-
-    released = client.post(
-        "/api/admin/security/ip-blocks/unblock",
-        json={"ip": "8.8.8.8"},
-    )
-    assert released.status_code == 200
-    assert released.get_json()["result"]["status"] == "unblocked"
+    row = database["security_ip_blocks"].rows[0]
+    row["expires_at"] = datetime.now(timezone.utc) - timedelta(seconds=1)
+    assert guard.ip_is_blocked("1.1.1.1") is None
+    assert row["active"] is False
 
 
-def test_admin_api_does_not_authorize_from_client_supplied_role(fake_store, monkeypatch):
-    app = Flask(__name__)
-    app.register_blueprint(ip_guard.security_bp)
-    monkeypatch.setattr(
-        ip_guard,
-        "_require_current_platform_admin",
-        lambda: (None, (app.response_class("forbidden", status=403), 403)),
-    )
-    response = app.test_client().get("/api/admin/security/ip-blocks")
-    assert response.status_code == 403
+def test_failed_login_auto_block_requires_explicit_admin_allowlist(database, monkeypatch):
+    monkeypatch.setattr(guard, "AUTO_BLOCK_THRESHOLD", 2)
+    assert guard.record_failed_login("1.1.1.1", "/api/login") is None
+    assert database["security_auth_failures"].count_documents({}) == 0
 
 
-def test_raw_forwarded_for_header_is_not_trusted_by_the_ip_guard():
-    app = Flask(__name__)
-    with app.test_request_context(
-        "/",
-        environ_base={"REMOTE_ADDR": "8.8.8.8"},
-        headers={"X-Forwarded-For": "1.1.1.1"},
-    ):
-        # Only a trusted ProxyFix deployment may rewrite REMOTE_ADDR before
-        # this helper runs; the guard never parses arbitrary XFF itself.
-        assert ip_guard.current_client_ip() == "8.8.8.8"
+def test_repeated_failed_login_auto_blocks_non_allowlisted_source(database, monkeypatch):
+    monkeypatch.setenv("SCI_CORE_IP_ALLOWLIST", "8.8.8.8/32")
+    monkeypatch.setattr(guard, "AUTO_BLOCK_THRESHOLD", 2)
+    guard.record_failed_login("1.1.1.1", "/api/login")
+    guard.record_failed_login("1.1.1.1", "/api/auth/login")
+    block = guard.ip_is_blocked("1.1.1.1")
+    assert block is not None
+    assert block["source"] == "auto_bruteforce"
+    assert database["security_auth_failures"].count_documents({"ip": "1.1.1.1"}) == 2
+
+
+def test_login_failure_handler_ignores_non_login_endpoints(database, monkeypatch):
+    monkeypatch.setenv("SCI_CORE_IP_ALLOWLIST", "8.8.8.8/32")
+    guard.record_failed_login("1.1.1.1", "/api/admin/security/ip-blocks")
+    assert database["security_auth_failures"].count_documents({}) == 0

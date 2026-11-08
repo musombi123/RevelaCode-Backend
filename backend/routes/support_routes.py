@@ -45,7 +45,7 @@ def _ticket_assignment_query(actor, legacy_role="support"):
 def support_dashboard():
     role = get_role(request)
 
-    if role not in {"support", "support_admin"}:
+    if role not in {"support", "support_agent", "support_admin"}:
         return jsonify({
             "success": False,
             "message": "Forbidden"
@@ -105,7 +105,7 @@ def support_dashboard():
 def view_tickets():
     role = get_role(request)
 
-    if role not in {"support", "support_admin"}:
+    if role not in {"support", "support_agent", "support_admin"}:
         return jsonify({
             "success": False,
             "message": "Forbidden"
@@ -190,7 +190,7 @@ def view_tickets():
 def resolve_ticket():
     role = get_role(request)
 
-    if role not in {"support", "support_admin"}:
+    if role not in {"support", "support_agent", "support_admin"}:
         return jsonify({
             "success": False,
             "message": "Forbidden"
@@ -246,7 +246,7 @@ def resolve_ticket():
     is_assigned_to_actor = assigned_to == actor_id or str(ticket.get("assigned_to_user_id") or "") == actor_id or (
         bool(actor_contact) and str(ticket.get("assigned_to_contact") or "") == actor_contact
     )
-    if role == "support" and not (is_legacy_team_assignment or is_assigned_to_actor):
+    if role in {"support", "support_agent"} and not (is_legacy_team_assignment or is_assigned_to_actor):
         return jsonify({
             "success": False,
             "message": "This ticket is assigned to another support agent."
@@ -305,7 +305,7 @@ def resolve_ticket():
 def search_tickets():
     role = get_role(request)
 
-    if role not in {"support", "support_admin"}:
+    if role not in {"support", "support_agent", "support_admin"}:
         return jsonify({
             "success": False,
             "message": "Forbidden"
@@ -364,7 +364,7 @@ def search_tickets():
 def support_history():
     role = get_role(request)
 
-    if role not in {"support", "support_admin"}:
+    if role not in {"support", "support_agent", "support_admin"}:
         return jsonify({
             "success": False,
             "message": "Forbidden"
@@ -424,7 +424,7 @@ def support_history():
 def support_analytics():
     role = get_role(request)
 
-    if role not in {"support", "support_admin"}:
+    if role not in {"support", "support_agent", "support_admin"}:
         return jsonify({
             "success": False,
             "message": "Forbidden"
@@ -498,7 +498,7 @@ def support_analytics():
 def get_ticket(ticket_id):
     role = get_role(request)
 
-    if role not in {"support", "support_admin"}:
+    if role not in {"support", "support_agent", "support_admin"}:
         return jsonify({
             "success": False,
             "message": "Forbidden"
@@ -555,7 +555,7 @@ def assign_ticket():
 
     # Agents can claim eligible queue work. Supervisors use the dedicated
     # assignment endpoint to assign tickets to another named agent.
-    if role != "support":
+    if role not in {"support", "support_agent"}:
         return jsonify({
             "success": False,
             "message": "Forbidden"
@@ -689,7 +689,7 @@ def support_admin_overview():
         "$or": [{"assigned_to": None}, {"assigned_to": {"$exists": False}}, {"assigned_to": ""}]
     })
 
-    team_roles = {"support", "support_admin"}
+    team_roles = {"support", "support_agent", "support_admin"}
     staff_count = users.count_documents({
         "$or": [
             {"role": {"$in": list(team_roles)}},
@@ -729,8 +729,8 @@ def support_admin_team():
     users = db["users"]
     query = {
         "$or": [
-            {"role": {"$in": ["support", "support_admin"]}},
-            {"roles": {"$in": ["support", "support_admin"]}},
+            {"role": {"$in": ["support", "support_agent", "support_admin"]}},
+            {"roles": {"$in": ["support", "support_agent", "support_admin"]}},
         ],
         "status": {"$nin": ["banned", "deleted", "disabled", "suspended", "inactive"]},
         "is_active": {"$ne": False},
@@ -738,7 +738,17 @@ def support_admin_team():
     team = []
     for user in users.find(query).sort("created_at", -1).limit(300):
         user_id = str(user.get("_id") or user.get("id") or user.get("user_id") or "")
-        role = str(user.get("role") or "support")
+        stored_roles = {
+            str(value).strip().casefold()
+            for value in (user.get("roles") if isinstance(user.get("roles"), list) else [])
+            if value
+        }
+        primary_role = str(user.get("role") or "").strip().casefold()
+        role = (
+            primary_role
+            if primary_role in {"support", "support_agent", "support_admin"}
+            else next((value for value in ("support_admin", "support_agent", "support") if value in stored_roles), "support")
+        )
         assigned = db[COLLECTIONS["support_tickets"]].count_documents({
             "$or": [
                 {"assigned_to_user_id": user_id},
@@ -800,7 +810,7 @@ def support_admin_assign_ticket(ticket_id):
         return jsonify(success=False, message="The chosen support account was not found."), 404
     roles = set(staff.get("roles") if isinstance(staff.get("roles"), list) else [])
     staff_role = str(staff.get("role") or "").strip().casefold()
-    if staff_role != "support" and "support" not in {str(value).casefold() for value in roles}:
+    if staff_role not in {"support", "support_agent"} and not ({"support", "support_agent"} & {str(value).casefold() for value in roles}):
         return jsonify(success=False, message="Tickets may only be assigned to Support Agents, not a Support Administrator."), 422
     if str(staff.get("status") or "active").casefold() not in {"active", "verified"} or staff.get("is_active") is False:
         return jsonify(success=False, message="The selected support account is not active."), 409

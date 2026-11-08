@@ -422,6 +422,73 @@ def ensure_cors_response_headers(response):
 
 
 # =========================================================
+# PLATFORM IP PROTECTION — REQUEST ENFORCEMENT
+# =========================================================
+
+@app.before_request
+def enforce_platform_ip_blocks():
+    """Reject an active platform IP block before any API route executes."""
+    if request.method == "OPTIONS" or request.path in {"/", "/health"}:
+        return None
+
+    try:
+        from backend.security_ip_guard import client_ip_from_request, ip_is_blocked
+
+        client_ip = client_ip_from_request(request)
+        request.environ["revelacode.client_ip"] = client_ip or ""
+        if not client_ip:
+            return None
+
+        block = ip_is_blocked(client_ip)
+        if not block:
+            return None
+
+        expires = block.get("expires_at")
+        if hasattr(expires, "isoformat"):
+            expires = expires.isoformat()
+        response = jsonify({
+            "success": False,
+            "code": "IP_BLOCKED",
+            "message": "This source address is temporarily blocked by RevelaCode platform protection.",
+            "expires_at": expires,
+            "reason": str(block.get("reason") or "Defensive IP block")[:300],
+        })
+        response.status_code = 403
+        response.headers["Retry-After"] = "300"
+        return response
+    except Exception as exc:
+        # Do not fail the whole platform closed if the optional guard store is
+        # temporarily unavailable. Admin APIs report degraded state instead.
+        logger.warning(
+            "Platform IP protection lookup unavailable | error_type=%s",
+            type(exc).__name__,
+        )
+        return None
+
+
+@app.after_request
+def record_platform_failed_login(response):
+    """Record only invalid-login status metadata; never read or store credentials."""
+    if (
+        response.status_code == 401
+        and request.path in {"/api/login", "/api/auth/login"}
+    ):
+        try:
+            from backend.security_ip_guard import record_failed_login
+
+            record_failed_login(
+                request.environ.get("revelacode.client_ip") or None,
+                request.path,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Platform failed-login telemetry unavailable | error_type=%s",
+                type(exc).__name__,
+            )
+    return response
+
+
+# =========================================================
 # DATABASE
 # =========================================================
 
