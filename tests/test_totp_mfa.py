@@ -132,6 +132,7 @@ class TotpMfaIntegrationTests(unittest.TestCase):
         self.assertEqual(first_verify.status_code, 200, first_verify.get_json())
         self.assertNotIn(mfa._recovery_hash(visible_codes[0]), self.user["mfa_recovery_code_hashes"])
 
+        self.client.delete_cookie("revela_trusted_device", path="/api/")
         second_login = self.client.post(
             "/api/login",
             json={"contact": self.user["contact"], "password": "correct horse battery staple"},
@@ -222,7 +223,6 @@ class TotpMfaIntegrationTests(unittest.TestCase):
             json={
                 "contact": self.user["contact"],
                 "password": "correct horse battery staple",
-                "trusted_device_token": trusted_token,
             },
         )
         self.assertEqual(after_revoke.status_code, 200, after_revoke.get_json())
