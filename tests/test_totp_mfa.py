@@ -166,5 +166,69 @@ class TotpMfaIntegrationTests(unittest.TestCase):
         self.assertFalse(self.user.get("mfa_enabled", False))
 
 
+    def test_trusted_device_skips_mfa_until_revoked(self):
+        secret = mfa._new_secret()
+        self.user.update({
+            "mfa_enabled": True,
+            "mfa_secret_enc": mfa._encrypt_secret(secret),
+            "mfa_recovery_code_hashes": [],
+        })
+
+        first_login = self.client.post(
+            "/api/login",
+            json={"contact": self.user["contact"], "password": "correct horse battery staple"},
+        )
+        self.assertTrue(first_login.get_json()["mfa_required"])
+        verified = self.client.post(
+            "/api/auth/mfa/login-verify",
+            json={
+                "challenge_token": first_login.get_json()["challenge_token"],
+                "code": mfa._totp_at(secret),
+            },
+        )
+        self.assertEqual(verified.status_code, 200, verified.get_json())
+        trusted_token = verified.get_json()["trusted_device_token"]
+        self.assertTrue(trusted_token)
+        stored_devices = self.user["mfa_trusted_devices"]
+        self.assertEqual(len(stored_devices), 1)
+        self.assertNotEqual(stored_devices[0]["token_hash"], trusted_token)
+
+        trusted_login = self.client.post(
+            "/api/login",
+            json={
+                "contact": self.user["contact"],
+                "password": "correct horse battery staple",
+                "trusted_device_token": trusted_token,
+            },
+        )
+        self.assertEqual(trusted_login.status_code, 200, trusted_login.get_json())
+        self.assertTrue(trusted_login.get_json()["trusted_device"])
+        self.assertNotIn("challenge_token", trusted_login.get_json())
+
+        trusted_headers = {"Authorization": "Bearer " + trusted_login.get_json()["access_token"]}
+        devices = self.client.get("/api/auth/mfa/devices", headers=trusted_headers)
+        self.assertEqual(devices.status_code, 200, devices.get_json())
+        device_id = devices.get_json()["devices"][0]["id"]
+
+        revoked = self.client.delete(
+            f"/api/auth/mfa/devices/{device_id}",
+            headers=trusted_headers,
+        )
+        self.assertEqual(revoked.status_code, 200, revoked.get_json())
+
+        after_revoke = self.client.post(
+            "/api/login",
+            json={
+                "contact": self.user["contact"],
+                "password": "correct horse battery staple",
+                "trusted_device_token": trusted_token,
+            },
+        )
+        self.assertEqual(after_revoke.status_code, 200, after_revoke.get_json())
+        self.assertTrue(after_revoke.get_json()["mfa_required"])
+        self.assertNotIn("access_token", after_revoke.get_json())
+
+
+
 if __name__ == "__main__":
     unittest.main()
