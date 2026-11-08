@@ -187,18 +187,16 @@ class TotpMfaIntegrationTests(unittest.TestCase):
             },
         )
         self.assertEqual(verified.status_code, 200, verified.get_json())
-        trusted_token = verified.get_json()["trusted_device_token"]
-        self.assertTrue(trusted_token)
+        self.assertIn("revela_trusted_device=", verified.headers.get("Set-Cookie", ""))
         stored_devices = self.user["mfa_trusted_devices"]
         self.assertEqual(len(stored_devices), 1)
-        self.assertNotEqual(stored_devices[0]["token_hash"], trusted_token)
+        self.assertTrue(stored_devices[0]["token_hash"])
 
         trusted_login = self.client.post(
             "/api/login",
             json={
                 "contact": self.user["contact"],
                 "password": "correct horse battery staple",
-                "trusted_device_token": trusted_token,
             },
         )
         self.assertEqual(trusted_login.status_code, 200, trusted_login.get_json())
