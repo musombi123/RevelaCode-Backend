@@ -14,6 +14,7 @@ from backend.jumuiya.core.errors import APIError
 from backend.jumuiya.core.permissions import (
     current_user_id,
     require_authenticated,
+    is_platform_super_admin,
 )
 
 
@@ -980,6 +981,36 @@ def require_student_scope(
 
 
 # =========================================================
+# PLATFORM SUPER-ADMIN MEMBERSHIP
+# =========================================================
+
+def _platform_super_admin_membership(user_id: Any, school_id: Any = None) -> dict | None:
+    """Provide owner-equivalent, tenant-scoped access to platform super-admin.
+
+    The operator may select any school ID on a school-scoped route. The
+    synthetic membership is request-local and is never persisted as a school
+    membership or assigned to ordinary staff.
+    """
+    if not is_platform_super_admin():
+        return None
+
+    current_id = _normalize_user_id(current_user_id())
+    requested_id = _normalize_user_id(user_id)
+    if not current_id or current_id != requested_id:
+        return None
+
+    return {
+        "school_id": _normalize_school_id(school_id) if school_id is not None else None,
+        "user_id": current_id,
+        "role": ROLE_OWNER,
+        "status": "active",
+        "permissions": sorted(PERMISSIONS),
+        "assigned_class_ids": [],
+        "is_platform_admin": True,
+    }
+
+
+# =========================================================
 # AUTHORIZATION
 # =========================================================
 
@@ -1002,10 +1033,12 @@ def authorize(
             "invalid_elimu_permission",
         )
 
-    member = get_membership(
-        user_id,
-        school_id,
-    )
+    member = _platform_super_admin_membership(user_id, school_id)
+    if member is None:
+        member = get_membership(
+            user_id,
+            school_id,
+        )
 
     if not member:
         raise APIError(
@@ -1167,9 +1200,11 @@ def require_role(
         @require_authenticated
         def wrapped(*args, **kwargs):
 
-            member = get_membership(
-                current_user_id()
-            )
+            member = _platform_super_admin_membership(current_user_id())
+            if member is None:
+                member = get_membership(
+                    current_user_id()
+                )
 
             if not member:
                 raise APIError(
