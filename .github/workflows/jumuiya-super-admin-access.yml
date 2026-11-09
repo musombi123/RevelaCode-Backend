@@ -1,0 +1,48 @@
+name: Jumuiya super-admin access validation
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "backend/jumuiya/integration/auth_bridge.py"
+      - "backend/jumuiya/core/permissions.py"
+      - "backend/jumuiya/elimu/permissions.py"
+      - "backend/jumuiya/biashara/access.py"
+      - "backend/jumuiya/biashara/templates.py"
+      - "backend/jumuiya/community/services.py"
+      - "backend/revenue/admin_routes.py"
+      - "tests/test_jumuiya_super_admin_access.py"
+      - ".github/workflows/jumuiya-super-admin-access.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "backend/jumuiya/integration/auth_bridge.py"
+      - "backend/jumuiya/core/permissions.py"
+      - "backend/jumuiya/elimu/permissions.py"
+      - "backend/jumuiya/biashara/access.py"
+      - "backend/jumuiya/biashara/templates.py"
+      - "backend/jumuiya/community/services.py"
+      - "backend/revenue/admin_routes.py"
+      - "tests/test_jumuiya_super_admin_access.py"
+      - ".github/workflows/jumuiya-super-admin-access.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  super-admin-access:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install focused authorization test dependencies
+        run: python -m pip install Flask pymongo pytest python-dotenv PyJWT
+      - name: Compile modified authorization modules
+        run: python -m py_compile backend/jumuiya/integration/auth_bridge.py backend/jumuiya/core/permissions.py backend/jumuiya/elimu/permissions.py backend/jumuiya/biashara/access.py backend/jumuiya/biashara/templates.py backend/jumuiya/community/services.py backend/revenue/admin_routes.py
+      - name: Verify owner elevation, hub access and plan exclusion
+        env:
+          PYTHONPATH: .
+        run: python -m pytest -q tests/test_jumuiya_super_admin_access.py
