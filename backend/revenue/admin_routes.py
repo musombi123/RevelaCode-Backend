@@ -20,6 +20,7 @@ from backend.jumuiya.core.permissions import (
     current_user_id,
     require_authenticated,
     require_roles,
+    require_not_super_admin,
 )
 from backend.revenue import revenue_bp
 from backend.revenue.constants import SUPPORTED_REVENUE_STREAMS
@@ -391,6 +392,7 @@ def revenue_admin_transactions():
 
 @revenue_bp.get("/admin/plans")
 @require_authenticated
+@require_not_super_admin
 @require_roles(*PLATFORM_ADMIN_ROLES)
 def revenue_admin_list_plans():
     from backend.revenue.mpesa import checkout_is_production_configured
@@ -406,6 +408,7 @@ def revenue_admin_list_plans():
 
 @revenue_bp.post("/admin/plans")
 @require_authenticated
+@require_not_super_admin
 @require_roles(*PLATFORM_ADMIN_ROLES)
 def revenue_admin_create_plan():
     data = request.get_json(silent=True)
@@ -464,6 +467,7 @@ def revenue_admin_create_plan():
 
 @revenue_bp.put("/admin/plans/<plan_code>")
 @require_authenticated
+@require_not_super_admin
 @require_roles(*PLATFORM_ADMIN_ROLES)
 def revenue_admin_update_plan(plan_code):
     data = request.get_json(silent=True)
