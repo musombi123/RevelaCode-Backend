@@ -52,6 +52,11 @@ ROLE_LABELS = {
 ALL = frozenset({"*"})
 
 ROLE_PERMISSIONS = {
+    # Platform roles are server-assigned only; they are deliberately omitted
+    # from ROLE_LABELS so they cannot be granted through ordinary staff invites.
+    "super_admin": ALL,
+    "platform_admin": ALL,
+    "revelacode_admin": ALL,
     "ceo": ALL,
     "director": ALL,
     "admin": ALL,
