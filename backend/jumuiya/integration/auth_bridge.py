@@ -8,6 +8,7 @@ import jwt
 from flask import g, request
 
 from backend.jumuiya.core.identity import normalize_user
+from backend.support_config import is_configured_super_admin
 
 
 # =========================================================
@@ -18,6 +19,36 @@ JWT_SECRET = os.getenv("JWT_SECRET")
 
 JWT_ALGORITHM = "HS256"
 JWT_ALGORITHMS = [JWT_ALGORITHM]
+
+
+def normalize_jumuiya_identity(raw_user: dict) -> dict:
+    """Normalize the authoritative user and apply the configured owner role.
+
+    The owner elevation is based on the server-side permanent-owner identity
+    check (stable account ID plus configured contact), never on JWT claims or
+    browser-provided role flags.
+    """
+    normalized = normalize_user(raw_user)
+    if not normalized:
+        return {}
+
+    user_id = (
+        raw_user.get("id")
+        or raw_user.get("_id")
+        or raw_user.get("user_id")
+    )
+    if is_configured_super_admin(user_id, raw_user):
+        roles = {
+            str(role).strip().casefold()
+            for role in normalized.get("roles", [])
+            if str(role).strip()
+        }
+        roles.add("super_admin")
+        normalized["roles"] = sorted(roles)
+        normalized["role"] = "super_admin"
+        normalized["is_platform_super_admin"] = True
+
+    return normalized
 
 
 # =========================================================
@@ -257,7 +288,7 @@ def install_auth_bridge(app):
         # -------------------------------------------------
 
         try:
-            normalized = normalize_user(user)
+            normalized = normalize_jumuiya_identity(user)
 
         except Exception:
             app.logger.exception(
