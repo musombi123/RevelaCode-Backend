@@ -388,6 +388,8 @@ def authenticated_user_me():
         "verified": 1,
         "is_verified": 1,
         "status": 1,
+        "is_active": 1,
+        "token_version": 1,
         "created_at": 1,
         "joined_at": 1,
         "hub_usage": 1,
