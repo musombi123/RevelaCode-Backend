@@ -177,28 +177,22 @@ def current_user_roles():
 
     roles = user.get("roles")
 
-    if roles is None:
-
-        role = user.get("role")
-
-        if role:
-            roles = [role]
-
-        else:
-            roles = []
-
-    elif isinstance(roles, str):
-
+    if isinstance(roles, str):
         roles = [roles]
-
     elif not isinstance(roles, (list, tuple, set)):
-
         roles = []
 
+    # Keep the canonical singular role as well as the role list. Some existing
+    # accounts carry an older roles array that does not include their primary
+    # role, and authorization must normalize case consistently.
+    candidates = list(roles)
+    if user.get("role"):
+        candidates.append(user.get("role"))
+
     return {
-        str(role).strip()
-        for role in roles
-        if role
+        str(role).strip().casefold()
+        for role in candidates
+        if str(role).strip()
     }
 
 
@@ -211,7 +205,7 @@ def has_role(role):
     Check whether the current user has a specific role.
     """
 
-    return str(role) in current_user_roles()
+    return str(role).strip().casefold() in current_user_roles()
 
 
 # =========================================================
@@ -232,7 +226,7 @@ def require_roles(*allowed_roles):
     """
 
     allowed = {
-        str(role).strip()
+        str(role).strip().casefold()
         for role in allowed_roles
         if role
     }
@@ -268,6 +262,26 @@ def require_roles(*allowed_roles):
         return wrapper
 
     return decorator
+
+
+def is_platform_super_admin() -> bool:
+    """Return whether the current authenticated Jumuiya identity is super-admin."""
+    return "super_admin" in current_user_roles()
+
+
+def require_not_super_admin(fn):
+    """Deny the permanent super-admin access to subscription-plan controls."""
+    @wraps(fn)
+    def wrapper(*args, **kwargs):
+        if is_platform_super_admin():
+            raise APIError(
+                "Subscription-plan administration is intentionally excluded from super-admin access.",
+                403,
+                "super_admin_plan_access_excluded",
+            )
+        return fn(*args, **kwargs)
+
+    return wrapper
 
 
 # =========================================================
