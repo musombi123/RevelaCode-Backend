@@ -327,6 +327,17 @@ def _normalize_post_type(
 # HUB AUTHORIZATION
 # =========================================================
 
+def _is_platform_super_admin(user_id: str) -> bool:
+    """Check the existing authenticated request identity for platform ownership."""
+    try:
+        from backend.jumuiya.core.permissions import current_user_id, is_platform_super_admin
+
+        return str(current_user_id()) == str(user_id) and is_platform_super_admin()
+    except Exception:
+        return False
+
+
+
 def _ensure_hub_access(
     user_id: str,
     hub: str,
@@ -346,7 +357,7 @@ def _ensure_hub_access(
     This prevents false hub identity.
     """
 
-    if hub == "community":
+    if hub == "community" or _is_platform_super_admin(user_id):
         return
 
     if hub == "biashara":
@@ -1729,17 +1740,13 @@ def update_post(
         post_id
     )
 
-    existing = collection(
-        POSTS
-    ).find_one(
-        {
-            "_id": post_object_id,
-            "author_user_id": user_id,
-            "status": {
-                "$ne": "deleted"
-            },
-        }
-    )
+    ownership_filter = {} if _is_platform_super_admin(user_id) else {"author_user_id": user_id}
+    post_query = {
+        "_id": post_object_id,
+        "status": {"$ne": "deleted"},
+        **ownership_filter,
+    }
+    existing = collection(POSTS).find_one(post_query)
 
     if not existing:
         raise APIError(
@@ -1928,13 +1935,7 @@ def update_post(
     document = collection(
         POSTS
     ).find_one_and_update(
-        {
-            "_id": post_object_id,
-            "author_user_id": user_id,
-            "status": {
-                "$ne": "deleted"
-            },
-        },
+        post_query,
         {
             "$set": safe_update
         },
@@ -1986,15 +1987,12 @@ def delete_post(
         post_id
     )
 
-    document = collection(
-        POSTS
-    ).find_one_and_update(
+    ownership_filter = {} if _is_platform_super_admin(user_id) else {"author_user_id": user_id}
+    document = collection(POSTS).find_one_and_update(
         {
             "_id": post_object_id,
-            "author_user_id": user_id,
-            "status": {
-                "$ne": "deleted"
-            },
+            "status": {"$ne": "deleted"},
+            **ownership_filter,
         },
         {
             "$set": {
