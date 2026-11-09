@@ -1,6 +1,15 @@
 from __future__ import annotations
 
+import sys
+from types import ModuleType
+
 from flask import Flask, g
+
+# Avoid opening a real MongoDB connection during focused authorization tests.
+if "backend.db" not in sys.modules:
+    database_stub = ModuleType("backend.db")
+    database_stub.get_db = lambda: None
+    sys.modules["backend.db"] = database_stub
 
 from backend.jumuiya.core.errors import APIError, register_error_handlers
 from backend.jumuiya.core.permissions import (
@@ -85,7 +94,7 @@ def test_super_admin_role_normalization_and_plan_exclusion():
     assert client.get("/admin").status_code == 200
     denied = client.get("/plans")
     assert denied.status_code == 403
-    assert denied.get_json()["code"] == "super_admin_plan_access_excluded"
+    assert denied.get_json()["error"]["code"] == "super_admin_plan_access_excluded"
 
 
 def test_elimu_super_admin_gets_owner_equivalent_permissions(monkeypatch):
