@@ -21,6 +21,15 @@ JWT_ALGORITHM = "HS256"
 JWT_ALGORITHMS = [JWT_ALGORITHM]
 
 
+def _auth_profile_verified(value) -> bool:
+    """Match the main auth profile verification semantics."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value == 1
+    return str(value or "").strip().casefold() in {"true", "1", "yes", "verified"}
+
+
 def normalize_jumuiya_identity(raw_user: dict) -> dict:
     """Normalize the authoritative user and apply the configured owner role.
 
@@ -244,9 +253,10 @@ def install_auth_bridge(app):
         # ACCOUNT STATE
         # -------------------------------------------------
 
-        verified = bool(
-            user.get("verified", False)
-        )
+        verified_value = user.get("verified")
+        if verified_value is None:
+            verified_value = user.get("is_verified", False)
+        verified = _auth_profile_verified(verified_value)
 
         app.logger.info(
             "Jumuiya resolved user. user_id=%s verified=%s",
