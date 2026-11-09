@@ -11,6 +11,20 @@ ACTIVE_STATUSES = ("active", "accepted")
 ASSIGNABLE_ROLES = {"admin", "director", "manager", "sales", "inventory", "viewer", "operations_manager", "hr_manager", "accountant", "store_keeper", "factory_floor_lead", "sales_agent", "employee"}
 
 
+def _is_platform_super_admin(user_id):
+    """Resolve super-admin from the already-verified request identity only."""
+    try:
+        from backend.jumuiya.core.permissions import current_user_id, current_user_roles
+
+        return (
+            str(current_user_id()) == str(user_id)
+            and "super_admin" in current_user_roles()
+        )
+    except Exception:
+        # Background jobs and non-request integrations retain normal tenant rules.
+        return False
+
+
 def clean_business_id(value):
     if value is None:
         return None
@@ -50,6 +64,14 @@ def _specific(user_id, business_id):
     if not business:
         return None
     resolved_id = str(business.get("_id") or business_id)
+    if _is_platform_super_admin(user_id):
+        return {
+            "business": business,
+            "role": "super_admin",
+            "is_owner": True,
+            "is_platform_admin": True,
+            "membership": None,
+        }
     if str(business.get("owner_user_id") or "") == str(user_id):
         return {"business": business, "role": "owner", "is_owner": True, "membership": None}
     membership, role = _find_membership(user_id, resolved_id)
@@ -74,6 +96,20 @@ def resolve_business_access(user_id, business_id=None):
         if context:
             return context
 
+    if _is_platform_super_admin(uid):
+        business = collection("jumuiya_businesses").find_one(
+            {},
+            sort=[("updated_at", -1), ("_id", -1)],
+        )
+        if business:
+            return {
+                "business": business,
+                "role": "super_admin",
+                "is_owner": True,
+                "is_platform_admin": True,
+                "membership": None,
+            }
+
     owned = collection("jumuiya_businesses").find_one({"owner_user_id": uid})
     if owned:
         return {"business": owned, "role": "owner", "is_owner": True, "membership": None}
@@ -93,6 +129,20 @@ def list_business_access(user_id):
     uid = str(user_id or "").strip()
     if not uid:
         return []
+    if _is_platform_super_admin(uid):
+        rows = collection("jumuiya_businesses").find({}).sort("created_at", -1).limit(500)
+        pref = collection("jumuiya_biashara_active_business").find_one({"user_id": uid}) or {}
+        active_id = str(pref.get("business_id") or "")
+        return [
+            {
+                **dict(business),
+                "access_role": "super_admin",
+                "is_owner": True,
+                "is_platform_admin": True,
+                "is_active": str(business.get("_id") or "") == active_id,
+            }
+            for business in rows
+        ]
     pref = collection("jumuiya_biashara_active_business").find_one({"user_id": uid}) or {}
     active_id = str(pref.get("business_id") or "")
     businesses = {}
