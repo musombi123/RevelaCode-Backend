@@ -926,9 +926,7 @@ def register():
         "full_name"
     )
 
-    identifier = str(
-        data.get("identifier") or data.get("contact") or data.get("username") or ""
-    ).strip()
+    contact = str(data.get("contact") or "").strip()
 
     password = data.get(
         "password"
@@ -1342,17 +1340,24 @@ def verify():
             message="Contact and code required",
         ), 400
 
-    user = (
-        users_col.find_one(
-            {
-                "contact": contact
-            }
-        )
-        if MONGO_AVAILABLE
-        else get_user_from_file(
-            contact
-        )
-    )
+    if MONGO_AVAILABLE and users_col is not None:
+        user = users_col.find_one({
+            "$or": [
+                {"contact": identifier},
+                {"username": {"$regex": "^" + re.escape(identifier) + "$", "$options": "i"}},
+            ]
+        })
+    else:
+        user = get_user_from_file(identifier)
+        if user is None:
+            user = next(
+                (
+                    record for record in load_users_file().values()
+                    if isinstance(record, dict)
+                    and normalize_username(record.get("username")) == normalize_username(identifier)
+                ),
+                None,
+            )
 
     if not user:
 
@@ -1453,9 +1458,9 @@ def login():
         or {}
     )
 
-    contact = data.get(
-        "contact"
-    )
+    identifier = str(
+        data.get("identifier") or data.get("contact") or data.get("username") or ""
+    ).strip()
 
     password = data.get(
         "password"
