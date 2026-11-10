@@ -1212,24 +1212,11 @@ def request_code():
             message="Enter a valid email address to receive your activation code.",
         ), 422
 
-    if MONGO_AVAILABLE and users_col is not None:
-        user = users_col.find_one({
-            "$or": [
-                {"contact": identifier},
-                {"username": identifier.casefold()},
-            ]
-        })
-    else:
-        user = get_user_from_file(identifier)
-        if user is None:
-            user = next(
-                (
-                    record for record in load_users_file().values()
-                    if isinstance(record, dict)
-                    and normalize_username(record.get("username")) == normalize_username(identifier)
-                ),
-                None,
-            )
+    user = (
+        users_col.find_one({"contact": contact})
+        if MONGO_AVAILABLE and users_col is not None
+        else get_user_from_file(contact)
+    )
 
     if not user:
 
@@ -1480,17 +1467,24 @@ def login():
     # LOAD USER
     # -----------------------------------------------------
 
-    user = (
-        users_col.find_one(
-            {
-                "contact": contact
-            }
-        )
-        if MONGO_AVAILABLE
-        else get_user_from_file(
-            contact
-        )
-    )
+    if MONGO_AVAILABLE and users_col is not None:
+        user = users_col.find_one({
+            "$or": [
+                {"contact": identifier},
+                {"username": {"$regex": "^" + re.escape(identifier) + "$", "$options": "i"}},
+            ]
+        })
+    else:
+        user = get_user_from_file(identifier)
+        if user is None:
+            user = next(
+                (
+                    record for record in load_users_file().values()
+                    if isinstance(record, dict)
+                    and normalize_username(record.get("username")) == normalize_username(identifier)
+                ),
+                None,
+            )
 
     if not user:
 
