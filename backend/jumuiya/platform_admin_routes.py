@@ -299,8 +299,8 @@ def school_status_query(status):
         return {
             "$or": [
                 {"verification_status": "pending"},
-                {"status": "pending_verification"},
-                {"status": "pending"},
+                {"verification_status": "needs_information"},
+                {"status": {"$in": ["pending_verification", "pending"]}},
                 {
                     "status": "active",
                     "verification_status": {"$exists": False},
