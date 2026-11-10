@@ -684,6 +684,71 @@ def generate_code():
         )
     )
 
+USERNAME_PATTERN = re.compile(r"^[a-z][a-z0-9._]{2,19}$")
+
+
+def normalize_username(value):
+    return str(value or "").strip().casefold()
+
+
+def username_is_available(username, exclude_user_id=None):
+    normalized = normalize_username(username)
+    if not normalized:
+        return False
+    if MONGO_AVAILABLE and users_col is not None:
+        query = {"username": {"$regex": "^" + re.escape(normalized) + "$", "$options": "i"}}
+        if exclude_user_id and ObjectId.is_valid(str(exclude_user_id)):
+            query["_id"] = {"$ne": ObjectId(str(exclude_user_id))}
+        return users_col.find_one(query, {"_id": 1}) is None
+    for record in load_users_file().values():
+        if not isinstance(record, dict):
+            continue
+        if normalize_username(record.get("username")) == normalized:
+            record_id = str(record.get("_id") or record.get("id") or record.get("user_id") or "")
+            if not exclude_user_id or record_id != str(exclude_user_id):
+                return False
+    return True
+
+
+def generate_system_username():
+    # Random suffix avoids leaking names or contact details into public handles.
+    for _ in range(20):
+        candidate = "member" + secrets.token_hex(3)
+        if username_is_available(candidate):
+            return candidate
+    raise RuntimeError("Could not allocate a unique username.")
+
+
+def ensure_user_username(user):
+    """Assign and persist a unique system username for legacy accounts."""
+    if not isinstance(user, dict):
+        raise RuntimeError("Cannot assign a username to an invalid account.")
+    existing = normalize_username(user.get("username"))
+    if existing:
+        return user
+    for _ in range(20):
+        candidate = generate_system_username()
+        if MONGO_AVAILABLE and users_col is not None:
+            identity_query = {"_id": user["_id"]} if user.get("_id") is not None else {"contact": user.get("contact")}
+            identity_query["$or"] = [
+                {"username": {"$exists": False}},
+                {"username": None},
+                {"username": ""},
+            ]
+            users_col.update_one(identity_query, {"$set": {"username": candidate}})
+            refreshed = users_col.find_one(
+                {"_id": user["_id"]} if user.get("_id") is not None else {"contact": user.get("contact")}
+            )
+            if refreshed:
+                user = refreshed
+                if normalize_username(user.get("username")):
+                    return user
+        else:
+            user["username"] = candidate
+            save_user_to_file(user)
+            return user
+    raise RuntimeError("Could not persist a unique username for this account.")
+
 
 # =========================================================
 # MONGO SERIALIZATION
@@ -861,9 +926,9 @@ def register():
         "full_name"
     )
 
-    contact = data.get(
-        "contact"
-    )
+    identifier = str(
+        data.get("identifier") or data.get("contact") or data.get("username") or ""
+    ).strip()
 
     password = data.get(
         "password"
@@ -872,10 +937,12 @@ def register():
     confirm = data.get(
         "confirm_password"
     )
+    username = normalize_username(data.get("username"))
 
     if not all([
         full_name,
         contact,
+        username,
         password,
         confirm,
     ]):
@@ -891,6 +958,20 @@ def register():
             success=False,
             message="Passwords do not match",
         ), 400
+
+    if not USERNAME_PATTERN.fullmatch(username):
+        return jsonify(
+            success=False,
+            code="invalid_username",
+            message="Username must be 3–20 characters, start with a letter, and contain only letters, numbers, dots or underscores.",
+        ), 422
+
+    if not username_is_available(username):
+        return jsonify(
+            success=False,
+            code="username_taken",
+            message="That username is already taken. Choose another one.",
+        ), 409
 
     # -----------------------------------------------------
     # EXISTING ACCOUNT CHECK
@@ -919,12 +1000,18 @@ def register():
             message="Account already exists",
         ), 400
 
+    if MONGO_AVAILABLE and users_col is not None:
+        if users_col.find_one({"username": {"$regex": "^" + re.escape(username) + "$", "$options": "i"}}, {"_id": 1}):
+            return jsonify(success=False, code="username_taken", message="That username is already taken. Choose another one."), 409
+
     # -----------------------------------------------------
     # USER DOCUMENT
     # -----------------------------------------------------
 
     user_data = {
         "full_name": full_name.strip(),
+
+        "username": username,
 
         "contact": contact.strip(),
 
@@ -1127,17 +1214,24 @@ def request_code():
             message="Enter a valid email address to receive your activation code.",
         ), 422
 
-    user = (
-        users_col.find_one(
-            {
-                "contact": contact
-            }
-        )
-        if MONGO_AVAILABLE
-        else get_user_from_file(
-            contact
-        )
-    )
+    if MONGO_AVAILABLE and users_col is not None:
+        user = users_col.find_one({
+            "$or": [
+                {"contact": identifier},
+                {"username": identifier.casefold()},
+            ]
+        })
+    else:
+        user = get_user_from_file(identifier)
+        if user is None:
+            user = next(
+                (
+                    record for record in load_users_file().values()
+                    if isinstance(record, dict)
+                    and normalize_username(record.get("username")) == normalize_username(identifier)
+                ),
+                None,
+            )
 
     if not user:
 
@@ -1368,13 +1462,13 @@ def login():
     )
 
     if not all([
-        contact,
+        identifier,
         password,
     ]):
 
         return jsonify(
             success=False,
-            message="Contact and password required",
+            message="Username, email/phone and password are required.",
         ), 400
 
     # -----------------------------------------------------
@@ -1454,6 +1548,20 @@ def login():
             message="Invalid password",
         ), 401
 
+    # Legacy accounts receive a stable system-generated username only
+    # after their existing password has been verified successfully.
+    try:
+        user = ensure_user_username(user)
+    except Exception:
+        return jsonify(
+            success=False,
+            code="username_assignment_failed",
+            message="We could not prepare your account username. Please try again.",
+        ), 503
+
+    # Keep the legacy contact key and the canonical username in sync.
+    contact = str(user.get("contact") or "")
+
     # -----------------------------------------------------
     # ROLE
     # -----------------------------------------------------
@@ -1496,6 +1604,7 @@ def login():
                 userId=actual_user_id,
                 id=actual_user_id,
                 contact=user.get("contact", ""),
+                username=user.get("username", ""),
                 full_name=user.get("full_name", ""),
                 role=role,
                 redirect=trusted_redirect,
@@ -1587,6 +1696,8 @@ def login():
             "contact",
             "",
         ),
+
+        username=user.get("username", ""),
 
         full_name=user.get(
             "full_name",
