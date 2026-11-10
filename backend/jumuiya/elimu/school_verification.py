@@ -763,7 +763,8 @@ def pending_applications(limit=50):
     query = {
         "is_demo": {"$ne": True},
         "$or": [
-            {"status": PENDING_STATUS},
+            # Accept both canonical and legacy pending status values.
+            {"status": {"$in": [PENDING_STATUS, PENDING]}},
             {
                 "verification_status": {
                     "$in": [PENDING, NEEDS_INFORMATION],
@@ -864,12 +865,12 @@ def review_application(
         )
 
     is_legacy_unreviewed = (
-        document.get("status") == "active"
+        document.get("status") in {"active", PENDING}
         and not document.get("verification_status")
     )
 
     reviewable = (
-        document.get("status") == PENDING_STATUS
+        document.get("status") in {PENDING_STATUS, PENDING}
         or document.get("verification_status") in {
             PENDING,
             NEEDS_INFORMATION,
