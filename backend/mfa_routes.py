@@ -728,6 +728,7 @@ def mfa_login_verify():
             userId=_user_id(user),
             id=_user_id(user),
             contact=user.get("contact", ""),
+            username=user.get("username", ""),
             full_name=user.get("full_name") or user.get("fullName") or "",
             role=user.get("role", "user"),
             redirect=_profile_redirect(user),
