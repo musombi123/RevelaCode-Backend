@@ -438,6 +438,13 @@ def authenticated_user_me():
         return jsonify(success=False, code="user_identity_mismatch"), 403
     actual_id = str(user.get("_id") or user.get("id") or user.get("user_id") or user_id)
 
+    # Ensure legacy/OAuth accounts also receive a username when their
+    # backend-verified profile is first loaded.
+    try:
+        user = ensure_user_username(user)
+    except Exception:
+        return jsonify(success=False, code="username_assignment_failed", message="We could not prepare your account username. Please try again."), 503
+
     account_status = str(user.get("status") or "active").strip().casefold()
     if user.get("is_active") is False or account_status in {"inactive", "disabled", "suspended", "blocked", "banned", "deleted", "revoked"}:
         return jsonify(success=False, authenticated=False, code="account_inactive", message="This account is not active."), 403
@@ -997,10 +1004,6 @@ def register():
             success=False,
             message="Account already exists",
         ), 400
-
-    if MONGO_AVAILABLE and users_col is not None:
-        if users_col.find_one({"username": {"$regex": "^" + re.escape(username) + "$", "$options": "i"}}, {"_id": 1}):
-            return jsonify(success=False, code="username_taken", message="That username is already taken. Choose another one."), 409
 
     # -----------------------------------------------------
     # USER DOCUMENT
