@@ -40,6 +40,7 @@ PUBLISHER = {
 }
 
 SOURCE_REGISTRY = [
+    {"id": "citizen_kenya", "name": "Citizen Digital", "url": "https://citizen.digital/feed.xml", "region": "kenya", "kind": "rss", "media_type": "article"},
     {"id": "standard_kenya", "name": "The Standard — Kenya", "url": "https://www.standardmedia.co.ke/rss/kenya.php", "region": "kenya", "kind": "rss", "media_type": "article"},
     {"id": "standard_world", "name": "The Standard — World", "url": "https://www.standardmedia.co.ke/rss/world.php", "region": "world", "kind": "rss", "media_type": "article"},
     {"id": "standard_politics", "name": "The Standard — Politics", "url": "https://www.standardmedia.co.ke/rss/politics.php", "region": "kenya", "kind": "rss", "media_type": "article"},
@@ -342,6 +343,9 @@ def get_world_events_feed():
     regions = regions or {"kenya", "africa", "world"}
     topics = {value.strip().lower() for value in request.args.getlist("topic") if value.strip()} & set(TOPIC_KEYWORDS)
     with _CACHE_LOCK:
+        # Physical in-memory removal is performed on every feed read, not only
+        # when the upstream refresh interval elapses.
+        _CACHE["events"] = _prune(_CACHE["events"])
         events = list(_CACHE["events"])
         sources = list(_CACHE["sources"].values())
         refreshed_at = float(_CACHE["refreshed_at"] or 0)
@@ -360,6 +364,7 @@ def get_world_events_feed():
 def get_world_event_sources():
     refresh_cache()
     with _CACHE_LOCK:
+        _CACHE["events"] = _prune(_CACHE["events"])
         sources = dict(_CACHE["sources"])
     return ok({
         "publisher": PUBLISHER,
@@ -375,8 +380,9 @@ def get_world_event_sources():
 @world_events_bp.get("/health")
 def world_events_health():
     with _CACHE_LOCK:
+        _CACHE["events"] = _prune(_CACHE["events"])
         source_rows = list(_CACHE["sources"].values())
-        count = len(_prune(_CACHE["events"]))
+        count = len(_CACHE["events"])
     healthy = sum(1 for item in source_rows if item.get("status") == "healthy")
     return ok({
         "status": "ok",
