@@ -40,6 +40,7 @@ from backend.jumuiya.biashara.intelligence.routes.economic import (
 
 from backend.jumuiya.elimu.routes import elimu_bp
 from backend.jumuiya.community.routes import community_bp
+from backend.jumuiya.community.world_events_routes import world_events_bp
 from backend.jumuiya.platform_admin_routes import platform_admin_bp
 from backend.jumuiya.faith.missionpulse.routes import missionpulse_bp
 from backend.jumuiya.core.database import collection
@@ -327,6 +328,16 @@ def register_jumuiya(app):
 
     logger.info(
         "✅ Jumuiya Community registered."
+    )
+
+    # World Events shares Community's existing auth bridge and Mongo database.
+    app.register_blueprint(
+        world_events_bp,
+        url_prefix="/api/jumuiya/community/world-events",
+    )
+
+    logger.info(
+        "✅ RevelaCode World Events registered at /api/jumuiya/community/world-events."
     )
 
     # =====================================================
