@@ -47,6 +47,8 @@ SOURCE_REGISTRY = [
     {"id": "standard_ktn_videos", "name": "KTN Videos", "url": "https://www.standardmedia.co.ke/rss/ktnvideos.php", "region": "kenya", "kind": "rss", "media_type": "video"},
     {"id": "allafrica", "name": "AllAfrica", "url": "https://allafrica.com/tools/headlines/rdf/latest/headlines.rdf", "region": "africa", "kind": "rss", "media_type": "article"},
     {"id": "bbc_world", "name": "BBC News — World", "url": "https://feeds.bbci.co.uk/news/world/rss.xml", "region": "world", "kind": "rss", "media_type": "article"},
+    {"id": "bbc_africa", "name": "BBC News — Africa", "url": "https://feeds.bbci.co.uk/news/world/africa/rss.xml", "region": "africa", "kind": "rss", "media_type": "article"},
+    {"id": "bbc_asia", "name": "BBC News — Asia", "url": "https://feeds.bbci.co.uk/news/world/asia/rss.xml", "region": "world", "kind": "rss", "media_type": "article"},
     {"id": "aljazeera_world", "name": "Al Jazeera English", "url": "https://www.aljazeera.com/xml/rss/all.xml", "region": "world", "kind": "rss", "media_type": "article"},
     {"id": "dw_world", "name": "DW — World", "url": "https://rss.dw.com/xml/rss-en-all", "region": "world", "kind": "rss", "media_type": "article"},
     {"id": "france24_world", "name": "France 24", "url": "https://www.france24.com/en/rss", "region": "world", "kind": "rss", "media_type": "article"},
@@ -54,6 +56,7 @@ SOURCE_REGISTRY = [
     {"id": "youtube_bbc_news", "name": "BBC News — YouTube", "url": "https://www.youtube.com/feeds/videos.xml?channel_id=UC16niRr50-MSBwiO3YDb3RA", "region": "world", "kind": "youtube_atom", "media_type": "video"},
     {"id": "youtube_aljazeera_english", "name": "Al Jazeera English — YouTube", "url": "https://www.youtube.com/feeds/videos.xml?channel_id=UCNye-wNBqNL5ZzHSJj3l8Bg", "region": "world", "kind": "youtube_atom", "media_type": "video"},
     {"id": "youtube_ajplus", "name": "AJ+ — YouTube", "url": "https://www.youtube.com/feeds/videos.xml?channel_id=UCV3Nm3T-XAgVhKH9jT0ViRg", "region": "world", "kind": "youtube_atom", "media_type": "video"},
+    {"id": "bluesky_aljazeera", "name": "Al Jazeera — Bluesky", "url": "https://bsky.app/profile/aljazeera.com/rss", "region": "world", "kind": "rss", "media_type": "article"},
 ]
 
 TOPIC_KEYWORDS: dict[str, tuple[str, ...]] = {
@@ -192,6 +195,8 @@ def _normalize_entry(entry: Any, source: dict[str, Any]) -> dict[str, Any] | Non
     if video_id:
         url = f"https://www.youtube.com/watch?v={video_id}"
     published = _published(entry)
+    feed_source = entry.get("source") if hasattr(entry, "get") else None
+    publisher_name = _clean(feed_source.get("title"), 100) if isinstance(feed_source, dict) else ""
     summary = _clean(entry.get("summary") or entry.get("description") or "")
     categories = _topics(f"{title} {summary}")
     region = _region(f"{title} {summary}", source["region"])
@@ -202,7 +207,7 @@ def _normalize_entry(entry: Any, source: dict[str, Any]) -> dict[str, Any] | Non
         "id": event_id, "headline": title, "title": title,
         "description": summary or "Open the original publisher report for the full details.",
         "url": url, "urlToImage": _image(entry, video_id),
-        "publishedAt": published.isoformat(), "source": source["name"],
+        "publishedAt": published.isoformat(), "source": publisher_name or source["name"],
         "source_id": source["id"], "source_domain": urlparse(url).netloc.lower(),
         "region": region, "categories": categories, "media_type": media_type,
         "video_url": url if media_type == "video" else "",
