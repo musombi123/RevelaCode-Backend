@@ -95,6 +95,21 @@ def register_jumuiya(app):
             "✅ Jumuiya database indexes ready."
         )
 
+        # Remove temporary prototype persistence from the first World Events
+        # draft. News, source health, preferences and interactions now live
+        # only in the backend's short-lived memory cache / the user's device.
+        for legacy_world_events_collection in (
+            "jumuiya_world_events",
+            "jumuiya_world_event_sources",
+            "jumuiya_world_event_preferences",
+            "jumuiya_world_event_activity",
+        ):
+            collection(legacy_world_events_collection).drop()
+
+        logger.info(
+            "World Events legacy MongoDB collections cleared; no replacement collections are created."
+        )
+
         # Sample fixtures are seeded only by an authenticated platform-admin
         # request. Application startup has no user identity to scope visibility to.
         logger.info(
