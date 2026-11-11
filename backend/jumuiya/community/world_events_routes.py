@@ -27,13 +27,14 @@ CACHE_TTL_SECONDS = 8 * 60
 MAX_EVENT_AGE_HOURS = 48
 MAX_CACHED_EVENTS = 160
 MAX_ITEMS_PER_SOURCE = 22
-REQUEST_TIMEOUT_SECONDS = 10
-MAX_WORKERS = 8
+REQUEST_TIMEOUT_SECONDS = 7
+MAX_WORKERS = 12
 USER_AGENT = "RevelaCodeWorldDesk/1.0 (+https://revelacode.co.ke)"
 
 PUBLISHER = {
     "id": "revelacode:official-world-desk",
     "name": "RevelaCode",
+    "handle": "@revelacode",
     "label": "Official World Desk",
     "kind": "platform_editorial",
 }
