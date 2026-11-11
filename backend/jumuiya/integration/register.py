@@ -345,7 +345,9 @@ def register_jumuiya(app):
         "✅ Jumuiya Community registered."
     )
 
-    # World Events shares Community's existing auth bridge and Mongo database.
+    # World Events uses public feeds and a bounded in-process cache only.
+    # News articles, source-health snapshots, interests and interactions are
+    # never written to MongoDB.
     app.register_blueprint(
         world_events_bp,
         url_prefix="/api/jumuiya/community/world-events",
