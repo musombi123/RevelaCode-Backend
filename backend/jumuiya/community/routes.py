@@ -1644,9 +1644,6 @@ def list_registered_members():
                 "user_id": 1,
                 "full_name": 1,
                 "avatar_url": 1,
-                "bio": 1,
-                "county": 1,
-                "town": 1,
             },
         )
         profile_by_user = {
@@ -1693,9 +1690,6 @@ def list_registered_members():
             "id": member_id,
             "name": public_text(name, 120) or "RevelaCode member",
             "avatar_url": public_text(avatar, 1000) or None,
-            "bio": public_text(profile.get("bio"), 240) or None,
-            "county": public_text(profile.get("county"), 80) or None,
-            "town": public_text(profile.get("town"), 80) or None,
             "joined_at": joined or None,
         })
 
