@@ -343,7 +343,7 @@ def create_or_update_farmer(user_id: str, payload: dict) -> dict:
             {"verification_status": "pending", "submitted_at": existing.get("verification_submitted_at")},
         )
 
-    required = ("farmer_name", "phone", "county", "town", "farming_type")
+    required = ("farmer_name", "phone", "county", "town")
     profile_completed = all(str(payload.get(key, "")).strip() for key in required)
     verification_required = required + ("soil_type", "crop_evidence_file_id")
     if intent == "submit" and (
@@ -439,7 +439,7 @@ def review_farmer_profile(farmer_id: str, reviewer_user_id: str, payload: dict) 
 
     decision = payload["decision"]
     if decision == "approved":
-        required = ("farmer_name", "phone", "county", "town", "farming_type", "soil_type", "crop_evidence_file_id")
+        required = ("farmer_name", "phone", "county", "town", "soil_type", "crop_evidence_file_id")
         if (
             not all(str(farmer.get(key, "")).strip() for key in required)
             or not farmer.get("primary_crops")
