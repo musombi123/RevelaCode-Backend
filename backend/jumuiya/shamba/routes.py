@@ -1,6 +1,10 @@
 from __future__ import annotations
 
-from flask import Blueprint, request
+from io import BytesIO
+
+from bson import ObjectId
+from bson.errors import InvalidId
+from flask import Blueprint, request, send_file
 
 from backend.jumuiya.core.permissions import (
     require_authenticated,
@@ -15,6 +19,9 @@ from backend.jumuiya.core.responses import (
 
 from backend.jumuiya.core.errors import APIError
 from backend.revenue.subscriptions import require_revenue_entitlement
+from backend.db import get_db
+from gridfs import GridFSBucket
+from werkzeug.utils import secure_filename
 
 from backend.jumuiya.shamba.weather_service import get_farm_weather
 
@@ -208,10 +215,103 @@ def get_farmer():
     return ok(services.get_farmer(current_user_id()))
 
 
+FARMER_EVIDENCE_BUCKET = "jumuiya_shamba_farmer_evidence"
+FARMER_EVIDENCE_MAX_BYTES = 8 * 1024 * 1024
+FARMER_EVIDENCE_TYPES = {
+    ".jpg": ("image/jpeg", b"\\xff\\xd8\\xff"),
+    ".jpeg": ("image/jpeg", b"\\xff\\xd8\\xff"),
+    ".png": ("image/png", b"\\x89PNG\\r\\n\\x1a\\n"),
+    ".pdf": ("application/pdf", b"%PDF"),
+}
+
+
+@shamba_bp.post("/farmer/evidence")
+@require_authenticated
+def upload_farmer_evidence():
+    uploaded = request.files.get("file")
+    if not uploaded or not uploaded.filename:
+        raise APIError("Choose a crop or farm photo/document to upload.", 400, "evidence_file_required")
+
+    filename = secure_filename(uploaded.filename)
+    extension = "." + filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+    allowed = FARMER_EVIDENCE_TYPES.get(extension)
+    if not allowed:
+        raise APIError("Evidence must be a JPG, PNG or PDF file.", 415, "evidence_type_not_supported")
+
+    content = uploaded.stream.read(FARMER_EVIDENCE_MAX_BYTES + 1)
+    if not content:
+        raise APIError("The selected evidence file is empty.", 400, "evidence_file_empty")
+    if len(content) > FARMER_EVIDENCE_MAX_BYTES:
+        raise APIError("Evidence files must be 8 MB or smaller.", 413, "evidence_file_too_large")
+    content_type, signature = allowed
+    if not content.startswith(signature):
+        raise APIError("The file content does not match its selected file type.", 415, "evidence_file_invalid")
+
+    bucket = GridFSBucket(get_db(), bucket_name=FARMER_EVIDENCE_BUCKET)
+    file_id = bucket.upload_from_stream(
+        filename,
+        BytesIO(content),
+        metadata={
+            "owner_user_id": str(current_user_id()),
+            "content_type": content_type,
+            "purpose": "shamba_farmer_verification",
+        },
+    )
+    return created({
+        "file_id": str(file_id),
+        "filename": filename,
+        "content_type": content_type,
+        "size": len(content),
+    }, "Farmer evidence uploaded securely.")
+
+
+@shamba_bp.get("/farmer/evidence/<file_id>")
+@require_authenticated
+@require_roles("admin", "platform_admin", "super_admin", "revelacode_admin")
+def download_farmer_evidence(file_id):
+    try:
+        target_id = ObjectId(str(file_id))
+    except (InvalidId, TypeError, ValueError):
+        raise APIError("Invalid evidence identifier.", 400, "invalid_evidence_id")
+
+    files = get_db()[f"{FARMER_EVIDENCE_BUCKET}.files"]
+    metadata = files.find_one({"_id": target_id})
+    if not metadata:
+        raise APIError("Evidence file not found.", 404, "evidence_not_found")
+
+    bucket = GridFSBucket(get_db(), bucket_name=FARMER_EVIDENCE_BUCKET)
+    stream = bucket.open_download_stream(target_id)
+    content_type = (metadata.get("metadata") or {}).get("content_type") or "application/octet-stream"
+    filename = secure_filename(metadata.get("filename") or "farmer-evidence")
+    return send_file(
+        BytesIO(stream.read()),
+        mimetype=content_type,
+        as_attachment=True,
+        download_name=filename,
+        max_age=0,
+    )
+
+
 @shamba_bp.post("/farmer")
 @require_authenticated
 def save_farmer():
     payload = validate(schemas.farmer_payload, body())
+    if payload.get("intent") == "submit":
+        try:
+            evidence_id = ObjectId(payload.get("crop_evidence_file_id") or "")
+        except (InvalidId, TypeError, ValueError):
+            raise APIError("Upload crop or farm evidence before submitting for verification.", 422, "farmer_evidence_required")
+        evidence = get_db()[f"{FARMER_EVIDENCE_BUCKET}.files"].find_one({
+            "_id": evidence_id,
+            "metadata.owner_user_id": str(current_user_id()),
+            "metadata.purpose": "shamba_farmer_verification",
+        })
+        if not evidence:
+            raise APIError("The uploaded evidence could not be verified. Please upload it again.", 422, "farmer_evidence_invalid")
+        payload["crop_evidence_filename"] = evidence.get("filename", "")
+        payload["crop_evidence_content_type"] = (evidence.get("metadata") or {}).get("content_type", "")
+        payload["crop_evidence_size"] = evidence.get("length", 0)
+        payload["crop_evidence_uploaded_at"] = evidence.get("uploadDate")
     profile = services.create_or_update_farmer(current_user_id(), payload)
     message = (
         "Farmer profile draft saved."
