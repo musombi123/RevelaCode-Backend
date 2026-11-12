@@ -257,6 +257,7 @@ def _farmer_payload_matches(existing: dict, payload: dict) -> bool:
     optional_text_fields = {
         "preferred_contact_method", "sub_county", "village", "location",
         "farm_name", "soil_type", "water_source", "primary_goal", "target_market",
+        "crop_evidence_file_id", "crop_evidence_filename", "crop_evidence_content_type",
         "description", "farm_size_unit", "location_source", "location_precision",
     }
     optional_numeric_fields = {"farm_size", "latitude", "longitude", "location_accuracy"}
@@ -344,9 +345,14 @@ def create_or_update_farmer(user_id: str, payload: dict) -> dict:
 
     required = ("farmer_name", "phone", "county", "town")
     profile_completed = all(str(payload.get(key, "")).strip() for key in required)
-    if intent == "submit" and not profile_completed:
+    verification_required = required + ("soil_type", "crop_evidence_file_id")
+    if intent == "submit" and (
+        not profile_completed
+        or not payload.get("primary_crops")
+        or not all(str(payload.get(key, "")).strip() for key in verification_required)
+    ):
         raise APIError(
-            "Complete your farmer name, contact phone, county, town and farming type before submission.",
+            "Complete your farmer details, farming type, at least one crop, soil type and crop/farm evidence before submission.",
             422,
             "farmer_profile_incomplete",
         )
@@ -433,8 +439,11 @@ def review_farmer_profile(farmer_id: str, reviewer_user_id: str, payload: dict) 
 
     decision = payload["decision"]
     if decision == "approved":
-        required = ("farmer_name", "phone", "county", "town", "farming_type")
-        if not all(str(farmer.get(key, "")).strip() for key in required):
+        required = ("farmer_name", "phone", "county", "town", "soil_type", "crop_evidence_file_id")
+        if (
+            not all(str(farmer.get(key, "")).strip() for key in required)
+            or not farmer.get("primary_crops")
+        ):
             raise APIError("This profile is incomplete and cannot be approved.", 422, "farmer_profile_incomplete")
 
     now = now_utc()

@@ -169,6 +169,16 @@ def farmer_payload(data):
 
     accuracy = _optional_number(data, "location_accuracy", 0, 100000)
 
+    primary_crops = _items(data, "primary_crops")
+    soil_type = _text(data, "soil_type", False, 100)
+    crop_evidence_file_id = _text(data, "crop_evidence_file_id", False, 80)
+    if submitted and not primary_crops:
+        raise ValueError("Add at least one crop grown on the farm.")
+    if submitted and not soil_type:
+        raise ValueError("Select or enter the farm soil type.")
+    if submitted and not crop_evidence_file_id:
+        raise ValueError("Upload a crop or farm evidence photo/document.")
+
     return {
         "intent": intent,
         "farmer_name": farmer_name,
@@ -185,9 +195,10 @@ def farmer_payload(data):
         "farm_size_unit": farm_size_unit,
         "farming_type": farming_type,
         "experience_years": int(experience) if experience is not None else None,
-        "primary_crops": _items(data, "primary_crops"),
+        "primary_crops": primary_crops,
         "livestock": _items(data, "livestock"),
-        "soil_type": _text(data, "soil_type", False, 100),
+        "soil_type": soil_type,
+        "crop_evidence_file_id": crop_evidence_file_id,
         "water_source": _text(data, "water_source", False, 100).lower(),
         "irrigation_available": _boolean(data.get("irrigation_available"), False),
         "primary_goal": primary_goal,
