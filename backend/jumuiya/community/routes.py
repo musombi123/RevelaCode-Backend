@@ -1575,7 +1575,9 @@ def list_registered_members():
         {
             "$or": [
                 {"verified": True},
+                {"verified": 1},
                 {"is_verified": True},
+                {"is_verified": 1},
                 {"verified": {"$regex": r"^(true|1|yes|verified)$", "$options": "i"}},
                 {"is_verified": {"$regex": r"^(true|1|yes|verified)$", "$options": "i"}},
             ]
@@ -1596,7 +1598,7 @@ def list_registered_members():
         clauses.append({
             "$or": [
                 {field: {"$regex": escaped, "$options": "i"}}
-                for field in ("full_name", "fullName", "name", "username")
+                for field in ("full_name", "fullName", "display_name", "name", "username")
             ]
         })
 
@@ -1612,6 +1614,7 @@ def list_registered_members():
                 "user_id": 1,
                 "full_name": 1,
                 "fullName": 1,
+                "display_name": 1,
                 "name": 1,
                 "username": 1,
                 "avatar_url": 1,
@@ -1669,6 +1672,7 @@ def list_registered_members():
             profile.get("full_name")
             or row.get("full_name")
             or row.get("fullName")
+            or row.get("display_name")
             or row.get("name")
             or row.get("username")
             or "RevelaCode member"
