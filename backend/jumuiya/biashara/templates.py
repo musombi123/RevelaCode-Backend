@@ -20,11 +20,11 @@ TEMPLATES = {
     },
     "salon": {
         "label": "Salon and personal services",
-        "modules": ["sales", "customers", "appointments", "inventory", "finance", "mpesa", "etims", "debts", "hr", "website", "team", "sync", "reports"],
+        "modules": ["sales", "customers", "appointments", "inventory", "finance", "mpesa", "etims", "debts", "hr", "website", "team", "automations", "sync", "reports"],
     },
     "professional_services": {
         "label": "Professional services",
-        "modules": ["sales", "customers", "invoicing", "finance", "mpesa", "etims", "debts", "projects", "hr", "website", "team", "sync", "reports"],
+        "modules": ["sales", "customers", "invoicing", "finance", "mpesa", "etims", "debts", "projects", "hr", "website", "team", "automations", "sync", "reports"],
     },
     "school": {
         "label": "School business",
@@ -32,7 +32,7 @@ TEMPLATES = {
         # finance, commerce, team, website and synchronization contracts.
         # Dedicated admissions, student records and fee-ledger APIs are not
         # provided by this template until a Biashara-owned school service exists.
-        "modules": ["sales", "customers", "orders", "finance", "debts", "mpesa", "etims", "hr", "website", "team", "sync", "reports"],
+        "modules": ["sales", "customers", "orders", "finance", "debts", "mpesa", "etims", "hr", "website", "team", "automations", "sync", "reports"],
     },
 }
 
