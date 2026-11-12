@@ -27,8 +27,12 @@ TEMPLATES = {
         "modules": ["sales", "customers", "invoicing", "finance", "mpesa", "etims", "debts", "projects", "hr", "website", "team", "sync", "reports"],
     },
     "school": {
-        "label": "School",
-        "modules": ["elimu"],
+        "label": "School business",
+        # School-operated businesses remain within Biashara and use its tenant,
+        # finance, commerce, team, website and synchronization contracts.
+        # Dedicated admissions, student records and fee-ledger APIs are not
+        # provided by this template until a Biashara-owned school service exists.
+        "modules": ["sales", "customers", "orders", "finance", "debts", "mpesa", "etims", "hr", "website", "team", "sync", "reports"],
     },
 }
 
