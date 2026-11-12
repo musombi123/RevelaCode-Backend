@@ -3,7 +3,17 @@ name: Biashara storefront checks
 on:
   push:
     branches:
+      - main
       - feat/biashara-os-storefront-foundation
+    paths:
+      - "backend/jumuiya/biashara/**"
+      - "backend/jumuiya/elimu/staff/**"
+      - "backend/jumuiya/core/database.py"
+      - "backend/tests/**"
+      - "tests/test_biashara_services_order_routes.py"
+      - "tests/test_jumuiya_notifications_routes.py"
+      - "requirements.txt"
+      - ".github/workflows/biashara-storefront-check.yml"
   pull_request:
     branches:
       - main
