@@ -1572,16 +1572,6 @@ def list_registered_members():
         "pending_invitation",
     )
     clauses = [
-        {
-            "$or": [
-                {"verified": True},
-                {"verified": 1},
-                {"is_verified": True},
-                {"is_verified": 1},
-                {"verified": {"$regex": r"^(true|1|yes|verified)$", "$options": "i"}},
-                {"is_verified": {"$regex": r"^(true|1|yes|verified)$", "$options": "i"}},
-            ]
-        },
         {"is_active": {"$ne": False}},
         {
             "status": {
