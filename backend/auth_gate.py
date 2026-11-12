@@ -1312,114 +1312,90 @@ def verify():
         or {}
     )
 
-    contact = data.get(
-        "contact"
-    )
+    contact = str(data.get("contact") or "").strip()
+    code = str(data.get("code") or "").strip()
 
-    code = data.get(
-        "code"
-    )
-
-    if not all([
-        contact,
-        code,
-    ]):
-
+    if not contact or not code:
         return jsonify(
             success=False,
             message="Contact and code required",
         ), 400
 
+    # The request contract for /api/request-code is the registered contact.
+    # Resolve that same identifier here; do not reference a separate,
+    # undefined username/login variable during email-code verification.
     if MONGO_AVAILABLE and users_col is not None:
         user = users_col.find_one({
-            "$or": [
-                {"contact": identifier},
-                {"username": {"$regex": "^" + re.escape(identifier) + "$", "$options": "i"}},
-            ]
+            "contact": contact,
         })
     else:
-        user = get_user_from_file(identifier)
-        if user is None:
-            user = next(
-                (
-                    record for record in load_users_file().values()
-                    if isinstance(record, dict)
-                    and normalize_username(record.get("username")) == normalize_username(identifier)
-                ),
-                None,
-            )
+        user = get_user_from_file(contact)
 
     if not user:
-
         return jsonify(
             success=False,
             message="Account not found",
         ), 404
 
-    verification = user.get(
-        "verification",
-        {},
-    )
+    verification = user.get("verification")
+    if not isinstance(verification, dict):
+        verification = {}
 
-    if verification.get(
-        "code"
-    ) != code:
-
+    if str(verification.get("code") or "").strip() != code:
         return jsonify(
             success=False,
             message="Invalid code",
         ), 400
 
-    if is_expired(
-        verification.get(
-            "expires"
-        )
-    ):
-
+    if is_expired(verification.get("expires")):
         return jsonify(
             success=False,
             message="Code expired",
         ), 400
 
-    # -----------------------------------------------------
-    # MONGO
-    # -----------------------------------------------------
+    # Consume the exact code that was checked. Matching the document ID and
+    # code prevents a concurrently re-issued code from being consumed by an
+    # older verification request.
+    if MONGO_AVAILABLE and users_col is not None:
+        user_filter = (
+            {"_id": user["_id"]}
+            if user.get("_id") is not None
+            else {"contact": contact}
+        )
+        user_filter["verification.code"] = code
 
-    if MONGO_AVAILABLE:
-
-        users_col.update_one(
-            {
-                "contact": contact
-            },
+        update_result = users_col.update_one(
+            user_filter,
             {
                 "$set": {
-                    "verified": True
+                    "verified": True,
                 },
-
                 "$unset": {
-                    "verification": ""
+                    "verification": "",
                 },
             },
         )
 
+        if update_result.modified_count != 1:
+            current_user = users_col.find_one(
+                {"contact": contact},
+                {"verified": 1},
+            )
+            if not current_user or not current_user.get("verified"):
+                return jsonify(
+                    success=False,
+                    code="verification_code_changed",
+                    message="The verification code changed or was already used. Request a fresh code and try again.",
+                ), 409
+
         user = users_col.find_one(
-            {
-                "contact": contact
-            }
+            {"contact": contact}
         )
-
     else:
-
         user["verified"] = True
+        user.pop("verification", None)
 
-        user.pop(
-            "verification",
-            None,
-        )
-
-    save_user_to_file(
-        user
-    )
+    save_user_to_file(user)
 
     return jsonify(
         success=True,
