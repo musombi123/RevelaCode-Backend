@@ -218,9 +218,9 @@ def get_farmer():
 FARMER_EVIDENCE_BUCKET = "jumuiya_shamba_farmer_evidence"
 FARMER_EVIDENCE_MAX_BYTES = 8 * 1024 * 1024
 FARMER_EVIDENCE_TYPES = {
-    ".jpg": ("image/jpeg", b"\\xff\\xd8\\xff"),
-    ".jpeg": ("image/jpeg", b"\\xff\\xd8\\xff"),
-    ".png": ("image/png", b"\\x89PNG\\r\\n\\x1a\\n"),
+    ".jpg": ("image/jpeg", b"\xff\xd8\xff"),
+    ".jpeg": ("image/jpeg", b"\xff\xd8\xff"),
+    ".png": ("image/png", b"\x89PNG\r\n\x1a\n"),
     ".pdf": ("application/pdf", b"%PDF"),
 }
 
