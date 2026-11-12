@@ -8,11 +8,11 @@ TEMPLATES = {
     },
     "retail_shop": {
         "label": "Retail shop",
-        "modules": ["sales", "customers", "inventory", "finance", "debts", "suppliers", "mpesa", "etims", "hr", "website", "team", "sync", "reports"],
+        "modules": ["sales", "customers", "inventory", "finance", "debts", "suppliers", "mpesa", "etims", "hr", "website", "team", "automations", "sync", "reports"],
     },
     "hardware": {
         "label": "Hardware",
-        "modules": ["sales", "customers", "inventory", "finance", "debts", "suppliers", "purchases", "mpesa", "etims", "hr", "website", "team", "sync", "reports"],
+        "modules": ["sales", "customers", "inventory", "finance", "debts", "suppliers", "purchases", "mpesa", "etims", "hr", "website", "team", "automations", "sync", "reports"],
     },
     "factory": {
         "label": "Manufacturing / factory",
