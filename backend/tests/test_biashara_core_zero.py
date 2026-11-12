@@ -135,8 +135,11 @@ def test_factory_template_adds_production_machine_and_quality_modules():
     assert {"production", "machines", "quality", "automations"} <= modules
 
 
-def test_school_template_remains_an_elimu_launcher():
-    assert template_config("school")["modules"] == ["elimu"]
+def test_school_template_is_a_biashara_business_not_an_elimu_launcher():
+    modules = set(template_config("school")["modules"])
+
+    assert {"sales", "customers", "orders", "finance", "hr", "team", "website", "sync"} <= modules
+    assert "elimu" not in modules
 
 
 def test_unknown_industry_template_is_rejected():
