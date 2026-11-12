@@ -121,12 +121,12 @@ def test_factory_role_permissions_are_server_side_and_limited():
     assert has_permission("ceo", "finance.view")
 
 
-@pytest.mark.parametrize("template", ["general", "retail_shop", "hardware", "factory", "salon", "professional_services"])
+@pytest.mark.parametrize("template", ["general", "retail_shop", "hardware", "factory", "salon", "professional_services", "school"])
 def test_company_templates_enable_common_business_modules(template):
     config = template_config(template)
     modules = set(config["modules"])
 
-    assert {"sales", "finance", "hr", "mpesa", "etims", "debts", "sync"} <= modules
+    assert {"sales", "finance", "hr", "mpesa", "etims", "debts", "sync", "automations"} <= modules
 
 
 def test_factory_template_adds_production_machine_and_quality_modules():
