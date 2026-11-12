@@ -4,7 +4,7 @@ from __future__ import annotations
 TEMPLATES = {
     "general": {
         "label": "General business",
-        "modules": ["sales", "customers", "inventory", "debts", "finance", "mpesa", "etims", "hr", "website", "team", "sync", "reports"],
+        "modules": ["sales", "customers", "inventory", "debts", "finance", "mpesa", "etims", "hr", "website", "team", "automations", "sync", "reports"],
     },
     "retail_shop": {
         "label": "Retail shop",
