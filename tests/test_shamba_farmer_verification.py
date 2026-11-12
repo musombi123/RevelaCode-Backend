@@ -20,6 +20,8 @@ def valid_farmer_payload(**overrides):
         "farming_type": "mixed",
         "experience_years": 4,
         "primary_crops": ["maize", "beans"],
+        "soil_type": "Loamy",
+        "crop_evidence_file_id": "507f1f77bcf86cd799439011",
         "livestock": ["poultry"],
         "irrigation_available": False,
         "declaration": True,
@@ -46,6 +48,21 @@ def test_farmer_schema_normalizes_crops_and_boolean_values():
     ))
     assert payload["primary_crops"] == ["Maize", "beans"]
     assert payload["irrigation_available"] is False
+
+
+@pytest.mark.parametrize(
+    "missing_field,match",
+    [
+        ("primary_crops", "at least one crop"),
+        ("soil_type", "soil type"),
+        ("crop_evidence_file_id", "crop or farm evidence"),
+    ],
+)
+def test_farmer_submission_requires_crop_soil_and_evidence(missing_field, match):
+    payload = valid_farmer_payload()
+    payload.pop(missing_field)
+    with pytest.raises(ValueError, match=match):
+        schemas.farmer_payload(payload)
 
 
 def test_farmer_schema_rejects_invalid_experience_and_boolean():
@@ -270,6 +287,9 @@ def test_farmer_submission_does_not_require_farming_type_or_experience():
         "phone": "+254700000001",
         "county": "Mombasa",
         "town": "Likoni",
+        "primary_crops": ["maize"],
+        "soil_type": "Loamy",
+        "crop_evidence_file_id": "507f1f77bcf86cd799439011",
         "declaration": True,
         "privacy_consent": True,
     })
@@ -285,6 +305,9 @@ def test_farmer_document_preserves_unknown_farming_type_and_experience():
         "phone": "+254700000001",
         "county": "Mombasa",
         "town": "Likoni",
+        "primary_crops": ["maize"],
+        "soil_type": "Loamy",
+        "crop_evidence_file_id": "507f1f77bcf86cd799439011",
         "declaration": True,
         "privacy_consent": True,
     })
