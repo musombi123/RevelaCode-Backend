@@ -17,6 +17,8 @@ from cloudinary import uploader
 from PIL import Image, UnidentifiedImageError
 from flask import Blueprint, request
 
+from backend.db import get_db
+
 from backend.jumuiya.core.errors import APIError
 from backend.jumuiya.core.audit import log_action
 from backend.jumuiya.core.database import collection
@@ -1517,6 +1519,196 @@ def save_contact_preferences():
             "phone_number": phone_number,
         },
         "Community contact preferences saved.",
+    )
+
+
+@community_bp.get("/members")
+@require_authenticated
+def list_registered_members():
+    """
+    Return the authenticated, verified and active RevelaCode member directory.
+
+    Membership is sourced from the authoritative users collection, not the
+    Community feed. Only allowlisted public profile fields are returned.
+    Contact details, credentials, roles and private account metadata are never
+    included in this response.
+    """
+    try:
+        page = int(request.args.get("page", "1"))
+    except (TypeError, ValueError):
+        raise APIError(
+            "page must be a whole number.",
+            422,
+            "invalid_pagination",
+        )
+
+    if page < 1:
+        raise APIError(
+            "page must be at least 1.",
+            422,
+            "invalid_pagination",
+        )
+
+    limit = parse_limit(default=50, maximum=100)
+    search = str(request.args.get("search") or "").strip()
+    if len(search) > 100:
+        raise APIError(
+            "search must not exceed 100 characters.",
+            422,
+            "invalid_search",
+        )
+
+    # Keep this eligibility rule aligned with the Jumuiya auth bridge:
+    # unverified, suspended, blocked and soft-deleted accounts are not members
+    # who can enter the authenticated Community workspace.
+    blocked_status = (
+        "inactive",
+        "disabled",
+        "suspended",
+        "blocked",
+        "banned",
+        "deleted",
+        "revoked",
+        "pending_invitation",
+    )
+    clauses = [
+        {
+            "$or": [
+                {"verified": True},
+                {"is_verified": True},
+                {"verified": {"$regex": r"^(true|1|yes|verified)$", "$options": "i"}},
+                {"is_verified": {"$regex": r"^(true|1|yes|verified)$", "$options": "i"}},
+            ]
+        },
+        {"is_active": {"$ne": False}},
+        {
+            "status": {
+                "$not": {
+                    "$regex": r"^(" + "|".join(blocked_status) + r")$",
+                    "$options": "i",
+                }
+            }
+        },
+    ]
+
+    if search:
+        escaped = re.escape(search)
+        clauses.append({
+            "$or": [
+                {field: {"$regex": escaped, "$options": "i"}}
+                for field in ("full_name", "fullName", "name", "username")
+            ]
+        })
+
+    query = {"$and": clauses}
+    users = get_db()["users"]
+    total = users.count_documents(query)
+    rows = list(
+        users.find(
+            query,
+            {
+                "_id": 1,
+                "id": 1,
+                "user_id": 1,
+                "full_name": 1,
+                "fullName": 1,
+                "name": 1,
+                "username": 1,
+                "avatar_url": 1,
+                "avatar": 1,
+                "profile_image": 1,
+                "created_at": 1,
+                "joined_at": 1,
+            },
+        )
+        .sort([("created_at", -1), ("_id", -1)])
+        .skip((page - 1) * limit)
+        .limit(limit)
+    )
+
+    user_ids = []
+    for row in rows:
+        member_id = row.get("id") or row.get("user_id") or row.get("_id")
+        if member_id is not None:
+            user_ids.append(str(member_id))
+
+    profile_by_user = {}
+    if user_ids:
+        profile_rows = collection("jumuiya_profiles").find(
+            {"user_id": {"$in": user_ids}},
+            {
+                "_id": 0,
+                "user_id": 1,
+                "full_name": 1,
+                "avatar_url": 1,
+                "bio": 1,
+                "county": 1,
+                "town": 1,
+            },
+        )
+        profile_by_user = {
+            str(profile.get("user_id")): profile
+            for profile in profile_rows
+            if profile.get("user_id") is not None
+        }
+
+    def public_text(value, maximum=240):
+        if not isinstance(value, (str, int, float)):
+            return ""
+        return " ".join(str(value).split())[:maximum]
+
+    items = []
+    for row in rows:
+        raw_id = row.get("id") or row.get("user_id") or row.get("_id")
+        if raw_id is None:
+            continue
+
+        member_id = str(raw_id)
+        profile = profile_by_user.get(member_id, {})
+        name = (
+            profile.get("full_name")
+            or row.get("full_name")
+            or row.get("fullName")
+            or row.get("name")
+            or row.get("username")
+            or "RevelaCode member"
+        )
+        avatar = (
+            profile.get("avatar_url")
+            or row.get("avatar_url")
+            or row.get("avatar")
+            or row.get("profile_image")
+        )
+        joined = row.get("created_at") or row.get("joined_at")
+        if isinstance(joined, datetime):
+            joined = joined.isoformat()
+        elif joined is not None:
+            joined = public_text(joined, 64)
+
+        items.append({
+            "id": member_id,
+            "name": public_text(name, 120) or "RevelaCode member",
+            "avatar_url": public_text(avatar, 1000) or None,
+            "bio": public_text(profile.get("bio"), 240) or None,
+            "county": public_text(profile.get("county"), 80) or None,
+            "town": public_text(profile.get("town"), 80) or None,
+            "joined_at": joined or None,
+        })
+
+    total_pages = (total + limit - 1) // limit if total else 0
+    return ok(
+        {
+            "items": items,
+            "count": len(items),
+        },
+        meta={
+            "page": page,
+            "limit": limit,
+            "total": total,
+            "total_pages": total_pages,
+            "has_next": page < total_pages,
+            "has_previous": page > 1,
+        },
     )
 
 
