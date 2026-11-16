@@ -15,6 +15,7 @@ from backend.jumuiya.core.responses import (
 )
 
 from backend.jumuiya.core.errors import APIError
+from backend.jumuiya.core.health import database_health
 
 from backend.jumuiya.biashara import (
     schemas,
@@ -155,13 +156,13 @@ def query_limit(
     "/health"
 )
 def health():
-    """
-    Public Biashara service health endpoint.
-    """
-
+    """Report Biashara availability together with shared MongoDB dependency evidence."""
+    dependency = database_health()
     return ok({
         "hub": "biashara",
-        "status": "online",
+        "status": dependency["status"],
+        "mongo_connected": dependency["mongo_connected"],
+        "dependencies": {"shared_mongodb": dependency},
         "version": "1.1",
     })
 
