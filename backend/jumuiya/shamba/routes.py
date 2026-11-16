@@ -18,6 +18,7 @@ from backend.jumuiya.core.responses import (
 )
 
 from backend.jumuiya.core.errors import APIError
+from backend.jumuiya.core.health import database_health
 from backend.revenue.subscriptions import require_revenue_entitlement
 from backend.db import get_db
 from gridfs import GridFSBucket
@@ -193,13 +194,13 @@ def number_value(
 
 @shamba_bp.get("/health")
 def health():
-    """
-    Shamba service health check.
-    """
-
+    """Report Shamba availability together with shared MongoDB dependency evidence."""
+    dependency = database_health()
     return ok({
         "hub": "shamba",
-        "status": "online",
+        "status": dependency["status"],
+        "mongo_connected": dependency["mongo_connected"],
+        "dependencies": {"shared_mongodb": dependency},
         "version": "2.0",
         "intelligence": "enabled",
     })

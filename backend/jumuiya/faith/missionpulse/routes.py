@@ -13,6 +13,7 @@ from bson import ObjectId
 from bson.errors import InvalidId
 from flask import Blueprint, jsonify, request
 from backend.db import get_db
+from backend.jumuiya.core.health import database_health
 
 from backend.jumuiya.core.database import collection
 from backend.jumuiya.core.permissions import (
@@ -116,8 +117,17 @@ def _error(message, status=400, code="invalid_request"):
 
 @missionpulse_bp.get("/health")
 def health():
-    return jsonify(success=True, service="MissionPulse", persistence="MongoDB",
-                   auth="RevelaCode Jumuiya"), 200
+    dependency = database_health()
+    healthy = dependency["mongo_connected"]
+    return jsonify(
+        success=healthy,
+        status=dependency["status"],
+        mongo_connected=healthy,
+        dependencies={"shared_mongodb": dependency},
+        service="MissionPulse",
+        persistence="MongoDB",
+        auth="RevelaCode Jumuiya",
+    ), 200 if healthy else 503
 
 
 @missionpulse_bp.get("/me")

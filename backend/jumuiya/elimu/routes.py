@@ -7,6 +7,7 @@ from functools import wraps
 from flask import Blueprint, request
 
 from backend.jumuiya.core.errors import APIError
+from backend.jumuiya.core.health import database_health
 from backend.jumuiya.core.permissions import (
     current_user_id,
     require_authenticated,
@@ -126,38 +127,23 @@ def require_school_account(fn):
 
 @elimu_bp.get("/health")
 def health():
+    dependency = database_health()
     return ok({
         "hub": "elimu",
-        "status": "online",
+        "status": dependency["status"],
+        "mongo_connected": dependency["mongo_connected"],
+        "dependencies": {"shared_mongodb": dependency},
         "version": services.ELIMU_VERSION,
         "architecture": "school-first",
         "access_model": "active_school_account_required",
         "client_mode": "android_native",
         "features": [
-            "school_accounts",
-            "students",
-            "classes",
-            "attendance",
-            "assessments",
-            "lessons",
-            "assignments",
-            "fees",
-            "cbc",
-            "annual_events",
-            "calendar",
-            "reports",
-            "staff",
-            "timetable",
-            "automation",
-            "sync",
-            "curriculum_configuration",
-            "exam_report_cards",
-            "class_report_cards",
-            "report_publication",
-            "post_exam_programmes",
-            "print_center",
-            "print_ready_documents",
-            "apk_bootstrap",
+            "school_accounts", "students", "classes", "attendance", "assessments",
+            "lessons", "assignments", "fees", "cbc", "annual_events", "calendar",
+            "reports", "staff", "timetable", "automation", "sync",
+            "curriculum_configuration", "exam_report_cards", "class_report_cards",
+            "report_publication", "post_exam_programmes", "print_center",
+            "print_ready_documents", "apk_bootstrap",
         ],
     })
 

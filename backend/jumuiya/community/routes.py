@@ -21,6 +21,7 @@ from backend.db import get_db
 
 from backend.jumuiya.core.errors import APIError
 from backend.jumuiya.core.audit import log_action
+from backend.jumuiya.core.health import database_health
 from backend.jumuiya.core.database import collection
 from backend.jumuiya.core.permissions import (
     require_authenticated,
@@ -379,23 +380,17 @@ def ranked_surface(
 
 @community_bp.get("/health")
 def health():
+    dependency = database_health()
     return ok({
         "hub": "community",
-        "status": "online",
+        "status": dependency["status"],
+        "mongo_connected": dependency["mongo_connected"],
+        "dependencies": {"shared_mongodb": dependency},
         "version": "2.0",
         "features": [
-            "pulse",
-            "discovery",
-            "groups",
-            "threads",
-            "matter_messaging",
-            "actions",
-            "trust",
-            "posts",
-            "comments",
-            "reactions",
-            "ecosystem_context",
-            "notifications",
+            "pulse", "discovery", "groups", "threads", "matter_messaging",
+            "actions", "trust", "posts", "comments", "reactions",
+            "ecosystem_context", "notifications",
         ],
     })
 
