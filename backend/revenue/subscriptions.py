@@ -40,7 +40,7 @@ _PAYMENT_EVENT_INDEXES_READY = False
 
 HUBS = {
     "shamba", "biashara", "elimu", "community", "smart_ai",
-    "marketplace", "faith",
+    "marketplace", "faith", "nexora",
 }
 ADMIN_ROLES = ("admin", "platform_admin", "super_admin", "revelacode_admin")
 PREMIUM_FEATURES = {
@@ -399,6 +399,67 @@ def resolve_entitlement(user_id, hub, feature="essential"):
         result["checkout_enabled"] = False
     return result
 
+
+
+# NEXORA V1 uses the same verified subscription collection and payment
+# activation path as the rest of RevelaCode. No client-supplied plan is trusted.
+NEXORA_V1_PLANS = {
+    "basic": {"max_duration_seconds": 30, "target": "mobile", "label": "Basic"},
+    "standard": {"max_duration_seconds": 120, "target": "mobile", "label": "Standard"},
+    "pro": {"max_duration_seconds": 300, "target": "pc", "label": "Pro"},
+    "studio": {"max_duration_seconds": 600, "target": "pc", "high_gpu": True, "label": "Studio"},
+}
+
+
+@revenue_bp.get("/nexora/entitlement")
+@require_authenticated
+def revenue_nexora_entitlement():
+    """Return only the authenticated user's currently active NEXORA V1 plan."""
+    user_id = str(current_user_id())
+    now = _as_utc(now_utc())
+    rows = _subscription_collection().find({
+        "user_id": user_id,
+        "hub": "nexora",
+        "status": "active",
+    }).sort("ends_at", DESCENDING)
+    active = None
+    for row in rows:
+        starts_at = _as_utc(row.get("starts_at"))
+        ends_at = _as_utc(row.get("ends_at"))
+        if starts_at and ends_at and starts_at <= now < ends_at:
+            active = row
+            break
+
+    if not active:
+        return jsonify({
+            "success": True,
+            "active": False,
+            "user_id": user_id,
+            "plan": None,
+        }), 200
+
+    plan_code = str(active.get("plan_code") or "").strip().lower()
+    plan = NEXORA_V1_PLANS.get(plan_code)
+    if not plan:
+        # An unknown or legacy plan must never silently inherit a tier.
+        return jsonify({
+            "success": True,
+            "active": False,
+            "user_id": user_id,
+            "plan": None,
+            "reason": "unrecognized_nexora_plan",
+        }), 200
+
+    return jsonify({
+        "success": True,
+        "active": True,
+        "user_id": user_id,
+        "subscription_id": str(active.get("_id", "")),
+        "plan_code": plan_code,
+        "plan": dict(plan),
+        "starts_at": _iso(_as_utc(active.get("starts_at"))),
+        "ends_at": _iso(_as_utc(active.get("ends_at"))),
+    }), 200
 
 def _error(message, status=400, code="invalid_request"):
     return jsonify({
