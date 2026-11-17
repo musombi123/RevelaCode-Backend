@@ -17,6 +17,7 @@ SUPPORTED_REVENUE_STREAMS = frozenset({
     "faith",
     "advertising",
     "transaction_fees",
+    "nexora",
 })
 
 PAYMENT_STATUSES = frozenset({
