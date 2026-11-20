@@ -27,6 +27,15 @@ services:
       # Must match RevelaAI's REVELAAI_SERVICE_KEY for the protected AI context gateway.
       - key: REVELAAI_SERVICE_KEY
         sync: false
+      # Google OpenID Connect: create a Web application OAuth client in Google Cloud.
+      - key: GOOGLE_WEB_CLIENT_ID
+        sync: false
+      - key: GOOGLE_WEB_CLIENT_SECRET
+        sync: false
+      - key: GOOGLE_OAUTH_REDIRECT_URI
+        value: "https://revelacode-backend.onrender.com/api/oauth/google/callback"
+      - key: FRONTEND_URL
+        value: "https://revelacode.co.ke"
 
   - type: cron
     name: revelacode-market-data-refresh
