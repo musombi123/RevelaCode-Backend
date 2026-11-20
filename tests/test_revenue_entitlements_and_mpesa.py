@@ -44,6 +44,21 @@ def test_essential_entitlement_remains_free_without_trial_or_subscription(monkey
     assert result["premium_access"] is False
 
 
+def test_free_smart_ai_user_gets_metered_image_allowance_without_trial(monkeypatch):
+    now = datetime(2026, 10, 22, tzinfo=timezone.utc)
+    monkeypatch.setattr(subscriptions, "now_utc", lambda: now)
+    monkeypatch.setattr(subscriptions, "_active_subscription", lambda *args, **kwargs: None)
+    monkeypatch.setattr(subscriptions, "collection", lambda name: Mock(find_one=lambda query: None))
+
+    result = subscriptions.resolve_entitlement("user-1", "smart_ai", "image_generation")
+
+    assert result["allowed"] is True
+    assert result["tier"] == "free"
+    assert result["premium_access"] is False
+    assert result["free_allowance"] is True
+    assert result["reason"] == "free_daily_allowance"
+
+
 def test_premium_entitlement_allows_active_hub_trial(monkeypatch):
     now = datetime(2026, 10, 22, tzinfo=timezone.utc)
     trial = _trial_row(now + timedelta(days=8), now - timedelta(days=22))
