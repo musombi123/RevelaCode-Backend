@@ -351,6 +351,13 @@ def resolve_entitlement(user_id, hub, feature="essential"):
         else:
             allowed = False
 
+    # Smart AI keeps a small permanent image allowance on the Free tier.
+    # RevelaAI enforces the per-user daily cap before every provider call;
+    # this entitlement only authorizes entry to that metered capability.
+    free_image_allowance = hub == "smart_ai" and feature == "image_generation" and not premium_access
+    if free_image_allowance:
+        allowed = True
+
     if paid:
         tier = "paid"
         reason = "active_subscription"
@@ -371,8 +378,9 @@ def resolve_entitlement(user_id, hub, feature="essential"):
         "allowed": allowed,
         "tier": tier,
         "access": tier,
-        "reason": reason,
+        "reason": "free_daily_allowance" if free_image_allowance else reason,
         "premium_access": premium_access,
+        "free_allowance": free_image_allowance,
         "paid_subscription": paid,
         "trial_status": (
             "active" if trial_active else
