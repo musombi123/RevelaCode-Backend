@@ -34,6 +34,11 @@ services:
         sync: false
       - key: GOOGLE_OAUTH_REDIRECT_URI
         value: "https://revelacode-backend.onrender.com/api/oauth/google/callback"
+      # Elimu staff invitations use Resend. EMAIL_FROM must be a sender on a verified Resend domain.
+      - key: RESEND_API_KEY
+        sync: false
+      - key: EMAIL_FROM
+        sync: false
       - key: FRONTEND_URL
         value: "https://revelacode.co.ke"
 
