@@ -8,8 +8,11 @@ on:
       - "backend/jumuiya/platform_admin_routes.py"
       - "backend/jumuiya/integration/register.py"
       - "backend/jumuiya/biashara/contracts.py"
+      - "backend/jumuiya/elimu/permissions.py"
+      - "backend/jumuiya/elimu/staff/models.py"
       - "backend/jumuiya/elimu/staff/services.py"
       - "backend/jumuiya/elimu/staff/invitation_email.py"
+      - "backend/tests/test_elimu_staff_permission_aliases.py"
       - "backend/tests/test_staff_invitation_delivery.py"
       - "backend/tests/test_staff_invitation_email.py"
       - "render.yaml"
@@ -23,7 +26,10 @@ on:
       - "backend/jumuiya/platform_admin_routes.py"
       - "backend/jumuiya/integration/register.py"
       - "backend/jumuiya/biashara/contracts.py"
+      - "backend/jumuiya/elimu/permissions.py"
+      - "backend/jumuiya/elimu/staff/models.py"
       - "backend/jumuiya/elimu/staff/services.py"
+      - "backend/tests/test_elimu_staff_permission_aliases.py"
       - "backend/tests/test_staff_invitation_delivery.py"
       - "tests/test_jumuiya_sample_data.py"
       - "tests/test_biashara_invitation_contract.py"
@@ -44,9 +50,9 @@ jobs:
       - name: Install focused backend test dependencies
         run: python -m pip install Flask pymongo pytest python-dotenv
       - name: Compile modified Jumuiya modules
-        run: python -m py_compile backend/jumuiya/sample_data.py backend/jumuiya/platform_admin_routes.py backend/jumuiya/integration/register.py backend/jumuiya/biashara/contracts.py backend/jumuiya/elimu/staff/services.py backend/jumuiya/elimu/staff/invitation_email.py
+        run: python -m py_compile backend/jumuiya/sample_data.py backend/jumuiya/platform_admin_routes.py backend/jumuiya/integration/register.py backend/jumuiya/biashara/contracts.py backend/jumuiya/elimu/permissions.py backend/jumuiya/elimu/staff/models.py backend/jumuiya/elimu/staff/services.py backend/jumuiya/elimu/staff/invitation_email.py
       - name: Test scoped samples and staff invitation safeguards
         env:
           PYTHONPATH: .
           MONGO_URI: mongodb://127.0.0.1:27017/jumuiya_admin_invitation_test
-        run: python -m pytest -q tests/test_jumuiya_sample_data.py tests/test_biashara_invitation_contract.py backend/tests/test_staff_invitation_delivery.py backend/tests/test_staff_invitation_email.py
+        run: python -m pytest -q tests/test_jumuiya_sample_data.py tests/test_biashara_invitation_contract.py backend/tests/test_elimu_staff_permission_aliases.py backend/tests/test_staff_invitation_delivery.py backend/tests/test_staff_invitation_email.py
