@@ -132,7 +132,7 @@ def send_staff_invitation_email(
     # The inviter's address is only a reply-to destination, never spoofed as From.
     clean_reply_to = str(inviter_email or "").strip()
     if clean_reply_to and "@" in clean_reply_to and " " not in clean_reply_to:
-        message["reply_to"] = [clean_reply_to]
+        message["reply_to"] = clean_reply_to
 
     response = resend.Emails.send(message)
     email_id = (
