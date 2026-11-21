@@ -44,7 +44,7 @@ def test_staff_invitation_uses_configured_verified_sender_and_confirms_resend_id
     assert resend.api_key == "re_test_key"
     assert captured["message"]["from"] == "RevelaCode Elimu <noreply@revelacode.co.ke>"
     assert captured["message"]["to"] == ["teacher@example.com"]
-    assert captured["message"]["reply_to"] == ["owner@example.com"]
+    assert captured["message"]["reply_to"] == "owner@example.com"
     assert "https://revelacode.co.ke/elimu-invitation?" in captured["message"]["text"]
     assert result == {
         "provider": "resend",
