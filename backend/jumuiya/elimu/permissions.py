@@ -229,6 +229,38 @@ PERMISSIONS = frozenset(
 )
 
 
+# Legacy UI permission names are expanded to canonical granular permissions
+# before authorization. The effective role ceiling still applies.
+PERMISSION_ALIASES = {
+    "staff.manage": frozenset(
+        {
+            "staff.view",
+            "staff.invite",
+            "staff.update",
+            "staff.remove",
+            "staff.roles",
+        }
+    ),
+}
+
+
+def expand_permission_aliases(
+    permissions: Iterable[str] | None,
+) -> set[str]:
+    expanded: set[str] = set()
+
+    for permission in permissions or ():
+        normalized = _text(permission).lower()
+        if not normalized:
+            continue
+
+        expanded.update(
+            PERMISSION_ALIASES.get(normalized, {normalized})
+        )
+
+    return expanded
+
+
 # =========================================================
 # ROLE PERMISSIONS
 # =========================================================
@@ -434,18 +466,7 @@ def _normalize_user_id(value: Any) -> str:
 def _normalize_permission_list(
     permissions: Iterable[str] | None,
 ) -> set[str]:
-    if permissions is None:
-        return set()
-
-    output = set()
-
-    for permission in permissions:
-        normalized = _text(permission)
-
-        if normalized:
-            output.add(normalized)
-
-    return output
+    return expand_permission_aliases(permissions)
 
 
 # =========================================================
