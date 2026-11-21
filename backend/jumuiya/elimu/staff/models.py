@@ -10,6 +10,7 @@ from typing import Any, Iterable, Mapping
 
 from backend.jumuiya.elimu.permissions import (
     PERMISSIONS,
+    expand_permission_aliases,
     ROLE_BURSAR,
     ROLE_OWNER,
     ROLE_PRINCIPAL,
@@ -379,10 +380,8 @@ def normalize_permissions(
 
     output: list[str] = []
 
-    for permission in permissions:
-        value = normalize_text(
-            permission
-        )
+    for permission in expand_permission_aliases(permissions):
+        value = normalize_text(permission)
 
         if not value:
             continue
