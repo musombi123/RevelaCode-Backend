@@ -42,7 +42,11 @@ def send_staff_invitation_email(
             "RESEND_API_KEY is not configured; staff invitation email was not sent."
         )
 
-    sender = os.getenv("EMAIL_FROM", "onboarding@resend.dev").strip()
+    sender = os.getenv("EMAIL_FROM", "").strip()
+    if not sender:
+        raise RuntimeError(
+            "EMAIL_FROM is not configured. Set it to an address on a domain verified in Resend."
+        )
     frontend_url = (
         os.getenv("FRONTEND_URL")
         or os.getenv("REVELACODE_FRONTEND_URL")
@@ -128,7 +132,16 @@ def send_staff_invitation_email(
     # The inviter's address is only a reply-to destination, never spoofed as From.
     clean_reply_to = str(inviter_email or "").strip()
     if clean_reply_to and "@" in clean_reply_to and " " not in clean_reply_to:
-        message["reply_to"] = [clean_reply_to]
+        message["reply_to"] = clean_reply_to
 
     response = resend.Emails.send(message)
-    return {"provider": "resend", "accepted": True, "response": response}
+    email_id = (
+        response.get("id")
+        if isinstance(response, dict)
+        else getattr(response, "id", None)
+    )
+    if not email_id:
+        raise RuntimeError(
+            "Resend did not return an email ID. Invitation delivery was not confirmed."
+        )
+    return {"provider": "resend", "accepted": True, "email_id": str(email_id)}
