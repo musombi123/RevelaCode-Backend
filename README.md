@@ -37,3 +37,8 @@ The existing RevelaCode platform remains intact while **Jumuiya** extends the ba
                                                                │
                                                                ▼
                                                       JUMUIYA ECOSYSTEM
+
+
+## Licence
+
+Proprietary — All Rights Reserved. This repository's original backend source and materials may not be reused or redistributed without written permission. Third-party dependencies retain their own licences. See [LICENSE](LICENSE).
