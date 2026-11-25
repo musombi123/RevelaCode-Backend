@@ -18,7 +18,7 @@ export function requireStagingBaseUrl() {
     fail("EXPECTED_STAGING_HOST is required; testing is disabled until the exact staging host is approved.");
   }
 
-  const match = baseUrl.match(/^https:\/\/([^/?#:]+)(?::\d+)?(?:\/|$)/i);
+  const match = baseUrl.match(/^https:\/\/([^/?#:]+)(?::\d+)?$/i);
   if (!match) {
     fail("Only an HTTPS staging origin is allowed.");
   }
