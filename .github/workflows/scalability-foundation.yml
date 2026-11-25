@@ -12,6 +12,7 @@ on:
       - "backend/security/headers.py"
       - "backend/security/origin_cache.py"
       - "backend/tests/test_origin_cache.py"
+      - "backend/tests/test_ip_guard.py"
       - "backend/tests/test_security_headers.py backend/tests/test_origin_cache.py"
       - "backend/tests/test_ip_guard.py"
       - "backend/tests/test_process_lifecycle.py"
@@ -29,6 +30,7 @@ on:
       - "backend/security/headers.py"
       - "backend/tests/test_process_lifecycle.py"
       - "backend/tests/test_security_headers.py"
+      - "backend/tests/test_ip_guard.py"
       - "gunicorn.conf.py"
       - "render.yaml"
       - ".github/workflows/scalability-foundation.yml"
@@ -39,6 +41,9 @@ permissions:
 jobs:
   process-lifecycle:
     runs-on: ubuntu-latest
+    env:
+      MONGO_URI: mongodb://127.0.0.1:27017/revelacode_scalability_test
+      MONGO_DB_NAME: revelacode_scalability_test
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -46,7 +51,18 @@ jobs:
           python-version: "3.12"
           cache: pip
       - name: Install test dependencies
-        run: python -m pip install pytest
+        run: python -m pip install pytest flask python-dotenv pymongo
+
+    services:
+      mongo:
+        image: mongo:7.0
+        ports:
+          - 27017:27017
+        options: >-
+          --health-cmd "mongosh --eval 'db.adminCommand({ ping: 1 })'"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
       - name: Compile changed Python modules
         run: python -m py_compile main.py backend/db.py backend/background_worker.py backend/background_jobs.py backend/security_ip_guard.py backend/security/headers.py backend/security/origin_cache.py gunicorn.conf.py backend/tests/test_process_lifecycle.py backend/tests/test_security_headers.py
       - name: Verify worker lifecycle and deployment contract
