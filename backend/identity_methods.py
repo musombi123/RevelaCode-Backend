@@ -13,7 +13,6 @@ import json
 import os
 import re
 import secrets
-import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlencode
@@ -29,7 +28,6 @@ from backend.utils.current_role_auth import resolve_current_actor
 
 identity_bp = Blueprint("identity_methods", __name__)
 UTC = timezone.utc
-PROVIDERS = {"microsoft", "github"}
 MAX_OTP_ATTEMPTS = 5
 OTP_SECONDS = 300
 OTP_RESEND_SECONDS = 60
@@ -434,7 +432,7 @@ def _microsoft_callback():
         key_issuer = str(signing_jwk.get("issuer") or "").replace("{tenantid}", normalized_tenant)
         if not key_issuer or key_issuer != expected_issuer:
             raise ValueError("Microsoft's signing key issuer did not match the account tenant.")
-        signing_key = jwt.PyJWK.from_dict(signing_jwk).key
+        signing_key = jwt.PyJWK.from_dict(signing_jwk, algorithm="RS256").key
         claims = jwt.decode(
             id_token,
             signing_key,
@@ -722,10 +720,16 @@ def _consume_phone_challenge(challenge_id: str, phone: str, code: str, purpose: 
         raise ValueError("Too many incorrect codes. Request a new code.")
     supplied_hash = _otp_hash(challenge_id, phone, code)
     if not hmac.compare_digest(str(challenge.get("code_hash") or ""), supplied_hash):
-        collection.update_one(query, {"$inc": {"attempts": 1}})
+        incremented = collection.update_one(
+            {**query, "attempts": {"$lt": MAX_OTP_ATTEMPTS}},
+            {"$inc": {"attempts": 1}},
+        )
+        if incremented.matched_count != 1:
+            collection.update_one(query, {"$set": {"consumed": True}})
+            raise ValueError("Too many incorrect codes. Request a new code.")
         raise ValueError("The verification code is incorrect.")
     consumed = collection.find_one_and_update(
-        {**query, "code_hash": supplied_hash},
+        {**query, "code_hash": supplied_hash, "attempts": {"$lt": MAX_OTP_ATTEMPTS}},
         {"$set": {"consumed": True, "consumed_at": _now()}},
         return_document=ReturnDocument.BEFORE,
     )
