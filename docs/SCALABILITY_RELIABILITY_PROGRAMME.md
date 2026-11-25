@@ -117,3 +117,29 @@ The Render worker service is a separate process and does not automatically inher
 ### Not yet claimed
 
 No Redis, Celery, FastAPI, Flask-Limiter or circuit-breaker package has been installed. No production load test has run. No 100,000-user or concurrency capacity claim is made.
+
+
+## Follow-up implementation on `engineering/scalability-completion`
+
+The following changes extend the initial foundation while retaining Flask, the existing shared MongoDB database, and current API contracts:
+
+- Extracted the legacy SDA import and daily-runner lifecycle into `backend/background_jobs.py`. The Render worker now imports that module directly and no longer imports `main.py` or registers the HTTP application just to run jobs.
+- The daily runner now marks a date complete only after `run_pipeline()` reports success. A failed run is logged and retried by the next hourly pass.
+- Removed the duplicate legacy IP-guard request hook and its duplicate blueprint registration. The active request-boundary guard and admin management routes use `backend.security_ip_guard`.
+- Added a bounded per-process IP-block decision cache (default one-second TTL, maximum 4,096 entries). Manual block/unblock writes invalidate the local decision immediately. Database errors are not cached.
+- Added baseline response security headers: content-type sniffing protection, same-origin framing, referrer policy, camera/microphone/geolocation permissions policy, and HTTPS-only HSTS without `includeSubDomains`.
+- Expanded the focused CI workflow to compile the new modules and test the worker boundary and response-header policy.
+- Added a parameterized, authenticated, read-only k6 profile and a capacity/release runbook.
+
+### Updated phase status
+
+| Phase | Status | Outstanding production gate |
+|---|---|---|
+| 1. Audit | Partial | Complete the route-by-route authentication, authorization, tenant-query, secret-history and query-shape inventory |
+| 2. Performance | Partial | Profile real staging traffic; size Gunicorn and Mongo pools against the actual Render/Mongo plans; optimize evidenced slow queries and pagination |
+| 3. Security | Partial | Verify every sensitive route and cross-tenant boundary; provision/test edge WAF and endpoint-specific rate limits; review upload/webhook validation |
+| 4. Resilience | Partial | Replace legacy thread loops with durable idempotent jobs, distributed leases, bounded retries and dead-letter/recovery handling before horizontal worker scaling |
+| 5. Specialist services | Deferred by evidence | Revisit FastAPI only if profiling shows a workload that benefits from a separately scaled ASGI service |
+| 6. Verification | Harness added; not measured | Run CI, deploy to staging, execute authenticated multi-tenant load and failure tests, and publish measured concurrency |
+
+No Redis or Celery service has been provisioned, no distributed queue has been introduced, and no 100,000-concurrent-user capacity result is claimed. See `docs/CAPACITY_AND_RELEASE_GATES.md` before staging or production rollout.
