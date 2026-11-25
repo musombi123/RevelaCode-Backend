@@ -62,3 +62,28 @@ def test_inactive_accounts_are_rejected():
     assert _active({"status": "active"}) is True
     assert _active({"status": "suspended"}) is False
     assert _active({"is_active": False}) is False
+
+def test_installed_webauthn_library_exports_required_api():
+    from webauthn import (
+        base64url_to_bytes,
+        generate_authentication_options,
+        generate_registration_options,
+        options_to_json,
+        verify_authentication_response,
+        verify_registration_response,
+    )
+    from webauthn.helpers.structs import (
+        AuthenticatorSelectionCriteria,
+        ResidentKeyRequirement,
+        UserVerificationRequirement,
+    )
+
+    assert callable(base64url_to_bytes)
+    assert callable(generate_authentication_options)
+    assert callable(generate_registration_options)
+    assert callable(options_to_json)
+    assert callable(verify_authentication_response)
+    assert callable(verify_registration_response)
+    assert ResidentKeyRequirement.REQUIRED is not None
+    assert UserVerificationRequirement.REQUIRED is not None
+    assert AuthenticatorSelectionCriteria is not None
