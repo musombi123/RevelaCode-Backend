@@ -4,15 +4,13 @@ from __future__ import annotations
 
 import logging
 import os
-import threading
-import time
-from datetime import datetime
 from urllib.parse import urlsplit
 
 from dotenv import load_dotenv
 from flask import Flask, jsonify, make_response, request
 from flask_cors import CORS
 from werkzeug.middleware.proxy_fix import ProxyFix
+from backend.security.headers import apply_security_headers
 
 
 # =========================================================
@@ -356,40 +354,6 @@ def handle_cors_preflight():
 
 
 # =========================================================
-# PLATFORM IP ENFORCEMENT
-# =========================================================
-
-@app.before_request
-def enforce_platform_ip_blocks():
-    """Reject requests from IPs actively blocked in the platform security store."""
-    if request.method == "OPTIONS":
-        return None
-    try:
-        from backend.security.ip_guard import enforce_ip_block
-        return enforce_ip_block()
-    except Exception as exc:
-        # Protection must report degraded state through its admin endpoint,
-        # but a block-store outage must not take down every public route.
-        logger.warning("IP enforcement check unavailable | error_type=%s", type(exc).__name__)
-        return None
-
-
-@app.after_request
-def record_platform_auth_failures(response):
-    """Count only failed credential submissions, not generic expired sessions."""
-    try:
-        from backend.security.ip_guard import record_failed_authentication, current_client_ip
-        record_failed_authentication(
-            current_client_ip(),
-            request.path,
-            response.status_code,
-        )
-    except Exception as exc:
-        logger.warning("Authentication failure telemetry unavailable | error_type=%s", type(exc).__name__)
-    return response
-
-
-# =========================================================
 # ENSURE CORS RESPONSE HEADERS
 # =========================================================
 
@@ -488,6 +452,12 @@ def record_platform_failed_login(response):
     return response
 
 
+@app.after_request
+def apply_platform_security_headers(response):
+    """Attach the platform's baseline security headers to every response."""
+    return apply_security_headers(response, is_secure=request.is_secure)
+
+
 # =========================================================
 # DATABASE
 # =========================================================
@@ -546,7 +516,6 @@ def register_bp(import_path: str, bp_name: str):
 # =========================================================
 
 register_bp("backend.auth_gate", "auth_bp")
-register_bp("backend.security.ip_guard", "security_bp")
 register_bp("backend.mfa_routes", "mfa_bp")
 register_bp("backend.compliance_routes", "compliance_bp")
 register_bp("backend.user_data", "user_bp")
@@ -837,151 +806,6 @@ def diagnostics_routes():
         },
         "all_routes": get_registered_routes(),
     }), 200
-
-
-# =========================================================
-# SDA Q3 2026 IMPORT
-# =========================================================
-
-try:
-    from backend.study.import_sda_q3_2026 import import_q3
-
-except Exception:
-    logger.exception("SDA importer import failed")
-    import_q3 = None
-
-
-def maybe_import_sda_q3_2026():
-    enabled = os.getenv(
-        "IMPORT_SDA_Q3_2026",
-        "false",
-    ).strip().lower()
-
-    if enabled != "true":
-        logger.info("SDA Q3 2026 importer disabled")
-        return
-
-    if db is None:
-        logger.error(
-            "SDA importer cannot run because MongoDB is unavailable"
-        )
-        return
-
-    if import_q3 is None:
-        logger.error("SDA importer could not be loaded")
-        return
-
-    logger.info("Starting SDA Q3 2026 importer")
-
-    try:
-        result = import_q3()
-
-        requested = result.get("lessons_requested", 0)
-        successful = result.get("successful", 0)
-        failed = result.get("failed", 0)
-
-        logger.info(
-            "SDA import finished: requested=%s successful=%s failed=%s",
-            requested,
-            successful,
-            failed,
-        )
-
-        if failed:
-            logger.warning("SDA import completed with failures")
-        else:
-            logger.info("SDA Q3 2026 imported successfully")
-
-    except Exception:
-        logger.exception("SDA Q3 2026 importer failed")
-
-
-# =========================================================
-# SDA STARTUP THREAD
-# =========================================================
-
-def start_sda_importer():
-    thread = threading.Thread(
-        target=maybe_import_sda_q3_2026,
-        name="SDA-Q3-2026-Importer",
-        daemon=True,
-    )
-
-    thread.start()
-
-    logger.info("SDA importer thread started")
-
-
-# =========================================================
-# DAILY RUNNER
-# =========================================================
-
-def daily_runner_loop():
-    last_run_date = None
-
-    backend_dir = os.path.abspath(
-        os.path.dirname(__file__)
-    )
-
-    while True:
-        today = datetime.now().date()
-
-        if last_run_date != today:
-            try:
-                from backend.daily_runner import run_pipeline
-
-                logger.info("Running daily_runner pipeline")
-
-                current_dir = os.getcwd()
-
-                try:
-                    os.chdir(backend_dir)
-                    run_pipeline()
-                    last_run_date = today
-
-                finally:
-                    os.chdir(current_dir)
-
-            except Exception:
-                logger.exception("Daily runner failed")
-
-        time.sleep(3600)
-
-
-# =========================================================
-# BACKGROUND JOB CONTROL
-# =========================================================
-
-_background_jobs_started = False
-_background_jobs_lock = threading.Lock()
-
-
-def start_background_jobs():
-    global _background_jobs_started
-
-    with _background_jobs_lock:
-        if _background_jobs_started:
-            logger.info("Background jobs already started")
-            return
-
-        _background_jobs_started = True
-
-    start_sda_importer()
-
-    daily_thread = threading.Thread(
-        target=daily_runner_loop,
-        name="Daily-Runner",
-        daemon=True,
-    )
-
-    daily_thread.start()
-
-    logger.info("Daily runner thread started")
-
-
-# Background jobs are intentionally not started during module import.
-# Gunicorn imports this module in each web worker. The dedicated Render
-# worker starts these jobs exactly once in its own process.
 
 
 # =========================================================
