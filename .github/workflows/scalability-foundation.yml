@@ -1,0 +1,42 @@
+name: Scalability foundation checks
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "main.py"
+      - "backend/db.py"
+      - "backend/background_worker.py"
+      - "backend/tests/test_process_lifecycle.py"
+      - "gunicorn.conf.py"
+      - "render.yaml"
+      - ".github/workflows/scalability-foundation.yml"
+  push:
+    branches: [engineering/scalability-phase-1]
+    paths:
+      - "main.py"
+      - "backend/db.py"
+      - "backend/background_worker.py"
+      - "backend/tests/test_process_lifecycle.py"
+      - "gunicorn.conf.py"
+      - "render.yaml"
+      - ".github/workflows/scalability-foundation.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  process-lifecycle:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install test dependencies
+        run: python -m pip install pytest
+      - name: Compile changed Python modules
+        run: python -m py_compile main.py backend/db.py backend/background_worker.py gunicorn.conf.py backend/tests/test_process_lifecycle.py
+      - name: Verify worker lifecycle and deployment contract
+        run: python -m pytest -q backend/tests/test_process_lifecycle.py

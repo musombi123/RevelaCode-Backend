@@ -19,11 +19,19 @@ if not MONGO_URI:
 
 # ---------------------------- MONGO CONNECTION ----------------------------
 try:
+    # Each application process owns a bounded pool. Keep these values
+    # configurable because total MongoDB connections scale with the number
+    # of web/worker processes, not just this single client.
     client = MongoClient(
         MONGO_URI,
-        serverSelectionTimeoutMS=10000,
-        connectTimeoutMS=10000,
-        socketTimeoutMS=10000,
+        serverSelectionTimeoutMS=int(os.getenv("MONGO_SERVER_SELECTION_TIMEOUT_MS", "10000")),
+        connectTimeoutMS=int(os.getenv("MONGO_CONNECT_TIMEOUT_MS", "10000")),
+        socketTimeoutMS=int(os.getenv("MONGO_SOCKET_TIMEOUT_MS", "10000")),
+        maxPoolSize=int(os.getenv("MONGO_MAX_POOL_SIZE", "20")),
+        minPoolSize=int(os.getenv("MONGO_MIN_POOL_SIZE", "0")),
+        maxConnecting=int(os.getenv("MONGO_MAX_CONNECTING", "2")),
+        waitQueueTimeoutMS=int(os.getenv("MONGO_WAIT_QUEUE_TIMEOUT_MS", "5000")),
+        appname=os.getenv("MONGO_APP_NAME", "RevelaCode-Backend"),
     )
     # Force immediate connection
     client.admin.command("ping")
