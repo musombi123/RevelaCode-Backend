@@ -11,6 +11,7 @@ from flask import Flask, jsonify, make_response, request
 from flask_cors import CORS
 from werkzeug.middleware.proxy_fix import ProxyFix
 from backend.security.headers import apply_security_headers
+from backend.observability.request_metrics import begin_request, apply_request_metrics
 
 
 # =========================================================
@@ -30,6 +31,15 @@ logging.basicConfig(
 )
 
 logger = logging.getLogger("revelacode.main")
+
+try:
+    SLOW_REQUEST_THRESHOLD_MS = min(
+        60000.0,
+        max(0.0, float(os.getenv("REVELACODE_SLOW_REQUEST_THRESHOLD_MS", "1000"))),
+    )
+except (TypeError, ValueError):
+    SLOW_REQUEST_THRESHOLD_MS = 1000.0
+    logger.warning("Invalid slow-request threshold; using 1000ms")
 
 # Report configuration names only; never print credential values.
 _REQUIRED_MPESA_ENV = (
@@ -295,6 +305,12 @@ CORS(
 # =========================================================
 
 @app.before_request
+def start_request_metrics():
+    """Generate a correlation ID and capture the application start time."""
+    begin_request(request.environ)
+
+
+@app.before_request
 def handle_cors_preflight():
     """
     Handle browser OPTIONS preflight requests before normal
@@ -480,6 +496,19 @@ def record_platform_failed_login(response):
 def apply_platform_security_headers(response):
     """Attach the platform's baseline security headers to every response."""
     return apply_security_headers(response, is_secure=request.is_secure)
+
+
+@app.after_request
+def attach_request_metrics(response):
+    """Expose request correlation and application timing for diagnostics."""
+    return apply_request_metrics(
+        response,
+        request.environ,
+        method=request.method,
+        path=request.path,
+        logger=logger,
+        slow_threshold_ms=SLOW_REQUEST_THRESHOLD_MS,
+    )
 
 
 # =========================================================
