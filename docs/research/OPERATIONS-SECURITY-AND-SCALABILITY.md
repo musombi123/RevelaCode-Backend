@@ -72,7 +72,7 @@ The reliability programme separates long-running work from HTTP request processe
 - dead-letter and recovery handling;
 - resilience tests for network interruption and external provider failure.
 
-The repository's capacity runbook says Redis, Celerey/Celery and FastAPI are not currently required by the implemented programme. No such component should be described as deployed merely because it appears in a future architecture discussion. Redis or a durable queue should only be introduced with a defined workload, service plan, failure policy and tested integration.
+The repository's capacity runbook says Redis, Celery and FastAPI are not currently required by the implemented programme. No such component should be described as deployed merely because it appears in a future architecture discussion. Redis or a durable queue should only be introduced with a defined workload, service plan, failure policy and tested integration.
 
 ## 5. Capacity: what is and is not established
 
