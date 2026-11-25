@@ -114,3 +114,5 @@ Treat these as expected names, not proof that a service exists. Confirm the actu
 ### Important capacity caveat
 
 The `0.5c-512mb` service plan is only a controlled initial staging foothold. It is not sized or validated for 100,000 concurrent sessions. Higher capacity gates require a separately budgeted staging environment with scaled app instances, adequate MongoDB capacity, distributed load generators and monitoring. The default staging plan should first be used to validate correctness and establish low-load latency.
+
+The backend also isolates its CORS allow-list when `REVELACODE_ENV=staging` (or `ENVIRONMENT=staging`): it starts with no default origins and accepts only the explicitly configured HTTP(S) values from `FRONTEND_ORIGINS`. The production defaults remain unchanged for production and other non-staging environments. For the supplied frontend Blueprint, configure only `https://revelacode-rpsvi-frontend.onrender.com` after confirming the actual hostname.
