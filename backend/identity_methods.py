@@ -188,6 +188,10 @@ def _start_provider(provider: str):
     _ensure_oauth_indexes()
     config = _provider_config(provider)
     mode = str(request.args.get("mode") or "login").strip().casefold()
+    client = str(request.args.get("client") or "web").strip().casefold()
+    if client not in {"web", "android"}:
+        return jsonify(success=False, message="Unsupported client type."), 400
+    return_uri = _frontend_base() + ("/oauth/android-callback" if client == "android" else "/oauth/callback")
     if mode not in {"login", "link"}:
         return jsonify(success=False, message="Unsupported sign-in mode."), 400
 
@@ -209,6 +213,8 @@ def _start_provider(provider: str):
         "provider": provider,
         "mode": mode,
         "actor_id": actor_id,
+        "client": client,
+        "return_uri": return_uri,
         "nonce": nonce,
         "code_verifier": verifier,
         "created_at": _now(),
@@ -242,7 +248,7 @@ def _start_provider(provider: str):
     return redirect("https://github.com/login/oauth/authorize?" + urlencode(params), code=302)
 
 
-def _issue_identity_ticket(user: dict, provider: str):
+def _issue_identity_ticket(user: dict, provider: str, return_uri: str | None = None):
     ticket = secrets.token_urlsafe(36)
     _db()["identity_login_tickets"].insert_one({
         "ticket_hash": _hash(ticket),
@@ -252,8 +258,9 @@ def _issue_identity_ticket(user: dict, provider: str):
         "expires_at": _now() + timedelta(minutes=2),
         "used": False,
     })
+    destination = return_uri if return_uri in {_frontend_base() + "/oauth/callback", _frontend_base() + "/oauth/android-callback"} else _frontend_base() + "/oauth/callback"
     return redirect(
-        _frontend_base() + "/oauth/callback?"
+        destination + "?"
         + urlencode({"oauth": "success", "ticket": ticket, "provider": provider}),
         code=302,
     )
@@ -367,12 +374,23 @@ def _microsoft_callback():
         if not id_token:
             raise ValueError("Microsoft did not return an OpenID Connect ID token.")
         signing_key = jwt.PyJWKClient(metadata["jwks_uri"]).get_signing_key_from_jwt(id_token).key
+        unverified_claims = jwt.decode(
+            id_token,
+            options={"verify_signature": False, "verify_aud": False, "verify_exp": False},
+            algorithms=["RS256"],
+        )
+        token_tenant = str(unverified_claims.get("tid") or "").strip()
+        configured_tenant = str(config["tenant"]).strip().casefold()
+        if not token_tenant or (configured_tenant not in {"common", "organizations", "consumers"} and token_tenant.casefold() != configured_tenant):
+            raise ValueError("The Microsoft account belongs to a tenant not allowed by this app registration.")
+        expected_issuer = str(metadata.get("issuer") or "").replace("{tenantid}", token_tenant)
+        signing_key = jwt.PyJWKClient(metadata["jwks_uri"]).get_signing_key_from_jwt(id_token).key
         claims = jwt.decode(
             id_token,
             signing_key,
             algorithms=["RS256"],
             audience=config["client_id"],
-            issuer=metadata["issuer"],
+            issuer=expected_issuer,
             options={"require": ["sub", "iss", "aud", "exp", "iat", "nonce"]},
         )
         if not secrets.compare_digest(str(claims.get("nonce") or ""), str(state_row.get("nonce") or "")):
@@ -383,7 +401,7 @@ def _microsoft_callback():
         user = _provider_identity("microsoft", subject, email, name, state_row)
         if not user:
             raise ValueError("Could not resolve the RevelaCode account.")
-        return _issue_identity_ticket(user, "microsoft")
+        return _issue_identity_ticket(user, "microsoft", state_row.get("return_uri"))
     except ValueError as exc:
         return redirect(_frontend_base() + "/oauth/callback?" + urlencode({
             "oauth": "error", "provider": "microsoft", "reason": str(exc)[:180]
@@ -454,7 +472,7 @@ def _github_callback():
             raise ValueError("Could not resolve the RevelaCode account.")
         # The GitHub OAuth token is intentionally not persisted; this flow is
         # authentication only, not repository access.
-        return _issue_identity_ticket(user, "github")
+        return _issue_identity_ticket(user, "github", state_row.get("return_uri"))
     except ValueError as exc:
         return redirect(_frontend_base() + "/oauth/callback?" + urlencode({
             "oauth": "error", "provider": "github", "reason": str(exc)[:180]
@@ -591,6 +609,8 @@ def _create_phone_challenge(phone: str, user: dict | None, purpose: str):
     _ensure_phone_indexes()
     collection = _db()["identity_phone_challenges"]
     phone_hash = _phone_hash(phone)
+    forwarded_ip = str(request.environ.get("revelacode.client_ip") or request.remote_addr or "unknown").strip()
+    ip_hash = _hash(forwarded_ip)
     now_dt = _now()
     latest = collection.find_one({
         "phone_hash": phone_hash,
@@ -604,11 +624,18 @@ def _create_phone_challenge(phone: str, user: dict | None, purpose: str):
     })
     if recent_count >= OTP_HOURLY_LIMIT:
         raise ValueError("Too many verification requests. Try again in one hour.")
+    ip_count = collection.count_documents({
+        "ip_hash": ip_hash,
+        "created_at": {"$gt": now_dt - timedelta(hours=1)},
+    })
+    if ip_count >= OTP_HOURLY_LIMIT * 3:
+        raise ValueError("Too many verification requests from this network. Try again later.")
     challenge_id = secrets.token_urlsafe(32)
     code = f"{secrets.randbelow(1_000_000):06d}"
     document = {
         "challenge_id_hash": _hash(challenge_id),
         "phone_hash": phone_hash,
+        "ip_hash": ip_hash,
         "code_hash": _otp_hash(challenge_id, phone, code),
         "phone": phone,
         "user_id": _user_id(user) if user else None,
@@ -661,6 +688,7 @@ def _consume_phone_challenge(challenge_id: str, phone: str, code: str, purpose: 
 
 @identity_bp.get("/api/identity/providers")
 def identity_provider_status():
+    google_ready = all(os.getenv(key, "").strip() for key in ("GOOGLE_WEB_CLIENT_ID", "GOOGLE_WEB_CLIENT_SECRET"))
     microsoft_ready = all(os.getenv(key, "").strip() for key in (
         "MICROSOFT_CLIENT_ID", "MICROSOFT_CLIENT_SECRET"
     ))
@@ -669,6 +697,7 @@ def identity_provider_status():
     ))
     phone_ready = bool(os.getenv("AFRICASTALKING_USERNAME", "").strip() and os.getenv("AFRICASTALKING_API_KEY", "").strip())
     return jsonify(success=True, providers={
+        "google": {"enabled": google_ready},
         "microsoft": {"enabled": microsoft_ready},
         "github": {"enabled": github_ready},
         "phone": {"enabled": phone_ready},
@@ -765,6 +794,7 @@ def phone_login_request():
     except ValueError as exc:
         return jsonify(success=False, message=str(exc)), 422
     try:
+        _phone_provider_config()
         user = _users().find_one({"phone": phone, "phone_verified": True})
         challenge_id = _create_phone_challenge(phone, user, "phone_login")
         return jsonify(
@@ -859,8 +889,7 @@ def passkey_registration_options():
     if error:
         return error
     try:
-        from webauthn import generate_registration_options
-        from webauthn.helpers import options_to_json
+        from webauthn import generate_registration_options, options_to_json
         from webauthn.helpers.structs import (
             AuthenticatorSelectionCriteria,
             ResidentKeyRequirement,
@@ -897,8 +926,7 @@ def passkey_registration_verify():
         return error
     data = request.get_json(silent=True) or {}
     try:
-        from webauthn import verify_registration_response
-        from webauthn.helpers import base64url_to_bytes
+        from webauthn import base64url_to_bytes, verify_registration_response
         _ensure_passkey_indexes()
         origin = _webauthn_origin()
         challenge_id = str(data.get("challenge_id") or "").strip()
@@ -945,8 +973,7 @@ def passkey_registration_verify():
 @identity_bp.post("/api/identity/passkeys/authentication/options")
 def passkey_authentication_options():
     try:
-        from webauthn import generate_authentication_options
-        from webauthn.helpers import options_to_json
+        from webauthn import generate_authentication_options, options_to_json
         from webauthn.helpers.structs import UserVerificationRequirement
         _ensure_passkey_indexes()
         _webauthn_origin()
@@ -968,8 +995,7 @@ def passkey_authentication_options():
 def passkey_authentication_verify():
     data = request.get_json(silent=True) or {}
     try:
-        from webauthn import verify_authentication_response
-        from webauthn.helpers import base64url_to_bytes
+        from webauthn import base64url_to_bytes, verify_authentication_response
         _ensure_passkey_indexes()
         origin = _webauthn_origin()
         challenge_id = str(data.get("challenge_id") or "").strip()
