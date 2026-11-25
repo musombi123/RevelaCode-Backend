@@ -17,6 +17,9 @@ on:
       - "backend/tests/test_origin_cache.py"
       - "backend/tests/test_ip_guard.py"
       - "backend/tests/test_request_metrics.py"
+      - "backend/tests/test_rpsvi_safety_contract.py"
+      - "tests/load/**"
+      - "docs/testing/**"
       - "gunicorn.conf.py"
       - "render.yaml"
       - ".github/workflows/scalability-foundation.yml"
@@ -68,6 +71,6 @@ jobs:
       - name: Install test dependencies
         run: python -m pip install pytest flask python-dotenv pymongo
       - name: Compile changed Python modules
-        run: python -m py_compile main.py backend/db.py backend/background_worker.py backend/background_jobs.py backend/security_ip_guard.py backend/security/headers.py backend/security/origin_cache.py backend/observability/request_metrics.py gunicorn.conf.py backend/tests/test_process_lifecycle.py backend/tests/test_security_headers.py backend/tests/test_origin_cache.py backend/tests/test_ip_guard.py backend/tests/test_request_metrics.py
+        run: python -m py_compile main.py backend/db.py backend/background_worker.py backend/background_jobs.py backend/security_ip_guard.py backend/security/headers.py backend/security/origin_cache.py backend/observability/request_metrics.py gunicorn.conf.py backend/tests/test_process_lifecycle.py backend/tests/test_security_headers.py backend/tests/test_origin_cache.py backend/tests/test_ip_guard.py backend/tests/test_request_metrics.py backend/tests/test_rpsvi_safety_contract.py
       - name: Verify worker lifecycle, security headers, origin cache and IP protection
-        run: python -m pytest -q backend/tests/test_process_lifecycle.py backend/tests/test_security_headers.py backend/tests/test_origin_cache.py backend/tests/test_ip_guard.py backend/tests/test_request_metrics.py
+        run: python -m pytest -q backend/tests/test_process_lifecycle.py backend/tests/test_security_headers.py backend/tests/test_origin_cache.py backend/tests/test_ip_guard.py backend/tests/test_request_metrics.py backend/tests/test_rpsvi_safety_contract.py
