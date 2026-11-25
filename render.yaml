@@ -3,7 +3,7 @@ services:
     name: revelacode-api
     env: python
     buildCommand: pip install -r requirements.txt
-    startCommand: python main.py
+    startCommand: gunicorn --config gunicorn.conf.py main:app
     autoDeploy: true
     envVars:
       - key: FLASK_ENV
@@ -41,6 +41,13 @@ services:
         sync: false
       - key: FRONTEND_URL
         value: "https://revelacode.co.ke"
+
+  - type: worker
+    name: revelacode-background-worker
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python -m backend.background_worker
+    autoDeploy: true
 
   - type: cron
     name: revelacode-market-data-refresh
