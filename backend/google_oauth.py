@@ -357,13 +357,20 @@ def google_callback():
                 if (
                     not linking_actor
                     or linking_actor.get("verified") is not True
+                    or linking_actor.get("is_active") is False
+                    or str(linking_actor.get("status") or "active").casefold() != "active"
                     or str(linking_actor.get("_id")) != str(user.get("_id"))
                 ):
                     raise ValueError("This Google identity is already linked to a different RevelaCode account.")
         elif state_row.get("mode") == "link":
             user = _load_user_by_id(state_row.get("actor_id"))
-            if not user or user.get("verified") is not True:
-                raise ValueError("The RevelaCode account must have a verified email before linking Google.")
+            if (
+                not user
+                or user.get("verified") is not True
+                or user.get("is_active") is False
+                or str(user.get("status") or "active").casefold() != "active"
+            ):
+                raise ValueError("The RevelaCode account must be active and have a verified email before linking Google.")
             stored_email = str(user.get("email") or user.get("contact") or "").strip().lower()
             if stored_email != email:
                 raise ValueError("The Google email must match the signed-in RevelaCode account.")
