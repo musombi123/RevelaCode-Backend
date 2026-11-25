@@ -26,6 +26,7 @@ These are not interchangeable. The repository currently has no measured evidence
 - A single active platform IP-block enforcement hook in the Flask request path.
 - A bounded short-lived per-process cache for IP-block decisions; block/unblock writes invalidate the local entry.
 - A bounded short-lived cache for verified custom-domain CORS checks; database failures are not cached and route authorization remains uncached.
+- Per-request correlation IDs and application execution timing via `X-Request-ID` and `Server-Timing`, with structured warnings above the configured slow-request threshold.
 - Baseline HTTP security headers, with HSTS only on HTTPS responses.
 - A separate worker entry point that does not import the web application.
 - Read-only k6 health and authenticated API profiles.
