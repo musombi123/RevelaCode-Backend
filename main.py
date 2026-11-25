@@ -119,17 +119,12 @@ def configured_frontend_origins() -> set[str]:
         FRONTEND_ORIGINS=https://example.com,https://another.example
     """
 
-    origins = set(DEFAULT_FRONTEND_ORIGINS)
-
-    configured = os.getenv("FRONTEND_ORIGINS", "")
-
-    for item in configured.split(","):
-        origin = item.strip().rstrip("/")
-
-        if origin.startswith(("https://", "http://")):
-            origins.add(origin)
-
-    return origins
+    environment = os.getenv("REVELACODE_ENV", os.getenv("ENVIRONMENT", "production"))
+    return resolve_frontend_origins(
+        DEFAULT_FRONTEND_ORIGINS,
+        os.getenv("FRONTEND_ORIGINS", ""),
+        environment,
+    )
 
 
 FRONTEND_ORIGINS = configured_frontend_origins()
@@ -145,6 +140,7 @@ except (TypeError, ValueError):
     logger.warning("Invalid custom-origin cache TTL; using five seconds")
 
 from backend.security.origin_cache import OriginVerificationCache
+from backend.security.cors_origins import resolve_frontend_origins
 
 _CUSTOM_ORIGIN_CACHE = OriginVerificationCache(
     ttl_seconds=_CUSTOM_ORIGIN_CACHE_TTL,
