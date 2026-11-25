@@ -48,6 +48,13 @@ services:
     buildCommand: pip install -r requirements.txt
     startCommand: python -m backend.background_worker
     autoDeploy: true
+    envVars:
+      - key: MONGO_URI
+        sync: false
+      - key: MONGO_DB_NAME
+        value: revelacode
+      - key: IMPORT_SDA_Q3_2026
+        value: "false"
 
   - type: cron
     name: revelacode-market-data-refresh
