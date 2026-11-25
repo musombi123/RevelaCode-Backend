@@ -128,6 +128,7 @@ The following changes extend the initial foundation while retaining Flask, the e
 - Removed the duplicate legacy IP-guard request hook and its duplicate blueprint registration. The active request-boundary guard and admin management routes use `backend.security_ip_guard`.
 - Added a bounded per-process IP-block decision cache (default one-second TTL, maximum 4,096 entries). Manual block/unblock writes invalidate the local decision immediately. Database errors are not cached.
 - Added a bounded custom-domain CORS verification cache (default five-second TTL, maximum 4,096 entries). It caches only origin-verification booleans; resolver/database failures are not cached and normal route authorization remains per-request.
+- Added server-generated request correlation IDs, application timing headers, and structured slow-request warnings. The threshold is configurable with `REVELACODE_SLOW_REQUEST_THRESHOLD_MS` (default 1,000 ms).
 - Added baseline response security headers: content-type sniffing protection, same-origin framing, referrer policy, camera/microphone/geolocation permissions policy, and HTTPS-only HSTS without `includeSubDomains`.
 - Expanded the focused CI workflow to compile the new modules and test the worker boundary and response-header policy.
 - Added a parameterized, authenticated, read-only k6 profile and a capacity/release runbook.
