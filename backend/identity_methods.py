@@ -903,7 +903,14 @@ def _webauthn_config():
     if raw_origins.strip():
         origins = {item.strip().rstrip("/") for item in raw_origins.split(",") if item.strip()}
     else:
-        origins = {"https://revelacode.co.ke", "https://www.revelacode.co.ke"}
+        origins = {
+            "https://revelacode.co.ke",
+            "https://www.revelacode.co.ke",
+            "https://biashara.revelacode.co.ke",
+            "https://elimu.revelacode.co.ke",
+            "https://shamba.revelacode.co.ke",
+            "https://community.revelacode.co.ke",
+        }
         if os.getenv("REVELACODE_ENV", os.getenv("ENVIRONMENT", "production")).casefold() != "production":
             origins.update({"http://localhost:5173", "http://localhost:4173"})
     return rp_id, origins
@@ -963,10 +970,17 @@ def passkey_registration_options():
         _webauthn_origin()
         rp_id, _origins = _webauthn_config()
         uid = _user_id(user)
+        user_handle = user.get("webauthn_user_handle")
+        if not isinstance(user_handle, bytes) or len(user_handle) < 32:
+            user_handle = secrets.token_bytes(64)
+            _users().update_one(
+                {"_id": user["_id"]},
+                {"$set": {"webauthn_user_handle": user_handle}},
+            )
         options = generate_registration_options(
             rp_id=rp_id,
             rp_name="RevelaCode",
-            user_id=uid.encode("utf-8"),
+            user_id=user_handle,
             user_name=str(user.get("username") or user.get("email") or user.get("contact") or uid),
             user_display_name=str(user.get("full_name") or user.get("name") or user.get("username") or "RevelaCode member"),
             authenticator_selection=AuthenticatorSelectionCriteria(
@@ -1016,6 +1030,7 @@ def passkey_registration_verify():
             "credential_public_key": verification.credential_public_key,
             "sign_count": int(verification.sign_count),
             "user_id": _user_id(user),
+            "user_handle": user_handle,
             "name": str(data.get("name") or "Passkey")[:80],
             "device_type": str(verification.credential_device_type),
             "backed_up": bool(verification.credential_backed_up),
@@ -1076,6 +1091,14 @@ def passkey_authentication_verify():
         if not stored:
             return jsonify(success=False, code="passkey_not_found", message="This passkey is not registered with RevelaCode."), 401
         rp_id, _origins = _webauthn_config()
+        supplied_user_handle = (credential.get("response") or {}).get("userHandle")
+        if not supplied_user_handle:
+            return jsonify(success=False, code="passkey_user_handle_missing", message="This passkey did not provide its discoverable account handle. Use another sign-in method."), 401
+        if not stored.get("user_handle") or not hmac.compare_digest(
+            bytes(stored["user_handle"]),
+            base64url_to_bytes(supplied_user_handle),
+        ):
+            return jsonify(success=False, code="passkey_user_handle_mismatch", message="The passkey account handle did not match the registered RevelaCode account."), 401
         verification = verify_authentication_response(
             credential=credential,
             expected_challenge=base64url_to_bytes(challenge["challenge"]),
