@@ -219,6 +219,56 @@ def google_start():
         return jsonify(success=False, message="Google sign-in could not be started."), 503
 
 
+@oauth_bp.post("/api/oauth/google/link/start")
+def google_link_start():
+    """Start Google linking using the current RevelaCode Bearer session."""
+    actor, error, status = resolve_current_actor(request)
+    if error:
+        return jsonify(error), status
+    user = _load_user_by_id(actor.get("id"))
+    if not user or user.get("verified") is not True or user.get("is_active") is False:
+        return jsonify(success=False, code="account_not_verified", message="Sign in to a verified RevelaCode account before linking Google."), 403
+    data = request.get_json(silent=True) or {}
+    client = str(data.get("client") or "web").strip().lower()
+    if client not in {"web", "android"}:
+        return jsonify(success=False, message="Unsupported client type."), 400
+    try:
+        _ensure_indexes()
+        client_id, _secret, redirect_uri = _client_config()
+        return_uri = _return_uri(client)
+        state = secrets.token_urlsafe(32)
+        nonce = secrets.token_urlsafe(32)
+        verifier = _b64url(secrets.token_bytes(48))
+        challenge = _b64url(hashlib.sha256(verifier.encode("ascii")).digest())
+        get_db()["oauth_states"].insert_one({
+            "state_hash": _token_hash(state),
+            "nonce": nonce,
+            "code_verifier": verifier,
+            "mode": "link",
+            "client": client,
+            "return_uri": return_uri,
+            "actor_id": actor.get("id"),
+            "created_at": _now(),
+            "expires_at": _now() + timedelta(minutes=10),
+        })
+        params = {
+            "client_id": client_id,
+            "redirect_uri": redirect_uri,
+            "response_type": "code",
+            "scope": "openid email profile",
+            "state": state,
+            "nonce": nonce,
+            "code_challenge": challenge,
+            "code_challenge_method": "S256",
+            "prompt": "select_account",
+        }
+        return jsonify(success=True, authorization_url=GOOGLE_AUTH + "?" + urlencode(params)), 200
+    except RuntimeError as exc:
+        return jsonify(success=False, code="google_oauth_not_configured", message=str(exc)), 503
+    except Exception:
+        return jsonify(success=False, message="Could not start Google account linking."), 503
+
+
 @oauth_bp.post("/api/oauth/google/invite/start")
 def google_invite_start():
     data = request.get_json(silent=True) or {}
