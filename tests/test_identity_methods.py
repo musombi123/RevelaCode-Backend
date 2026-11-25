@@ -1,7 +1,12 @@
 import hashlib
 import hmac
+import os
 
 import pytest
+
+# auth_gate validates JWT_SECRET at import time; keep this module's unit tests
+# independent of repository secrets and production configuration.
+os.environ.setdefault("JWT_SECRET", "revelacode-identity-tests-only")
 
 from backend.identity_methods import (
     _active,
