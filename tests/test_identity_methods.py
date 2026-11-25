@@ -1,0 +1,89 @@
+import hashlib
+import hmac
+import os
+
+import pytest
+
+# auth_gate validates JWT_SECRET at import time; keep this module's unit tests
+# independent of repository secrets and production configuration.
+os.environ.setdefault("JWT_SECRET", "revelacode-identity-tests-only")
+os.environ.setdefault("MONGO_URI", "mongodb://127.0.0.1:27017/revelacode_identity_tests")
+
+from backend.identity_methods import (
+    _active,
+    _normalise_phone,
+    _otp_hash,
+    _phone_hash,
+    _verified,
+)
+
+
+def test_kenyan_mobile_number_is_normalised_to_e164():
+    assert _normalise_phone("0712 345 678") == "+254712345678"
+    assert _normalise_phone("0112-345-678") == "+254112345678"
+    assert _normalise_phone("254712345678") == "+254712345678"
+    assert _normalise_phone("+254 712 345 678") == "+254712345678"
+
+
+@pytest.mark.parametrize("value", ["", "071234567", "12345", "abc", "+00012345678"])
+def test_invalid_phone_numbers_are_rejected(value):
+    with pytest.raises(ValueError):
+        _normalise_phone(value)
+
+
+def test_otp_hash_is_bound_to_challenge_phone_and_code(monkeypatch):
+    monkeypatch.setenv("JWT_SECRET", "test-only-secret")
+    first = _otp_hash("challenge-a", "+254712345678", "123456")
+    assert first == _otp_hash("challenge-a", "+254712345678", "123456")
+    assert first != _otp_hash("challenge-b", "+254712345678", "123456")
+    assert first != _otp_hash("challenge-a", "+254700000000", "123456")
+    assert first != _otp_hash("challenge-a", "+254712345678", "654321")
+
+
+def test_phone_hash_is_stable_and_keyed(monkeypatch):
+    monkeypatch.setenv("JWT_SECRET", "test-only-secret")
+    first = _phone_hash("+254712345678")
+    assert first == _phone_hash("+254712345678")
+    monkeypatch.setenv("JWT_SECRET", "rotated-secret")
+    assert first != _phone_hash("+254712345678")
+
+
+@pytest.mark.parametrize("user", [
+    {"verified": True},
+    {"is_verified": True},
+    {"verified": "true"},
+    {"verified": 1},
+])
+def test_verified_account_state_is_recognised(user):
+    assert _verified(user) is True
+
+
+def test_inactive_accounts_are_rejected():
+    assert _active({"status": "active"}) is True
+    assert _active({"status": "suspended"}) is False
+    assert _active({"is_active": False}) is False
+
+def test_installed_webauthn_library_exports_required_api():
+    from webauthn import (
+        base64url_to_bytes,
+        generate_authentication_options,
+        generate_registration_options,
+        options_to_json,
+        verify_authentication_response,
+        verify_registration_response,
+    )
+    from webauthn.helpers.structs import (
+        AuthenticatorSelectionCriteria,
+        ResidentKeyRequirement,
+        UserVerificationRequirement,
+    )
+
+    assert callable(base64url_to_bytes)
+    assert callable(generate_authentication_options)
+    assert callable(generate_registration_options)
+    assert callable(options_to_json)
+    assert callable(verify_authentication_response)
+    assert callable(verify_registration_response)
+    assert ResidentKeyRequirement.REQUIRED is not None
+    assert UserVerificationRequirement.REQUIRED is not None
+    assert AuthenticatorSelectionCriteria is not None

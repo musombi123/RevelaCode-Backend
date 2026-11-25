@@ -155,9 +155,9 @@ def oauth_providers():
     return jsonify(success=True, providers=[
         {"id": "google", "label": "Google", "enabled": bool(os.getenv("GOOGLE_WEB_CLIENT_ID") and os.getenv("GOOGLE_WEB_CLIENT_SECRET"))},
         {"id": "apple", "label": "Apple", "enabled": False},
-        {"id": "microsoft", "label": "Microsoft", "enabled": False},
+        {"id": "microsoft", "label": "Microsoft", "enabled": bool(os.getenv("MICROSOFT_CLIENT_ID") and os.getenv("MICROSOFT_CLIENT_SECRET"))},
         {"id": "facebook", "label": "Facebook", "enabled": False},
-        {"id": "github", "label": "GitHub", "enabled": False},
+        {"id": "github", "label": "GitHub", "enabled": bool(os.getenv("GITHUB_CLIENT_ID") and os.getenv("GITHUB_CLIENT_SECRET"))},
     ]), 200
 
 
@@ -217,6 +217,56 @@ def google_start():
         return jsonify(success=False, code="google_oauth_not_configured", message=str(exc)), 503
     except Exception:
         return jsonify(success=False, message="Google sign-in could not be started."), 503
+
+
+@oauth_bp.post("/api/oauth/google/link/start")
+def google_link_start():
+    """Start Google linking using the current RevelaCode Bearer session."""
+    actor, error, status = resolve_current_actor(request)
+    if error:
+        return jsonify(error), status
+    user = _load_user_by_id(actor.get("id"))
+    if not user or user.get("verified") is not True or user.get("is_active") is False:
+        return jsonify(success=False, code="account_not_verified", message="Sign in to a verified RevelaCode account before linking Google."), 403
+    data = request.get_json(silent=True) or {}
+    client = str(data.get("client") or "web").strip().lower()
+    if client not in {"web", "android"}:
+        return jsonify(success=False, message="Unsupported client type."), 400
+    try:
+        _ensure_indexes()
+        client_id, _secret, redirect_uri = _client_config()
+        return_uri = _return_uri(client)
+        state = secrets.token_urlsafe(32)
+        nonce = secrets.token_urlsafe(32)
+        verifier = _b64url(secrets.token_bytes(48))
+        challenge = _b64url(hashlib.sha256(verifier.encode("ascii")).digest())
+        get_db()["oauth_states"].insert_one({
+            "state_hash": _token_hash(state),
+            "nonce": nonce,
+            "code_verifier": verifier,
+            "mode": "link",
+            "client": client,
+            "return_uri": return_uri,
+            "actor_id": actor.get("id"),
+            "created_at": _now(),
+            "expires_at": _now() + timedelta(minutes=10),
+        })
+        params = {
+            "client_id": client_id,
+            "redirect_uri": redirect_uri,
+            "response_type": "code",
+            "scope": "openid email profile",
+            "state": state,
+            "nonce": nonce,
+            "code_challenge": challenge,
+            "code_challenge_method": "S256",
+            "prompt": "select_account",
+        }
+        return jsonify(success=True, authorization_url=GOOGLE_AUTH + "?" + urlencode(params)), 200
+    except RuntimeError as exc:
+        return jsonify(success=False, code="google_oauth_not_configured", message=str(exc)), 503
+    except Exception:
+        return jsonify(success=False, message="Could not start Google account linking."), 503
 
 
 @oauth_bp.post("/api/oauth/google/invite/start")
@@ -302,10 +352,25 @@ def google_callback():
             stored_email = str(user.get("email") or user.get("contact") or "").strip().lower()
             if stored_email != email or user.get("verified") is not True:
                 raise ValueError("The Google identity is not linked to a verified RevelaCode account.")
+            if state_row.get("mode") == "link":
+                linking_actor = _load_user_by_id(state_row.get("actor_id"))
+                if (
+                    not linking_actor
+                    or linking_actor.get("verified") is not True
+                    or linking_actor.get("is_active") is False
+                    or str(linking_actor.get("status") or "active").casefold() != "active"
+                    or str(linking_actor.get("_id")) != str(user.get("_id"))
+                ):
+                    raise ValueError("This Google identity is already linked to a different RevelaCode account.")
         elif state_row.get("mode") == "link":
             user = _load_user_by_id(state_row.get("actor_id"))
-            if not user or user.get("verified") is not True:
-                raise ValueError("The RevelaCode account must have a verified email before linking Google.")
+            if (
+                not user
+                or user.get("verified") is not True
+                or user.get("is_active") is False
+                or str(user.get("status") or "active").casefold() != "active"
+            ):
+                raise ValueError("The RevelaCode account must be active and have a verified email before linking Google.")
             stored_email = str(user.get("email") or user.get("contact") or "").strip().lower()
             if stored_email != email:
                 raise ValueError("The Google email must match the signed-in RevelaCode account.")
@@ -390,15 +455,9 @@ def google_exchange():
     user = _load_user_by_id(row.get("user_id"))
     if not user or user.get("verified") is not True or user.get("is_active") is False or str(user.get("status") or "active") != "active":
         return jsonify(success=False, message="This RevelaCode account is not active."), 403
-    return jsonify(success=True, user={
-        "id": str(user.get("_id") or user.get("id") or user.get("user_id") or ""),
-        "full_name": user.get("full_name") or user.get("name") or "",
-        "contact": user.get("contact") or user.get("email") or "",
-        "email": user.get("email") or "",
-        "role": user.get("role") or "user",
-        "roles": user.get("roles") or [user.get("role") or "user"],
-        "verified": True,
-    }, access_token=create_access_token(user), token_type="Bearer"), 200
+    # All OAuth providers now pass through the shared MFA-aware session issuer.
+    from backend.identity_methods import _login_result
+    return _login_result(user)
 
 
 @oauth_bp.get("/api/oauth/account")
