@@ -10,6 +10,7 @@ from dotenv import load_dotenv
 from flask import Flask, jsonify, make_response, request
 from flask_cors import CORS
 from werkzeug.middleware.proxy_fix import ProxyFix
+from backend.security.cors_origins import resolve_frontend_origins
 from backend.security.headers import apply_security_headers
 from backend.observability.request_metrics import begin_request, apply_request_metrics
 
@@ -140,7 +141,6 @@ except (TypeError, ValueError):
     logger.warning("Invalid custom-origin cache TTL; using five seconds")
 
 from backend.security.origin_cache import OriginVerificationCache
-from backend.security.cors_origins import resolve_frontend_origins
 
 _CUSTOM_ORIGIN_CACHE = OriginVerificationCache(
     ttl_seconds=_CUSTOM_ORIGIN_CACHE_TTL,
