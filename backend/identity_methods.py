@@ -740,10 +740,13 @@ def _consume_phone_challenge(challenge_id: str, phone: str, code: str, purpose: 
 
 @identity_bp.get("/api/identity/providers")
 def identity_provider_status():
+    google_client_id = os.getenv("GOOGLE_WEB_CLIENT_ID", "").strip().strip("\\"'").strip()
+    google_secret = os.getenv("GOOGLE_WEB_CLIENT_SECRET", "").strip().strip("\\"'").strip()
+    google_redirect = os.getenv("GOOGLE_OAUTH_REDIRECT_URI", "").strip().strip("\\"'").strip()
     google_ready = bool(
-        os.getenv("GOOGLE_WEB_CLIENT_ID", "").strip()
-        and os.getenv("GOOGLE_WEB_CLIENT_SECRET", "").strip()
-        and os.getenv("GOOGLE_OAUTH_REDIRECT_URI", "").strip().startswith("https://")
+        google_client_id.endswith(".apps.googleusercontent.com")
+        and google_secret
+        and google_redirect == "https://revelacode-backend.onrender.com/api/oauth/google/callback"
     )
     microsoft_ready = bool(
         os.getenv("MICROSOFT_CLIENT_ID", "").strip()
