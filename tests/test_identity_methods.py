@@ -7,6 +7,7 @@ import pytest
 # auth_gate validates JWT_SECRET at import time; keep this module's unit tests
 # independent of repository secrets and production configuration.
 os.environ.setdefault("JWT_SECRET", "revelacode-identity-tests-only")
+os.environ.setdefault("MONGO_URI", "mongodb://127.0.0.1:27017/revelacode_identity_tests")
 
 from backend.identity_methods import (
     _active,
