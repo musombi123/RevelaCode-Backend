@@ -84,3 +84,36 @@ FastAPI, Redis, Celery, or other infrastructure is introduced only after the rel
 ## Current status
 
 Phase 1 has begun. The findings above are based on the inspected repository files. Route-by-route authorization review, full query profiling, existing test-suite execution, secret-history scanning, and load testing remain outstanding. No capacity claim is made at this stage.
+
+
+## Implementation progress on `engineering/scalability-phase-1`
+
+### Implemented in this branch (pending CI and deployment validation)
+
+- Production Render web command now uses the repository's already-installed Gunicorn through `gunicorn.conf.py`.
+- Conservative Gunicorn defaults: 2 gthread workers, 4 threads per worker, 60-second timeout, graceful shutdown, keepalive, and worker recycling. Values are environment-configurable. These are starting defaults, not load-tested optimal values.
+- Removed import-time invocation of `start_background_jobs()` from `main.py`. Gunicorn web workers no longer each start the legacy SDA importer and daily-runner threads.
+- Added a dedicated Render background worker entry point that starts those existing jobs once in its own process.
+- Added worker-specific MongoDB environment declarations. The deployment owner must confirm the Render worker has all additional runtime secrets/configuration needed by imported modules and the daily pipeline before enabling production deployment.
+- Added configurable MongoClient pool and wait-queue settings with conservative defaults. Total connections must be budgeted across every web and worker process.
+- Added AST-based process-lifecycle regression tests and a focused GitHub Actions workflow.
+- Added a read-only k6 staging health smoke profile, with instructions that explicitly prohibit unapproved production stress tests.
+
+### Phase status — honest assessment
+
+| Phase | Status | Remaining gate |
+|---|---|---|
+| 1. Backend audit | In progress | Full route/auth/tenant query inventory, secret-history review, test baseline and representative query profiling |
+| 2. Performance foundation | Partially implemented | CI, Render worker environment review, MongoDB pool sizing and staging measurements; Redis cache not introduced without a provisioned Redis service and cache design |
+| 3. Security hardening | Audit started | Endpoint-by-endpoint auth/tenant review, rate-limit design and tests, input/file validation review, security headers and audit coverage |
+| 4. Network/workload resilience | Partially implemented | Worker isolation only; durable queue, retry/circuit-breaker policies and sync failure tests remain |
+| 5. Specialist services | Architecture decision | No FastAPI service added yet. No profiling evidence currently justifies a second runtime; revisit after Phase 2 measurements |
+| 6. Performance verification | Harness started | Run CI, execute k6 against staging, then add realistic authenticated multi-tenant scenarios and report measured capacity |
+
+### Deployment warning
+
+The Render worker service is a separate process and does not automatically inherit environment variables configured only on the web service. The blueprint declares `MONGO_URI`, `MONGO_DB_NAME`, and `IMPORT_SDA_Q3_2026`; operators must verify any other environment variables required by application imports and `backend.daily_runner` before deploying/enabling this worker. Do not remove the old job execution path from production until the worker is configured and confirmed healthy.
+
+### Not yet claimed
+
+No Redis, Celery, FastAPI, Flask-Limiter or circuit-breaker package has been installed. No production load test has run. No 100,000-user or concurrency capacity claim is made.
