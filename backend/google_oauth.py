@@ -155,9 +155,9 @@ def oauth_providers():
     return jsonify(success=True, providers=[
         {"id": "google", "label": "Google", "enabled": bool(os.getenv("GOOGLE_WEB_CLIENT_ID") and os.getenv("GOOGLE_WEB_CLIENT_SECRET"))},
         {"id": "apple", "label": "Apple", "enabled": False},
-        {"id": "microsoft", "label": "Microsoft", "enabled": False},
+        {"id": "microsoft", "label": "Microsoft", "enabled": bool(os.getenv("MICROSOFT_CLIENT_ID") and os.getenv("MICROSOFT_CLIENT_SECRET"))},
         {"id": "facebook", "label": "Facebook", "enabled": False},
-        {"id": "github", "label": "GitHub", "enabled": False},
+        {"id": "github", "label": "GitHub", "enabled": bool(os.getenv("GITHUB_CLIENT_ID") and os.getenv("GITHUB_CLIENT_SECRET"))},
     ]), 200
 
 
@@ -390,15 +390,9 @@ def google_exchange():
     user = _load_user_by_id(row.get("user_id"))
     if not user or user.get("verified") is not True or user.get("is_active") is False or str(user.get("status") or "active") != "active":
         return jsonify(success=False, message="This RevelaCode account is not active."), 403
-    return jsonify(success=True, user={
-        "id": str(user.get("_id") or user.get("id") or user.get("user_id") or ""),
-        "full_name": user.get("full_name") or user.get("name") or "",
-        "contact": user.get("contact") or user.get("email") or "",
-        "email": user.get("email") or "",
-        "role": user.get("role") or "user",
-        "roles": user.get("roles") or [user.get("role") or "user"],
-        "verified": True,
-    }, access_token=create_access_token(user), token_type="Bearer"), 200
+    # All OAuth providers now pass through the shared MFA-aware session issuer.
+    from backend.identity_methods import _login_result
+    return _login_result(user)
 
 
 @oauth_bp.get("/api/oauth/account")
