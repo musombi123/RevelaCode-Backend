@@ -19,7 +19,7 @@ def test_load_scripts_require_exact_staging_host():
     ):
         assert production_host in guard
     assert "EXPECTED_STAGING_HOST" in guard
-    assert "https://" in guard
+    assert "https:" in guard and "\\/\\/" in guard
     assert "actualHost !== expectedHost" in guard
 
 
