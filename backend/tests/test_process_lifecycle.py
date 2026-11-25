@@ -25,6 +25,13 @@ def test_web_module_does_not_own_or_start_background_jobs():
     assert not imports
 
 
+def test_only_one_ip_blocking_request_guard_is_registered():
+    source = (ROOT / "main.py").read_text(encoding="utf-8-sig")
+    assert source.count("def enforce_platform_ip_blocks") == 1
+    assert "backend.security.ip_guard" not in source
+    assert "from backend.security_ip_guard import client_ip_from_request, ip_is_blocked" in source
+
+
 def test_worker_starts_jobs_without_importing_flask_application():
     tree = _module("backend/background_worker.py")
     imports_main = [
