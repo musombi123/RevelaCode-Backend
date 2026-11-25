@@ -283,6 +283,24 @@ def identity_provider_link_start(provider: str):
         return jsonify(success=False, message="Could not start provider linking."), 503
 
 
+def _identity_callback_error(state_row: dict | None, provider: str, reason: str):
+    allowed = {
+        _frontend_base() + "/oauth/callback",
+        _frontend_base() + "/oauth/android-callback",
+    }
+    destination = (state_row or {}).get("return_uri")
+    if destination not in allowed:
+        destination = _frontend_base() + "/oauth/callback"
+    return redirect(
+        destination + "?" + urlencode({
+            "oauth": "error",
+            "provider": provider,
+            "reason": str(reason or "sign_in_failed")[:180],
+        }),
+        code=302,
+    )
+
+
 def _issue_identity_ticket(user: dict, provider: str, return_uri: str | None = None):
     ticket = secrets.token_urlsafe(36)
     _db()["identity_login_tickets"].insert_one({
@@ -356,7 +374,7 @@ def _microsoft_callback():
         return redirect(_frontend_base() + "/oauth/callback?oauth=error&provider=microsoft&reason=invalid_or_expired_state")
     if not code:
         reason = str(request.args.get("error_description") or request.args.get("error") or "authorization_cancelled")[:160]
-        return redirect(_frontend_base() + "/oauth/callback?" + urlencode({"oauth": "error", "provider": "microsoft", "reason": reason}))
+        return _identity_callback_error(state_row, "microsoft", reason)
 
     try:
         config = _provider_config("microsoft")
@@ -437,11 +455,9 @@ def _microsoft_callback():
             raise ValueError("Could not resolve the RevelaCode account.")
         return _issue_identity_ticket(user, "microsoft", state_row.get("return_uri"))
     except ValueError as exc:
-        return redirect(_frontend_base() + "/oauth/callback?" + urlencode({
-            "oauth": "error", "provider": "microsoft", "reason": str(exc)[:180]
-        }))
+        return _identity_callback_error(state_row, "microsoft", str(exc))
     except Exception:
-        return redirect(_frontend_base() + "/oauth/callback?oauth=error&provider=microsoft&reason=sign_in_failed")
+        return _identity_callback_error(state_row, "microsoft", "sign_in_failed")
 
 
 def _github_callback():
@@ -459,7 +475,7 @@ def _github_callback():
         return redirect(_frontend_base() + "/oauth/callback?oauth=error&provider=github&reason=invalid_or_expired_state")
     if not code:
         reason = str(request.args.get("error") or "authorization_cancelled")[:160]
-        return redirect(_frontend_base() + "/oauth/callback?" + urlencode({"oauth": "error", "provider": "github", "reason": reason}))
+        return _identity_callback_error(state_row, "github", reason)
 
     try:
         config = _provider_config("github")
@@ -506,11 +522,9 @@ def _github_callback():
         # authentication only, not repository access.
         return _issue_identity_ticket(user, "github", state_row.get("return_uri"))
     except ValueError as exc:
-        return redirect(_frontend_base() + "/oauth/callback?" + urlencode({
-            "oauth": "error", "provider": "github", "reason": str(exc)[:180]
-        }))
+        return _identity_callback_error(state_row, "github", str(exc))
     except Exception:
-        return redirect(_frontend_base() + "/oauth/callback?oauth=error&provider=github&reason=sign_in_failed")
+        return _identity_callback_error(state_row, "github", "sign_in_failed")
 
 
 @identity_bp.get("/api/oauth/microsoft/start")
@@ -1025,6 +1039,9 @@ def passkey_registration_verify():
         credential_id = _b64url(verification.credential_id)
         if _db()["identity_passkeys"].find_one({"credential_id": credential_id}, {"_id": 1}):
             return jsonify(success=False, code="passkey_already_registered", message="This passkey is already registered."), 409
+        user_handle = user.get("webauthn_user_handle")
+        if not isinstance(user_handle, bytes) or len(user_handle) < 32:
+            return jsonify(success=False, code="passkey_user_handle_missing", message="Could not verify the private account handle for this passkey. Restart registration."), 409
         _db()["identity_passkeys"].insert_one({
             "credential_id": credential_id,
             "credential_public_key": verification.credential_public_key,
