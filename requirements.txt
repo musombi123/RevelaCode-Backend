@@ -32,7 +32,7 @@ resend>=2.0.0,<3.0.0
 # =====================================================
 feedparser==6.0.11
 beautifulsoup4==4.13.2
-lxml==5.3.2
+lxml==6.1.0
 python-dateutil==2.9.0.post0
 fake-useragent==1.5.1
 
