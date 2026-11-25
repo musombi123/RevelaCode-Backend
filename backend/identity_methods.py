@@ -22,9 +22,6 @@ import requests
 from flask import Blueprint, jsonify, redirect, request
 from pymongo import ReturnDocument
 
-from backend.auth_gate import create_access_token
-from backend.db import get_db
-from backend.utils.current_role_auth import resolve_current_actor
 
 identity_bp = Blueprint("identity_methods", __name__)
 UTC = timezone.utc
@@ -55,7 +52,14 @@ def _frontend_base() -> str:
 
 
 def _db():
+    # Defer Mongo initialization until an identity route is actually invoked.
+    from backend.db import get_db
     return get_db()
+
+
+def _resolve_actor(req):
+    from backend.utils.current_role_auth import resolve_current_actor
+    return resolve_current_actor(req)
 
 
 def _users():
@@ -76,7 +80,7 @@ def _load_user_by_id(user_id: str):
 
 
 def _actor_user():
-    actor, error, status = resolve_current_actor(request)
+    actor, error, status = _resolve_actor(request)
     if error:
         return None, (jsonify(error), status)
     user = _load_user_by_id(str(actor.get("id") or ""))
@@ -126,6 +130,7 @@ def _login_result(user: dict):
             message="Complete your existing two-step verification to finish signing in.",
         ), 200
     role = str(user.get("role") or "user")
+    from backend.auth_gate import create_access_token
     token = create_access_token(user)
     return jsonify(
         success=True,
@@ -243,7 +248,7 @@ def _start_provider(provider: str):
         client = str(request.args.get("client") or "web").strip().casefold()
         actor_id = None
         if mode == "link":
-            actor, error, status = resolve_current_actor(request)
+            actor, error, status = _resolve_actor(request)
             if error:
                 return jsonify(error), status
             actor_id = str(actor.get("id") or "").strip()
