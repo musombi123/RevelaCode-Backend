@@ -42,3 +42,7 @@ The existing RevelaCode platform remains intact while **Jumuiya** extends the ba
 ## Licence
 
 Proprietary — All Rights Reserved. This repository's original backend source and materials may not be reused or redistributed without written permission. Third-party dependencies retain their own licences. See [LICENSE](LICENSE).
+
+## Research and technical due diligence
+
+The founder research library is maintained in [`docs/research/`](docs/research/README.md). It covers the backend architecture, operating/security/scalability model, capacity gates and investor evidence register. Claims about adoption, revenue, uptime and capacity must be supported by measured records.
