@@ -783,6 +783,9 @@ except Exception:
     logger.exception("Google OAuth blueprint registration failed")
     raise
 
+# Additional first-party methods use the same users collection and JWT session.
+register_bp("backend.identity_methods", "identity_bp")
+
 
 # =========================================================
 # PUBLIC ROUTES
