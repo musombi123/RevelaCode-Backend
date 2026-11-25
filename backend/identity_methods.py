@@ -14,6 +14,7 @@ import os
 import re
 import secrets
 import time
+import uuid
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlencode
 
@@ -184,30 +185,21 @@ def _provider_config(provider: str):
     raise ValueError("Unsupported identity provider.")
 
 
-def _start_provider(provider: str):
+def _provider_authorization_url(provider: str, mode: str, actor_id: str | None, client: str):
     _ensure_oauth_indexes()
     config = _provider_config(provider)
-    mode = str(request.args.get("mode") or "login").strip().casefold()
-    client = str(request.args.get("client") or "web").strip().casefold()
-    if client not in {"web", "android"}:
-        return jsonify(success=False, message="Unsupported client type."), 400
-    return_uri = _frontend_base() + ("/oauth/android-callback" if client == "android" else "/oauth/callback")
     if mode not in {"login", "link"}:
-        return jsonify(success=False, message="Unsupported sign-in mode."), 400
-
-    actor_id = None
-    if mode == "link":
-        actor, error, status = resolve_current_actor(request)
-        if error:
-            return jsonify(error), status
-        actor_id = str(actor.get("id") or "").strip()
-        if not actor_id:
-            return jsonify(success=False, message="Sign in before linking an identity provider."), 401
+        raise ValueError("Unsupported sign-in mode.")
+    if client not in {"web", "android"}:
+        raise ValueError("Unsupported client type.")
+    if mode == "link" and not actor_id:
+        raise ValueError("Sign in before linking an identity provider.")
 
     state = secrets.token_urlsafe(32)
     nonce = secrets.token_urlsafe(32)
     verifier = _b64url(secrets.token_bytes(48))
     challenge = _b64url(hashlib.sha256(verifier.encode("ascii")).digest())
+    return_uri = _frontend_base() + ("/oauth/android-callback" if client == "android" else "/oauth/callback")
     _db()["identity_oauth_states"].insert_one({
         "state_hash": _hash(state),
         "provider": provider,
@@ -222,6 +214,7 @@ def _start_provider(provider: str):
     })
 
     if provider == "microsoft":
+        authority_root = config["authority"].rsplit("/v2.0", 1)[0]
         params = {
             "client_id": config["client_id"],
             "response_type": "code",
@@ -234,10 +227,8 @@ def _start_provider(provider: str):
             "code_challenge_method": "S256",
             "prompt": "select_account",
         }
-        return redirect(config["authority"] + "/oauth2/v2.0/authorize?" + urlencode(params), code=302)
+        return authority_root + "/oauth2/v2.0/authorize?" + urlencode(params)
 
-    # GitHub OAuth App server-side authorization uses a confidential client,
-    # one-time state, and a server-held client secret during code exchange.
     params = {
         "client_id": config["client_id"],
         "redirect_uri": config["callback"],
@@ -245,7 +236,51 @@ def _start_provider(provider: str):
         "state": state,
         "allow_signup": "true",
     }
-    return redirect("https://github.com/login/oauth/authorize?" + urlencode(params), code=302)
+    return "https://github.com/login/oauth/authorize?" + urlencode(params)
+
+
+def _start_provider(provider: str):
+    try:
+        mode = str(request.args.get("mode") or "login").strip().casefold()
+        client = str(request.args.get("client") or "web").strip().casefold()
+        actor_id = None
+        if mode == "link":
+            actor, error, status = resolve_current_actor(request)
+            if error:
+                return jsonify(error), status
+            actor_id = str(actor.get("id") or "").strip()
+        authorization_url = _provider_authorization_url(provider, mode, actor_id, client)
+        return redirect(authorization_url, code=302)
+    except RuntimeError as exc:
+        code = provider + "_not_configured"
+        return jsonify(success=False, code=code, message=str(exc)), 503
+    except ValueError as exc:
+        return jsonify(success=False, message=str(exc)), 400
+    except Exception:
+        return jsonify(success=False, message="Sign-in could not be started."), 503
+
+
+@identity_bp.post("/api/oauth/<provider>/link/start")
+def identity_provider_link_start(provider: str):
+    provider = str(provider or "").strip().casefold()
+    if provider not in {"microsoft", "github"}:
+        return jsonify(success=False, message="Unsupported identity provider."), 400
+    user, error = _actor_user()
+    if error:
+        return error
+    if not _verified(user):
+        return jsonify(success=False, code="account_not_verified", message="Verify your RevelaCode account before linking another sign-in method."), 403
+    data = request.get_json(silent=True) or {}
+    client = str(data.get("client") or "web").strip().casefold()
+    try:
+        authorization_url = _provider_authorization_url(provider, "link", _user_id(user), client)
+        return jsonify(success=True, authorization_url=authorization_url), 200
+    except RuntimeError as exc:
+        return jsonify(success=False, code=provider + "_not_configured", message=str(exc)), 503
+    except ValueError as exc:
+        return jsonify(success=False, message=str(exc)), 400
+    except Exception:
+        return jsonify(success=False, message="Could not start provider linking."), 503
 
 
 def _issue_identity_ticket(user: dict, provider: str, return_uri: str | None = None):
@@ -269,66 +304,41 @@ def _issue_identity_ticket(user: dict, provider: str, return_uri: str | None = N
 def _provider_identity(provider: str, subject: str, email: str, name: str, state_row: dict):
     users = _users()
     linked = users.find_one({f"oauth_providers.{provider}.sub": subject})
-    actor_id = str(state_row.get("actor_id") or "").strip()
+    mode = str(state_row.get("mode") or "login").strip().casefold()
 
-    if state_row.get("mode") == "link":
-        actor = _load_user_by_id(actor_id)
-        if not actor or not _active(actor) or not _verified(actor):
-            raise ValueError("Sign in to a verified RevelaCode account before linking this provider.")
-        owner = linked
-        if owner and _user_id(owner) != _user_id(actor):
-            raise ValueError("This external identity is already linked to another RevelaCode account.")
-        users.update_one(
-            {"_id": actor["_id"]},
-            {
-                "$set": {
-                    f"oauth_providers.{provider}": {
-                        "sub": subject,
-                        "email": email,
-                        "linked_at": _now(),
-                    }
-                },
-                "$addToSet": {"login_methods": provider},
-            },
-        )
-        return users.find_one({"_id": actor["_id"]})
-
-    if linked:
-        if not _active(linked):
-            raise ValueError("This RevelaCode account is not active.")
+    if mode == "login":
+        if not linked:
+            raise ValueError(
+                "This external account is not linked to a RevelaCode account yet. "
+                "Sign in using your existing method, then connect it in Account & Security."
+            )
+        if not _active(linked) or not _verified(linked):
+            raise ValueError("The linked RevelaCode account is not active or verified.")
         return linked
 
-    if not email or not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email):
-        raise ValueError("The provider did not return an email address. Add a verified email to your provider account, then try again.")
+    if mode != "link":
+        raise ValueError("Unsupported identity linking mode.")
 
-    email_match = {"$regex": "^" + re.escape(email) + "$", "$options": "i"}
-    existing = users.find_one({"$or": [{"email": email_match}, {"contact": email_match}]})
-    if existing:
-        raise ValueError("A RevelaCode account already uses this email. Sign in with that account first, then connect this provider in Account & Security.")
-
-    # New sign-ups are ordinary member accounts. They never inherit staff roles.
-    user_data = {
-        "full_name": (name or email.split("@")[0])[:120],
-        "fullName": (name or email.split("@")[0])[:120],
-        "name": (name or email.split("@")[0])[:120],
-        "email": email,
-        "contact": email,
-        "role": "user",
-        "roles": ["user"],
-        "verified": True,
-        "is_verified": True,
-        "is_active": True,
-        "status": "active",
-        "token_version": 0,
-        "oauth_providers": {
-            provider: {"sub": subject, "email": email, "linked_at": _now()}
+    actor_id = str(state_row.get("actor_id") or "").strip()
+    actor = _load_user_by_id(actor_id)
+    if not actor or not _active(actor) or not _verified(actor):
+        raise ValueError("Sign in to a verified RevelaCode account before linking this provider.")
+    if linked and _user_id(linked) != _user_id(actor):
+        raise ValueError("This external identity is already linked to another RevelaCode account.")
+    users.update_one(
+        {"_id": actor["_id"]},
+        {
+            "$set": {
+                f"oauth_providers.{provider}": {
+                    "sub": subject,
+                    "email": email or "",
+                    "linked_at": _now(),
+                }
+            },
+            "$addToSet": {"login_methods": provider},
         },
-        "login_methods": [provider],
-        "created_at": _now(),
-        "identity_signup_provider": provider,
-    }
-    inserted = users.insert_one(user_data)
-    return users.find_one({"_id": inserted.inserted_id})
+    )
+    return users.find_one({"_id": actor["_id"]})
 
 
 def _microsoft_callback():
@@ -373,30 +383,54 @@ def _microsoft_callback():
         id_token = str(token_response.json().get("id_token") or "")
         if not id_token:
             raise ValueError("Microsoft did not return an OpenID Connect ID token.")
-        signing_key = jwt.PyJWKClient(metadata["jwks_uri"]).get_signing_key_from_jwt(id_token).key
         unverified_claims = jwt.decode(
             id_token,
             options={"verify_signature": False, "verify_aud": False, "verify_exp": False},
             algorithms=["RS256"],
         )
         token_tenant = str(unverified_claims.get("tid") or "").strip()
+        try:
+            normalized_tenant = str(uuid.UUID(token_tenant))
+        except (ValueError, AttributeError, TypeError):
+            raise ValueError("Microsoft returned an invalid tenant identifier.")
         configured_tenant = str(config["tenant"]).strip().casefold()
-        if not token_tenant or (configured_tenant not in {"common", "organizations", "consumers"} and token_tenant.casefold() != configured_tenant):
+        consumer_tenant = "9188040d-6c67-4c5b-b112-36a304b66dad"
+        if configured_tenant not in {"common", "organizations", "consumers"} and normalized_tenant.casefold() != configured_tenant:
             raise ValueError("The Microsoft account belongs to a tenant not allowed by this app registration.")
-        expected_issuer = str(metadata.get("issuer") or "").replace("{tenantid}", token_tenant)
-        signing_key = jwt.PyJWKClient(metadata["jwks_uri"]).get_signing_key_from_jwt(id_token).key
+        if configured_tenant == "organizations" and normalized_tenant.casefold() == consumer_tenant:
+            raise ValueError("This RevelaCode Microsoft app accepts organizational accounts only.")
+        if configured_tenant == "consumers" and normalized_tenant.casefold() != consumer_tenant:
+            raise ValueError("This RevelaCode Microsoft app accepts personal Microsoft accounts only.")
+
+        expected_issuer = str(metadata.get("issuer") or "").replace("{tenantid}", normalized_tenant)
+        token_header = jwt.get_unverified_header(id_token)
+        jwks_response = requests.get(metadata["jwks_uri"], timeout=12)
+        jwks_response.raise_for_status()
+        jwks = jwks_response.json().get("keys") or []
+        signing_jwk = next(
+            (item for item in jwks if item.get("kid") == token_header.get("kid")),
+            None,
+        )
+        if not signing_jwk:
+            raise ValueError("Microsoft's signing key could not be resolved.")
+        key_issuer = str(signing_jwk.get("issuer") or "").replace("{tenantid}", normalized_tenant)
+        if not key_issuer or key_issuer != expected_issuer:
+            raise ValueError("Microsoft's signing key issuer did not match the account tenant.")
+        signing_key = jwt.PyJWK.from_dict(signing_jwk).key
         claims = jwt.decode(
             id_token,
             signing_key,
             algorithms=["RS256"],
             audience=config["client_id"],
             issuer=expected_issuer,
-            options={"require": ["sub", "iss", "aud", "exp", "iat", "nonce"]},
+            options={"require": ["sub", "iss", "aud", "exp", "iat", "nonce", "tid"]},
         )
+        if str(claims.get("tid") or "").casefold() != normalized_tenant.casefold():
+            raise ValueError("Microsoft's tenant identity claim did not match the validated tenant.")
         if not secrets.compare_digest(str(claims.get("nonce") or ""), str(state_row.get("nonce") or "")):
             raise ValueError("Microsoft sign-in nonce did not match.")
-        subject = str(claims["sub"])
-        email = str(claims.get("email") or claims.get("preferred_username") or "").strip().lower()
+        subject = normalized_tenant + ":" + str(claims["sub"])
+        email = str(claims.get("email") or "").strip().lower()
         name = str(claims.get("name") or email.split("@")[0] or "RevelaCode member")
         user = _provider_identity("microsoft", subject, email, name, state_row)
         if not user:
@@ -464,8 +498,6 @@ def _github_callback():
             if isinstance(item, dict) and item.get("verified") is True and item.get("primary") is True
         ]
         email = str(verified_emails[0].get("email") or "").strip().lower() if verified_emails else ""
-        if not email:
-            raise ValueError("GitHub must provide a verified primary email. Enable the user:email permission or add a verified primary email to GitHub.")
         name = str(profile.get("name") or profile.get("login") or email.split("@")[0])
         user = _provider_identity("github", github_id, email, name, state_row)
         if not user:
@@ -602,7 +634,9 @@ def _ensure_phone_indexes():
     db = _db()
     db["identity_phone_challenges"].create_index("challenge_id_hash", unique=True)
     db["identity_phone_challenges"].create_index("expires_at", expireAfterSeconds=0)
-    db["users"].create_index("phone", unique=True, sparse=True)
+    claims = db["identity_phone_claims"]
+    claims.create_index("phone_hash", unique=True)
+    claims.create_index("user_id", unique=True)
 
 
 def _create_phone_challenge(phone: str, user: dict | None, purpose: str):
@@ -688,13 +722,21 @@ def _consume_phone_challenge(challenge_id: str, phone: str, code: str, purpose: 
 
 @identity_bp.get("/api/identity/providers")
 def identity_provider_status():
-    google_ready = all(os.getenv(key, "").strip() for key in ("GOOGLE_WEB_CLIENT_ID", "GOOGLE_WEB_CLIENT_SECRET"))
-    microsoft_ready = all(os.getenv(key, "").strip() for key in (
-        "MICROSOFT_CLIENT_ID", "MICROSOFT_CLIENT_SECRET"
-    ))
-    github_ready = all(os.getenv(key, "").strip() for key in (
-        "GITHUB_CLIENT_ID", "GITHUB_CLIENT_SECRET"
-    ))
+    google_ready = bool(
+        os.getenv("GOOGLE_WEB_CLIENT_ID", "").strip()
+        and os.getenv("GOOGLE_WEB_CLIENT_SECRET", "").strip()
+        and os.getenv("GOOGLE_OAUTH_REDIRECT_URI", "").strip().startswith("https://")
+    )
+    microsoft_ready = bool(
+        os.getenv("MICROSOFT_CLIENT_ID", "").strip()
+        and os.getenv("MICROSOFT_CLIENT_SECRET", "").strip()
+        and os.getenv("MICROSOFT_OAUTH_REDIRECT_URI", "https://revelacode-backend.onrender.com/api/oauth/microsoft/callback").strip().startswith("https://")
+    )
+    github_ready = bool(
+        os.getenv("GITHUB_CLIENT_ID", "").strip()
+        and os.getenv("GITHUB_CLIENT_SECRET", "").strip()
+        and os.getenv("GITHUB_OAUTH_REDIRECT_URI", "https://revelacode-backend.onrender.com/api/oauth/github/callback").strip().startswith("https://")
+    )
     phone_ready = bool(os.getenv("AFRICASTALKING_USERNAME", "").strip() and os.getenv("AFRICASTALKING_API_KEY", "").strip())
     return jsonify(success=True, providers={
         "google": {"enabled": google_ready},
@@ -746,8 +788,12 @@ def phone_link_request():
         return error
     try:
         phone = _normalise_phone((request.get_json(silent=True) or {}).get("phone"))
-        existing = _users().find_one({"phone": phone, "_id": {"$ne": user.get("_id")}}, {"_id": 1})
-        if existing:
+        claims = _db()["identity_phone_claims"]
+        existing = claims.find_one({"phone_hash": _phone_hash(phone)})
+        if existing and str(existing.get("user_id") or "") != _user_id(user):
+            return jsonify(success=False, code="phone_already_linked", message="That phone number is already linked to another RevelaCode account."), 409
+        legacy_owner = _users().find_one({"phone": phone, "phone_verified": True}, {"_id": 1, "id": 1, "user_id": 1})
+        if legacy_owner and _user_id(legacy_owner) != _user_id(user):
             return jsonify(success=False, code="phone_already_linked", message="That phone number is already linked to another RevelaCode account."), 409
         challenge_id = _create_phone_challenge(phone, user, "phone_link")
         return jsonify(success=True, challenge_id=challenge_id, expires_in=OTP_SECONDS, message="A verification code was sent to your phone."), 200
@@ -773,6 +819,17 @@ def phone_link_verify():
             raise ValueError("Enter the six-digit SMS code.")
         _consume_phone_challenge(challenge_id, phone, code, "phone_link")
         query = {"_id": user["_id"]} if user.get("_id") is not None else {"contact": user.get("contact")}
+        uid = _user_id(user)
+        claims = _db()["identity_phone_claims"]
+        from pymongo.errors import DuplicateKeyError
+        try:
+            claims.replace_one(
+                {"user_id": uid},
+                {"user_id": uid, "phone_hash": _phone_hash(phone), "phone": phone, "verified_at": _now()},
+                upsert=True,
+            )
+        except DuplicateKeyError:
+            return jsonify(success=False, code="phone_already_linked", message="That phone number is already linked to another RevelaCode account."), 409
         result = _users().update_one(
             query,
             {"$set": {"phone": phone, "phone_verified": True, "phone_verified_at": _now()}, "$addToSet": {"login_methods": "phone"}},
@@ -795,7 +852,10 @@ def phone_login_request():
         return jsonify(success=False, message=str(exc)), 422
     try:
         _phone_provider_config()
-        user = _users().find_one({"phone": phone, "phone_verified": True})
+        claim = _db()["identity_phone_claims"].find_one({"phone_hash": _phone_hash(phone)})
+        user = _load_user_by_id(str(claim.get("user_id") or "")) if claim else None
+        if user and (user.get("phone") != phone or user.get("phone_verified") is not True):
+            user = None
         challenge_id = _create_phone_challenge(phone, user, "phone_login")
         return jsonify(
             success=True,
@@ -822,7 +882,11 @@ def phone_login_verify():
             raise ValueError("Enter the six-digit SMS code.")
         challenge = _consume_phone_challenge(challenge_id, phone, code, "phone_login")
         user = _load_user_by_id(str(challenge.get("user_id") or ""))
-        if not user or user.get("phone") != phone or user.get("phone_verified") is not True:
+        claim = _db()["identity_phone_claims"].find_one({
+            "phone_hash": _phone_hash(phone),
+            "user_id": _user_id(user) if user else "",
+        })
+        if not user or not claim or user.get("phone") != phone or user.get("phone_verified") is not True:
             return jsonify(success=False, code="invalid_phone_login", message="This phone number is not linked to an active RevelaCode account."), 401
         return _login_result(user)
     except ValueError as exc:
@@ -906,7 +970,7 @@ def passkey_registration_options():
             user_name=str(user.get("username") or user.get("email") or user.get("contact") or uid),
             user_display_name=str(user.get("full_name") or user.get("name") or user.get("username") or "RevelaCode member"),
             authenticator_selection=AuthenticatorSelectionCriteria(
-                resident_key=ResidentKeyRequirement.PREFERRED,
+                resident_key=ResidentKeyRequirement.REQUIRED,
                 user_verification=UserVerificationRequirement.REQUIRED,
             ),
         )
