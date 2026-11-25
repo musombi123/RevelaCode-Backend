@@ -193,7 +193,44 @@ def ip_is_blocked(ip: str | None) -> dict | None:
 
         found, cached = _cached_block(normalized)
         if found:
-            return dict(cached) if cached is not None else None
+            if cached is None:
+                return None
+
+            # Enforce the exact block expiry even when a positive decision is
+            # served from cache. Expiry writes happen only once per expired
+            # cache entry, not on every request.
+            cached_expiry = cached.get("expires_at")
+            if cached_expiry:
+                try:
+                    expiry = datetime.fromisoformat(
+                        str(cached_expiry).replace("Z", "+00:00")
+                    )
+                    if expiry.tzinfo is None:
+                        expiry = expiry.replace(tzinfo=timezone.utc)
+                    if expiry <= utcnow():
+                        db = get_db()
+                        db["security_ip_blocks"].update_one(
+                            {"ip": normalized, "active": True},
+                            {"$set": {
+                                "active": False,
+                                "status": "expired",
+                                "expired_at": utcnow(),
+                            }},
+                        )
+                        _cache_block(normalized, None)
+                        return None
+                except (TypeError, ValueError):
+                    # Malformed stored expiry data must not silently bypass
+                    # an active block; the database path below will re-read it.
+                    _clear_block_cache(normalized)
+                except Exception as exc:
+                    logger.warning(
+                        "Expired IP block could not be persisted | error_type=%s",
+                        type(exc).__name__,
+                    )
+                    _clear_block_cache(normalized)
+                    return None
+            return dict(cached)
 
         db = get_db()
         row = db["security_ip_blocks"].find_one({
