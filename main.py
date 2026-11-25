@@ -979,11 +979,9 @@ def start_background_jobs():
     logger.info("Daily runner thread started")
 
 
-# =========================================================
-# START BACKGROUND JOBS
-# =========================================================
-
-start_background_jobs()
+# Background jobs are intentionally not started during module import.
+# Gunicorn imports this module in each web worker. The dedicated Render
+# worker starts these jobs exactly once in its own process.
 
 
 # =========================================================
