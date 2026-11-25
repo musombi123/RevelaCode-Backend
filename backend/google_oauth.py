@@ -352,6 +352,14 @@ def google_callback():
             stored_email = str(user.get("email") or user.get("contact") or "").strip().lower()
             if stored_email != email or user.get("verified") is not True:
                 raise ValueError("The Google identity is not linked to a verified RevelaCode account.")
+            if state_row.get("mode") == "link":
+                linking_actor = _load_user_by_id(state_row.get("actor_id"))
+                if (
+                    not linking_actor
+                    or linking_actor.get("verified") is not True
+                    or str(linking_actor.get("_id")) != str(user.get("_id"))
+                ):
+                    raise ValueError("This Google identity is already linked to a different RevelaCode account.")
         elif state_row.get("mode") == "link":
             user = _load_user_by_id(state_row.get("actor_id"))
             if not user or user.get("verified") is not True:
