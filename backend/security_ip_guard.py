@@ -8,6 +8,9 @@ from __future__ import annotations
 import ipaddress
 import logging
 import os
+import threading
+import time
+from collections import OrderedDict
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -18,6 +21,57 @@ logger = logging.getLogger("revelacode.security.ip_guard")
 AUTO_BLOCK_THRESHOLD = 50
 AUTO_BLOCK_WINDOW_MINUTES = 5
 AUTO_BLOCK_DURATION_MINUTES = 30
+
+# A very short per-process cache reduces repeated MongoDB reads from the
+# request-boundary IP guard. The TTL is deliberately small so manual unblocks
+# propagate quickly; writes invalidate/update the affected entry immediately.
+try:
+    _BLOCK_CACHE_TTL_SECONDS = min(
+        5.0,
+        max(0.0, float(os.getenv("REVELACODE_IP_BLOCK_CACHE_SECONDS", "1"))),
+    )
+except (TypeError, ValueError):
+    _BLOCK_CACHE_TTL_SECONDS = 1.0
+_BLOCK_CACHE_MAX_ENTRIES = 4096
+_BLOCK_CACHE: OrderedDict[str, tuple[float, dict | None]] = OrderedDict()
+_BLOCK_CACHE_LOCK = threading.RLock()
+
+
+def _clear_block_cache(ip: str | None = None) -> None:
+    with _BLOCK_CACHE_LOCK:
+        if ip is None:
+            _BLOCK_CACHE.clear()
+        else:
+            _BLOCK_CACHE.pop(ip, None)
+
+
+def _cached_block(ip: str) -> tuple[bool, dict | None]:
+    if _BLOCK_CACHE_TTL_SECONDS <= 0:
+        return False, None
+    now = time.monotonic()
+    with _BLOCK_CACHE_LOCK:
+        item = _BLOCK_CACHE.get(ip)
+        if item is None:
+            return False, None
+        expires_at, value = item
+        if expires_at <= now:
+            _BLOCK_CACHE.pop(ip, None)
+            return False, None
+        _BLOCK_CACHE.move_to_end(ip)
+        return True, dict(value) if value is not None else None
+
+
+def _cache_block(ip: str, value: dict | None) -> None:
+    if _BLOCK_CACHE_TTL_SECONDS <= 0:
+        return
+    with _BLOCK_CACHE_LOCK:
+        _BLOCK_CACHE[ip] = (
+            time.monotonic() + _BLOCK_CACHE_TTL_SECONDS,
+            dict(value) if value is not None else None,
+        )
+        _BLOCK_CACHE.move_to_end(ip)
+        while len(_BLOCK_CACHE) > _BLOCK_CACHE_MAX_ENTRIES:
+            _BLOCK_CACHE.popitem(last=False)
 
 
 def utcnow() -> datetime:
@@ -136,13 +190,20 @@ def ip_is_blocked(ip: str | None) -> dict | None:
         normalized = parse_public_ip(ip)
         if is_allowlisted(normalized):
             return None
+
+        found, cached = _cached_block(normalized)
+        if found:
+            return dict(cached) if cached is not None else None
+
         db = get_db()
         row = db["security_ip_blocks"].find_one({
             "ip": normalized,
             "active": True,
         })
         if not row:
+            _cache_block(normalized, None)
             return None
+
         expires = row.get("expires_at")
         if isinstance(expires, datetime):
             if expires.tzinfo is None:
@@ -156,12 +217,19 @@ def ip_is_blocked(ip: str | None) -> dict | None:
                         "expired_at": utcnow(),
                     }},
                 )
+                _cache_block(normalized, None)
                 return None
-        return _serialize_block(row)
+
+        result = _serialize_block(row)
+        _cache_block(normalized, result)
+        return result
     except Exception as exc:
-        # A database outage must not lock out all users. Admin APIs report the
-        # degraded state and never claim a block was created without a DB write.
-        logger.warning("IP block lookup unavailable | error_type=%s", type(exc).__name__)
+        # A database outage must not lock out all users. Do not cache failures:
+        # the next request should be able to recover immediately.
+        logger.warning(
+            "IP block lookup unavailable | error_type=%s",
+            type(exc).__name__,
+        )
         return None
 
 
@@ -231,7 +299,10 @@ def block_ip(
         "source": record["source"],
         "created_at": now,
     })
-    return _serialize_block(record)
+    serialized = _serialize_block(record)
+    _clear_block_cache(normalized)
+    _cache_block(normalized, serialized)
+    return serialized
 
 
 def unblock_ip(ip: Any, *, actor: str, reason: str) -> dict:
@@ -250,6 +321,7 @@ def unblock_ip(ip: Any, *, actor: str, reason: str) -> dict:
             "unblocked_by": str(actor or "unknown")[:128],
         }},
     )
+    _clear_block_cache(normalized)
     if result.modified_count:
         db["security_ip_events"].insert_one({
             "action": "unblocked",
