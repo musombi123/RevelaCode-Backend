@@ -125,13 +125,84 @@ def configured_frontend_origins() -> set[str]:
 FRONTEND_ORIGINS = configured_frontend_origins()
 
 
+_CUSTOM_ORIGIN_CACHE_TTL = 5.0
+try:
+    _CUSTOM_ORIGIN_CACHE_TTL = min(
+        30.0,
+        max(0.0, float(os.getenv("REVELACODE_CUSTOM_ORIGIN_CACHE_SECONDS", "5"))),
+    )
+except (TypeError, ValueError):
+    logger.warning("Invalid custom-origin cache TTL; using five seconds")
+
+from backend.security.origin_cache import OriginVerificationCache
+
+_CUSTOM_ORIGIN_CACHE = OriginVerificationCache(
+    ttl_seconds=_CUSTOM_ORIGIN_CACHE_TTL,
+    max_entries=4096,
+)
+
+
+def _resolve_verified_custom_origin(hostname: str) -> bool:
+    """Verify a custom HTTPS domain against the shared authoritative records."""
+    from backend.jumuiya.core.database import collection
+    from bson import ObjectId
+    from bson.errors import InvalidId
+
+    domain = collection("jumuiya_elimu_school_domains").find_one({
+        "hostname": hostname,
+        "status": "active",
+        "verification_status": "verified",
+        "https_status": "active",
+    })
+    if not domain:
+        return False
+
+    school_oid = domain.get("school_oid")
+    if school_oid is None:
+        try:
+            school_oid = ObjectId(str(domain.get("school_id", "")))
+        except (InvalidId, TypeError, ValueError):
+            return False
+
+    school = collection("jumuiya_schools").find_one({
+        "_id": school_oid,
+        "status": "active",
+        "verification_status": "verified",
+        "public_profile_enabled": True,
+        "is_demo": {"$ne": True},
+    })
+    if school:
+        return True
+
+    # Biashara company domains are approved only after DNS/domain verification
+    # and HTTPS activation. A company slug or pending registration is not enough.
+    biashara_domain = collection("jumuiya_biashara_domains").find_one({
+        "hostname": hostname,
+        "status": "active",
+        "verification_status": "verified",
+        "https_status": "active",
+    })
+    if not biashara_domain:
+        return False
+    try:
+        business_oid = ObjectId(str(biashara_domain.get("business_id") or ""))
+    except (InvalidId, TypeError, ValueError):
+        return False
+
+    business = collection("jumuiya_businesses").find_one({
+        "_id": business_oid,
+        "status": "active",
+        "verification_status": "verified",
+    })
+    return bool(business)
+
+
 def is_approved_frontend_origin(origin: str) -> bool:
     """
-    Accept configured platform origins plus active, verified school domains.
+    Accept explicitly configured origins and active, verified custom domains.
 
-    Custom domains are approved dynamically only while the domain registry
-    and school record both confirm an active, verified, HTTPS-enabled public
-    site. This avoids wildcard CORS and supports new schools without a deploy.
+    Custom-domain verification is cached briefly to avoid repeat MongoDB reads
+    on every CORS check. It does not cache or replace route authorization.
     """
     normalized = str(origin or "").strip().rstrip("/")
     if not normalized:
@@ -157,57 +228,10 @@ def is_approved_frontend_origin(origin: str) -> bool:
         return False
 
     try:
-        from backend.jumuiya.core.database import collection
-        from bson import ObjectId
-        from bson.errors import InvalidId
-
-        domain = collection("jumuiya_elimu_school_domains").find_one({
-            "hostname": hostname,
-            "status": "active",
-            "verification_status": "verified",
-            "https_status": "active",
-        })
-        if not domain:
-            return False
-
-        school_oid = domain.get("school_oid")
-        if school_oid is None:
-            try:
-                school_oid = ObjectId(str(domain.get("school_id", "")))
-            except (InvalidId, TypeError, ValueError):
-                return False
-
-        school = collection("jumuiya_schools").find_one({
-            "_id": school_oid,
-            "status": "active",
-            "verification_status": "verified",
-            "public_profile_enabled": True,
-            "is_demo": {"$ne": True},
-        })
-        if school:
-            return True
-
-        # Biashara company subdomains are approved only after DNS/domain
-        # verification and HTTPS activation. A company slug or pending
-        # registration is never sufficient for credentialed CORS.
-        biashara_domain = collection("jumuiya_biashara_domains").find_one({
-            "hostname": hostname,
-            "status": "active",
-            "verification_status": "verified",
-            "https_status": "active",
-        })
-        if not biashara_domain:
-            return False
-        try:
-            business_oid = ObjectId(str(biashara_domain.get("business_id") or ""))
-        except (InvalidId, TypeError, ValueError):
-            return False
-        business = collection("jumuiya_businesses").find_one({
-            "_id": business_oid,
-            "status": "active",
-            "verification_status": "verified",
-        })
-        return bool(business)
+        return _CUSTOM_ORIGIN_CACHE.get_or_resolve(
+            hostname,
+            _resolve_verified_custom_origin,
+        )
     except Exception:
         logger.exception("Could not validate a custom school or Biashara CORS origin")
         return False
