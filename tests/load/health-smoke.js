@@ -1,12 +1,8 @@
 import http from "k6/http";
 import { check } from "k6";
+import { requireStagingBaseUrl } from "./lib/staging-target.js";
 
-// Safe, read-only smoke/load profile. Point BASE_URL at a staging deployment.
-// Do not aim this at production without an approved test window.
-const baseUrl = (__ENV.BASE_URL || "").replace(/\/$/, "");
-if (!baseUrl) {
-  throw new Error("Set BASE_URL to the staging API origin.");
-}
+const baseUrl = requireStagingBaseUrl();
 
 export const options = {
   stages: [
@@ -24,12 +20,12 @@ export const options = {
 export default function () {
   const response = http.get(`${baseUrl}/health`, {
     headers: { Accept: "application/json" },
-    tags: { endpoint: "health" },
+    tags: { endpoint: "health", profile: "staging-health-smoke" },
     timeout: "10s",
   });
   check(response, {
     "health returns 200": (r) => r.status === 200,
     "health body is JSON": (r) =>
-      (r.headers["Content-Type"] || "").includes("application/json"),
+      String(r.headers["Content-Type"] || "").toLowerCase().includes("application/json"),
   });
 }

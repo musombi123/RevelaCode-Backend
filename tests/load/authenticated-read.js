@@ -1,13 +1,39 @@
 import http from "k6/http";
-import { check, sleep } from "k6";
+import { check, fail, sleep } from "k6";
+import { requireStagingBaseUrl } from "./lib/staging-target.js";
 
-// Read-only authenticated API profile. Pass an endpoint known to be safe for
-// repeated GET requests; never point this profile at mutation endpoints.
-const targetVus = Math.max(1, Math.min(10000, Number(__ENV.TARGET_VUS || 250)));
-const baseUrl = String(__ENV.BASE_URL || "").replace(/\/$/, "");
-const apiPath = String(__ENV.API_PATH || "/health");
-const accessToken = String(__ENV.ACCESS_TOKEN || "");
+const baseUrl = requireStagingBaseUrl();
+const apiPath = String(__ENV.API_PATH || "").trim();
+const accessToken = String(__ENV.ACCESS_TOKEN || "").trim();
 const requestTimeout = String(__ENV.REQUEST_TIMEOUT || "10s");
+const targetVus = Number(__ENV.TARGET_VUS || 25);
+
+if (!apiPath || !apiPath.startsWith("/") || apiPath.startsWith("//")) {
+  fail("API_PATH must be a reviewed read-only path beginning with one slash.");
+}
+if (!accessToken) {
+  fail("ACCESS_TOKEN is required. Use a dedicated synthetic staging account.");
+}
+if (!Number.isInteger(targetVus) || targetVus < 1 || targetVus > 1000) {
+  fail("TARGET_VUS must be an integer from 1 to 1000 for a single-generator run.");
+}
+
+function tenantHeaders() {
+  const raw = String(__ENV.TENANT_HEADERS_JSON || "").trim();
+  if (!raw) return {};
+  try {
+    const parsed = JSON.parse(raw);
+    if (!parsed || Array.isArray(parsed) || typeof parsed !== "object") {
+      throw new Error("TENANT_HEADERS_JSON must be a JSON object");
+    }
+    return parsed;
+  } catch (error) {
+    fail("Invalid TENANT_HEADERS_JSON: " + error.message);
+  }
+  return {};
+}
+
+const extraHeaders = tenantHeaders();
 
 export const options = {
   stages: [
@@ -22,37 +48,12 @@ export const options = {
   },
 };
 
-function tenantHeaders() {
-  const raw = String(__ENV.TENANT_HEADERS_JSON || "").trim();
-  if (!raw) return {};
-  try {
-    const parsed = JSON.parse(raw);
-    if (!parsed || Array.isArray(parsed) || typeof parsed !== "object") {
-      throw new Error("TENANT_HEADERS_JSON must be a JSON object");
-    }
-    return parsed;
-  } catch (error) {
-    throw new Error("Invalid TENANT_HEADERS_JSON: " + error.message);
-  }
-}
-
-const extraHeaders = tenantHeaders();
-
 export default function () {
-  if (!baseUrl) {
-    throw new Error("BASE_URL is required");
-  }
-  if (!apiPath.startsWith("/") || apiPath.startsWith("//")) {
-    throw new Error("API_PATH must be a safe absolute path beginning with one slash");
-  }
-
   const headers = {
     Accept: "application/json",
+    Authorization: "Bearer " + accessToken,
     ...extraHeaders,
   };
-  if (accessToken) {
-    headers.Authorization = "Bearer " + accessToken;
-  }
 
   const response = http.get(baseUrl + apiPath, {
     headers,

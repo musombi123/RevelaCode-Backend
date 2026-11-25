@@ -1,0 +1,40 @@
+# RPSVI staging-only Blueprint.
+# Create manually as an independent Render Blueprint from this file.
+# This template does not alter the production render.yaml.
+services:
+  - type: web
+    name: revelacode-rpsvi-staging
+    runtime: python
+    plan: 0.5c-512mb
+    branch: verification/public-tester-programme
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn --config gunicorn.conf.py main:app
+    autoDeployTrigger: off
+    healthCheckPath: /health
+    envVars:
+      - key: FLASK_ENV
+        value: production
+      - key: ENVIRONMENT
+        value: staging
+      - key: REVELACODE_ENV
+        value: staging
+      - key: MONGO_URI
+        sync: false
+      - key: MONGO_DB_NAME
+        value: revelacode_staging
+      - key: JWT_SECRET
+        generateValue: true
+      - key: REVELAAI_SERVICE_KEY
+        sync: false
+      - key: REVELA_AI_URL
+        value: https://revelaai-rpsvi-staging.onrender.com/ai
+      - key: FRONTEND_ORIGINS
+        sync: false
+      - key: FRONTEND_URL
+        sync: false
+      - key: REVELACODE_TRUST_PROXY_HEADERS
+        value: "true"
+      - key: REVELACODE_TRUSTED_PROXY_HOPS
+        value: "1"
+      - key: PYTHONUNBUFFERED
+        value: "1"

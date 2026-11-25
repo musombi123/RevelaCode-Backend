@@ -1,33 +1,40 @@
-# Staging load tests
+# RPSVI staging load tests
 
-These profiles are read-only. Run them against staging with a GET endpoint that is safe to request repeatedly.
+These profiles are read-only and deliberately require an exact staging hostname. They reject known production hosts and refuse to run without `EXPECTED_STAGING_HOST`.
 
 ## Health smoke
 
+PowerShell:
+
 ```powershell
-k6 run -e BASE_URL=https://YOUR-STAGING-HOST tests/load/health-smoke.js
+$env:BASE_URL = "https://YOUR-STAGING-HOST"
+$env:EXPECTED_STAGING_HOST = "YOUR-STAGING-HOST"
+k6 run tests/load/health-smoke.js
 ```
 
 ## Authenticated read profile
 
-Choose an endpoint that represents a real read workload and obtain a staging token for a test account. Keep tokens out of source control and command history where possible.
+Select a reviewed, repeatable GET endpoint. Obtain a bearer token for a dedicated synthetic staging account. Do not place a production token in this profile.
 
 ```powershell
 $env:BASE_URL = "https://YOUR-STAGING-HOST"
-$env:API_PATH = "/YOUR/READ-ONLY/ENDPOINT"
+$env:EXPECTED_STAGING_HOST = "YOUR-STAGING-HOST"
+$env:API_PATH = "/YOUR/REVIEWED/READ-ONLY/ENDPOINT"
 $env:ACCESS_TOKEN = "<staging-token>"
-$env:TARGET_VUS = "250"
-# Add only the tenant headers actually required by the selected API contract:
-$env:TENANT_HEADERS_JSON = '{"X-School-ID":"<staging-school-id>"}'
+$env:TARGET_VUS = "25"
+# Supply only the tenant selector/header actually required by that route.
+$env:TENANT_HEADERS_JSON = '{"X-School-ID":"<synthetic-school-id>"}'
 k6 run tests/load/authenticated-read.js
 ```
 
-If the endpoint does not use a school header, omit `TENANT_HEADERS_JSON`. For Biashara or another tenant type, supply the exact existing header required by that route. Do not invent or change API contracts to make the load profile work.
+If the endpoint does not require a school header, omit `TENANT_HEADERS_JSON`. For Biashara or another tenant, use the exact existing route contract. Do not invent or change API contracts for a load script.
 
-The profile ramps through 25 and 100 virtual users before reaching `TARGET_VUS` (default 250), then ramps down. It checks p95/p99 latency and request failure rate. This is a staging profile, not proof of 100,000 concurrent-user capacity.
+## Limits and safety
 
-## Progressive capacity programme
-
-Run at 25, 50, 100, 250, 500, then 1,000 virtual users only after the previous level is stable. Increase further only with a distributed load generator and an approved test window. Capture application CPU/memory, Gunicorn worker saturation, MongoDB connection/pool wait, query latency, and provider errors for every run.
-
-Do not stress production without an explicitly approved test window, a traffic cap, monitoring, and a rollback/stop procedure. Never target POST/PUT/PATCH/DELETE endpoints with these profiles.
+- The authenticated profile requires a token and is capped at 1,000 VUs on one generator.
+- Increase 25 → 50 → 100 → 250 → 500 → 1,000 only after review of the previous run.
+- The health profile is not an authenticated user simulation and is not evidence of hub capacity.
+- These scripts only issue GET requests; choose an endpoint known to be safe for repeated reads.
+- Use a named operator, approved test window, live monitoring and stop thresholds.
+- Distributed tests above 1,000 VUs require an approved design, budget and separate runbook.
+- Never target production. Do not stress the live API without an explicit written test window and capacity approval.
