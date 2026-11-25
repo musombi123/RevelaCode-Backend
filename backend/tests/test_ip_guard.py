@@ -220,6 +220,27 @@ def test_expired_block_is_deactivated_before_enforcement(database):
     )
     row = database["security_ip_blocks"].rows[0]
     row["expires_at"] = datetime.now(timezone.utc) - timedelta(seconds=1)
+    # Simulate a database-side expiry update that did not pass through this
+    # process's block/unblock writer, so invalidate its local cache entry.
+    guard._clear_block_cache("1.1.1.1")
+    assert guard.ip_is_blocked("1.1.1.1") is None
+    assert row["active"] is False
+
+
+def test_cached_expired_block_is_deactivated_without_serving_stale_block(database):
+    guard.block_ip(
+        "1.1.1.1",
+        actor="admin-1",
+        reason="Repeated suspicious application requests",
+        duration_minutes=30,
+        current_ip="8.8.8.8",
+    )
+    row = database["security_ip_blocks"].rows[0]
+    row["expires_at"] = datetime.now(timezone.utc) - timedelta(seconds=1)
+    cached = guard._serialize_block(row)
+    cached["expires_at"] = row["expires_at"].isoformat()
+    guard._cache_block("1.1.1.1", cached)
+
     assert guard.ip_is_blocked("1.1.1.1") is None
     assert row["active"] is False
 
