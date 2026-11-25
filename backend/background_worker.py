@@ -1,21 +1,23 @@
-"""Dedicated process for legacy scheduled/background loops.
+"""Render worker entry point for RevelaCode background jobs.
 
-The web application must not start these threads at import time: Gunicorn
-loads the Flask module in each worker process. This module is the single
-Render worker entry point for the existing SDA importer and daily runner.
+It deliberately imports no Flask app. The worker owns its own bounded MongoDB
+client only when a task needs the database.
 """
 import logging
+import os
 import threading
 
-from main import start_background_jobs
+from backend.background_jobs import start_background_jobs
 
 logger = logging.getLogger("revelacode.background_worker")
 
 
 def main() -> None:
+    if not os.getenv("MONGO_URI", "").strip():
+        raise RuntimeError("MONGO_URI must be configured for the background worker")
+
     start_background_jobs()
     logger.info("RevelaCode background worker is running")
-    # Keep the worker process alive while its managed daemon threads run.
     threading.Event().wait()
 
 

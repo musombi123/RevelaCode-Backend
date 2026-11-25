@@ -33,6 +33,7 @@ class FakeCollection:
     def __init__(self):
         self.rows = []
         self.next_id = 1
+        self.find_one_calls = 0
 
     def create_index(self, *args, **kwargs):
         return "index"
@@ -54,6 +55,7 @@ class FakeCollection:
         return type("InsertResult", (), {"inserted_id": row["_id"]})()
 
     def find_one(self, query=None):
+        self.find_one_calls += 1
         return next((row.copy() for row in self.rows if self._matches(row, query or {})), None)
 
     def find(self, query=None):
@@ -93,10 +95,12 @@ class FakeDatabase:
 
 @pytest.fixture
 def database(monkeypatch):
+    guard._clear_block_cache()
     db = FakeDatabase()
     monkeypatch.setattr(guard, "get_db", lambda: db)
     monkeypatch.setenv("SCI_CORE_IP_ALLOWLIST", "")
-    return db
+    yield db
+    guard._clear_block_cache()
 
 
 def test_client_ip_uses_cloudflare_header_not_spoofable_forwarding_headers():
@@ -113,6 +117,34 @@ def test_client_ip_uses_cloudflare_header_not_spoofable_forwarding_headers():
 
     assert guard.client_ip_from_request(NoCloudflareHeader()) is None
 
+
+
+def test_ip_block_cache_reuses_decisions_and_block_writes_invalidate(database):
+    blocks = database["security_ip_blocks"]
+
+    # A negative decision is reused for the short cache window.
+    assert guard.ip_is_blocked("1.1.1.1") is None
+    first_lookup_count = blocks.find_one_calls
+    assert guard.ip_is_blocked("1.1.1.1") is None
+    assert blocks.find_one_calls == first_lookup_count
+
+    # A successful write updates the cache immediately, not after its TTL.
+    guard.block_ip(
+        "1.1.1.1",
+        actor="admin-1",
+        reason="Repeated suspicious application requests",
+        duration_minutes=30,
+        current_ip="8.8.8.8",
+    )
+    assert guard.ip_is_blocked("1.1.1.1")["ip"] == "1.1.1.1"
+
+    # Unblocking invalidates the positive decision immediately.
+    guard.unblock_ip(
+        "1.1.1.1",
+        actor="admin-1",
+        reason="Administrator verified and released this source.",
+    )
+    assert guard.ip_is_blocked("1.1.1.1") is None
 
 def test_manual_block_is_persistent_and_audited(database):
     result = guard.block_ip(
@@ -188,6 +220,27 @@ def test_expired_block_is_deactivated_before_enforcement(database):
     )
     row = database["security_ip_blocks"].rows[0]
     row["expires_at"] = datetime.now(timezone.utc) - timedelta(seconds=1)
+    # Simulate a database-side expiry update that did not pass through this
+    # process's block/unblock writer, so invalidate its local cache entry.
+    guard._clear_block_cache("1.1.1.1")
+    assert guard.ip_is_blocked("1.1.1.1") is None
+    assert row["active"] is False
+
+
+def test_cached_expired_block_is_deactivated_without_serving_stale_block(database):
+    guard.block_ip(
+        "1.1.1.1",
+        actor="admin-1",
+        reason="Repeated suspicious application requests",
+        duration_minutes=30,
+        current_ip="8.8.8.8",
+    )
+    row = database["security_ip_blocks"].rows[0]
+    row["expires_at"] = datetime.now(timezone.utc) - timedelta(seconds=1)
+    cached = guard._serialize_block(row)
+    cached["expires_at"] = row["expires_at"].isoformat()
+    guard._cache_block("1.1.1.1", cached)
+
     assert guard.ip_is_blocked("1.1.1.1") is None
     assert row["active"] is False
 
